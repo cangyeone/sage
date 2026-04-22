@@ -40,14 +40,14 @@ cd sage
 # 安装依赖
 pip install torch obspy flask numpy scipy
 
-# 启动 Web 服务（默认端口 5000）
+# 启动 Web 服务（默认端口 5050）
 python web_app/app.py
 
 # 指定端口和主机
 python web_app/app.py --port 8080 --host 0.0.0.0
 ```
 
-浏览器访问 `http://localhost:5000`，进入对话界面。
+浏览器访问 `http://localhost:5050`，进入对话界面。
 
 ---
 
