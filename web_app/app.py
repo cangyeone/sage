@@ -54,7 +54,7 @@ os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
 tasks = {}
 
 
-def run_task(task_id, command, task_type):
+def run_task(task_id, command, task_type, cwd=None):
     """Run a seismic processing task in background"""
     try:
         tasks[task_id]['status'] = 'running'
@@ -65,7 +65,8 @@ def run_task(task_id, command, task_type):
             shell=True,
             capture_output=True,
             text=True,
-            timeout=3600  # 1 hour timeout
+            timeout=3600,  # 1 hour timeout
+            cwd=cwd or os.getcwd()
         )
 
         tasks[task_id]['end_time'] = datetime.now().isoformat()
@@ -131,11 +132,48 @@ def get_task(task_id):
         'stdout': task.get('stdout', ''),
         'stderr': task.get('stderr', '')
     }
-    # Remove raw stdout/stderr from main response
+    # Keep stderr at top level too (for error display), remove stdout only
     task.pop('stdout', None)
-    task.pop('stderr', None)
 
     return jsonify(task)
+
+
+@app.route('/api/chat_picks/<task_id>', methods=['GET'])
+def get_chat_picks(task_id):
+    """Poll pick task status; returns parsed picks when done."""
+    if task_id not in tasks:
+        return jsonify({'error': 'Task not found'}), 404
+    task = tasks[task_id]
+    status = task.get('status', 'running')
+    if status == 'running':
+        return jsonify({'status': 'running'})
+    if status in ('error', 'failed', 'timeout'):
+        return jsonify({'status': status, 'error': task.get('stderr', '')})
+    # Parse picks file
+    picks_file = task.get('picks_file', '')
+    picks = []
+    if os.path.exists(picks_file):
+        with open(picks_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                parts = line.split(',')
+                if len(parts) < 4:
+                    continue
+                try:
+                    picks.append({
+                        'phase': parts[0],
+                        'time_s': float(parts[1]),
+                        'confidence': float(parts[2]),
+                        'abs_time': parts[3],
+                        'snr': float(parts[4]) if len(parts) > 4 else 0.0,
+                        'station': parts[6] if len(parts) > 6 else '',
+                        'polarity': parts[7] if len(parts) > 7 else 'N',
+                    })
+                except (ValueError, IndexError):
+                    continue
+    return jsonify({'status': 'completed', 'picks': picks, 'n_picks': len(picks)})
 
 
 @app.route('/api/pick', methods=['POST'])
@@ -314,15 +352,139 @@ def chat_message():
         agent = get_agent()
         result = agent.process_message(user_message)
 
-        # If the action is to display a plot, add image URL
-        if result.get('action') == 'display_plot' and result.get('data', {}).get('results', {}).get('image_path'):
-            image_path = result['data']['results']['image_path']
-            # Convert to relative path for web access
-            if os.path.isabs(image_path):
-                rel_path = os.path.relpath(image_path, app.config['OUTPUT_FOLDER'])
-            else:
-                rel_path = image_path
-            result['image_url'] = f'/api/output/{rel_path}'
+        # process_message wraps execution_result under 'data'
+        inner = result.get('data', {}) or {}
+        inner_results = inner.get('results', {})
+
+        # If the action is to display a plot, pass waveform_data + picks to frontend
+        if result.get('action') == 'display_plot':
+            waveform_data = inner_results.get('waveform_data')
+            if waveform_data:
+                result['waveform_data'] = waveform_data
+                result['waveform_title'] = inner_results.get('title', '')
+                picks_data = inner_results.get('picks_data')
+                if picks_data:
+                    result['picks_data'] = picks_data
+
+        # Batch picking: launch picker.py in background, return task_id
+        if result.get('action') == 'batch_picking_async':
+            cmd = inner_results.get('command', '')
+            cwd = inner_results.get('cwd', os.getcwd())
+            picks_file = inner_results.get('picks_file', '')
+            task_id = f"batch_pick_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+            tasks[task_id] = {
+                'id': task_id, 'type': 'batch_picking',
+                'status': 'running', 'command': cmd,
+                'picks_file': picks_file,
+            }
+            threading.Thread(
+                target=run_task,
+                args=(task_id, cmd, 'batch_picking'),
+                kwargs={'cwd': cwd},
+                daemon=True).start()
+            result['pick_task_id'] = task_id
+            result['picks_file'] = picks_file
+
+        # SagePicker inline async: launch in background thread with live progress
+        if result.get('action') == 'sage_picking_async':
+            inp_dir    = inner_results.get('input_dir', '')
+            mdl_path   = inner_results.get('model_path', '')
+            incomplete = inner_results.get('incomplete', 'skip')
+            out_base   = inner_results.get('output_base', '')
+            picks_file = inner_results.get('picks_file', '')
+
+            task_id = f"sage_pick_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+            tasks[task_id] = {
+                'id': task_id, 'type': 'sage_picking',
+                'status': 'running',
+                'picks_file': picks_file,
+                'progress': {
+                    'current': 0, 'total': 0,
+                    'n_picks': 0, 'current_station': '',
+                },
+            }
+
+            def _run_sage_inline(tid, _inp, _mdl, _mode, _out):
+                try:
+                    import sys as _sys
+                    _proj = str(Path(__file__).parent.parent)
+                    if _proj not in _sys.path:
+                        _sys.path.insert(0, _proj)
+                    from pnsn.sage_picker import SagePicker as _SP
+
+                    def _cb(station, done, total, n_picks=0):
+                        tasks[tid]['progress'] = {
+                            'current': done,
+                            'total': total,
+                            'n_picks': n_picks,
+                            'current_station': station,
+                        }
+
+                    picker = _SP(_mdl, samplerate=100.0)
+                    res = picker.pick_directory(_inp, _out, incomplete=_mode,
+                                               progress_cb=_cb)
+                    tasks[tid]['status'] = 'completed'
+                    tasks[tid]['result'] = {
+                        'n_stations': res['n_stations'],
+                        'n_picks': res['n_picks'],
+                        'skipped': len(res.get('skipped', [])),
+                        'output': res['output'],
+                    }
+                    tasks[tid]['progress']['current'] = res['n_stations']
+                    tasks[tid]['progress']['total']   = res['n_stations']
+                    tasks[tid]['progress']['n_picks'] = res['n_picks']
+                except Exception as _e:
+                    tasks[tid]['status'] = 'error'
+                    tasks[tid]['stderr'] = str(_e)
+
+            threading.Thread(
+                target=_run_sage_inline,
+                args=(task_id, inp_dir, mdl_path, incomplete, out_base),
+                daemon=True).start()
+
+            result['pick_task_id'] = task_id
+            result['picks_file'] = picks_file
+
+        # Async picking: start background task, return waveform immediately
+        if result.get('action') == 'picking_async':
+            cmd = inner_results.get('command', '')
+            cwd = inner_results.get('cwd', os.getcwd())
+            picks_file = inner_results.get('picks_file', '')
+            tmp_dir = inner_results.get('tmp_dir', '')
+            task_id = f"chat_pick_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+            tasks[task_id] = {
+                'id': task_id, 'type': 'chat_picking',
+                'status': 'running', 'command': cmd,
+                'picks_file': picks_file, 'tmp_dir': tmp_dir,
+            }
+            def _run_pick(tid, _cmd, _cwd, _picks_file, _tmp_dir):
+                try:
+                    import shutil
+                    proc = subprocess.run(
+                        _cmd, shell=True, capture_output=True,
+                        text=True, timeout=300, cwd=_cwd)
+                    tasks[tid]['returncode'] = proc.returncode
+                    tasks[tid]['stdout'] = proc.stdout[-3000:]
+                    tasks[tid]['stderr'] = proc.stderr[-3000:]
+                    tasks[tid]['status'] = 'completed' if proc.returncode == 0 else 'failed'
+                except Exception as e:
+                    tasks[tid]['status'] = 'error'
+                    tasks[tid]['stderr'] = str(e)
+                finally:
+                    import shutil
+                    shutil.rmtree(_tmp_dir, ignore_errors=True)
+            threading.Thread(
+                target=_run_pick,
+                args=(task_id, cmd, cwd, picks_file, tmp_dir),
+                daemon=True).start()
+
+            # Return waveform immediately + task_id for polling
+            waveform_data = inner_results.get('waveform_data')
+            if waveform_data:
+                result['waveform_data'] = waveform_data
+                result['waveform_title'] = inner_results.get('title', '')
+            result['pick_task_id'] = task_id
+            result['picks_file'] = picks_file
 
         return jsonify(result)
 

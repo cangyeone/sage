@@ -365,13 +365,118 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <script>
         const chatMessages = document.getElementById('chatMessages');
         const userInput = document.getElementById('userInput');
         const typingIndicator = document.getElementById('typingIndicator');
 
+        // Phase colour map
+        const PHASE_COLORS = {
+            Pg: '#e74c3c', Sg: '#3498db',
+            Pn: '#c0392b', Sn: '#2980b9',
+            P:  '#e67e22', S:  '#1abc9c',
+        };
+
+        // Render Plotly waveform chart (with optional pick markers)
+        function renderWaveform(container, traces, title, picks = []) {
+            const plotDiv = document.createElement('div');
+            plotDiv.style.cssText = 'width:100%;margin-top:12px;border-radius:8px;overflow:hidden;';
+            container.appendChild(plotDiv);
+
+            const plotHeight = Math.max(200, traces.length * 130);
+            plotDiv.style.height = plotHeight + 'px';
+
+            const plotlyTraces = traces.map((tr, i) => ({
+                x: tr.times,
+                y: tr.amplitudes,
+                type: 'scatter',
+                mode: 'lines',
+                name: tr.label,
+                line: { width: 1 },
+                xaxis: i === 0 ? 'x' : `x${i + 1}`,
+                yaxis: i === 0 ? 'y' : `y${i + 1}`,
+            }));
+
+            // Build subplot layout
+            const layout = {
+                title: { text: title, font: { size: 13 } },
+                margin: { t: 40, b: 40, l: 70, r: 20 },
+                height: plotHeight,
+                showlegend: false,
+                paper_bgcolor: '#fff',
+                plot_bgcolor: '#fafafa',
+                grid: { rows: traces.length, columns: 1, pattern: 'independent', roworder: 'top to bottom' },
+                shapes: [],
+                annotations: [],
+            };
+
+            traces.forEach((tr, i) => {
+                const axisNum = i === 0 ? '' : i + 1;
+                layout[`xaxis${axisNum}`] = {
+                    title: i === traces.length - 1 ? 'Time (s)' : '',
+                    showticklabels: i === traces.length - 1,
+                    gridcolor: '#e0e0e0',
+                };
+                layout[`yaxis${axisNum}`] = {
+                    title: tr.label,
+                    tickvals: [-1, 0, 1],
+                    ticktext: ['-1', '0', '1'],
+                    gridcolor: '#e0e0e0',
+                    zeroline: true,
+                    zerolinecolor: '#aaa',
+                    zerolinewidth: 1,
+                };
+            });
+
+            // Add pick markers as vertical lines across ALL subplots
+            if (picks && picks.length > 0) {
+                picks.forEach(pick => {
+                    const color = PHASE_COLORS[pick.phase] || '#999';
+                    const t = pick.time_s;
+                    // One shape per subplot
+                    traces.forEach((tr, i) => {
+                        const xref = i === 0 ? 'x' : `x${i + 1}`;
+                        const yref = i === 0 ? 'y' : `y${i + 1}`;
+                        layout.shapes.push({
+                            type: 'line',
+                            xref, yref,
+                            x0: t, x1: t,
+                            y0: -1.1, y1: 1.1,
+                            line: { color, width: 1.5, dash: 'dot' },
+                        });
+                    });
+                    // Label on the top subplot only
+                    layout.annotations.push({
+                        x: t, y: 1.05,
+                        xref: 'x', yref: 'y',
+                        text: `<b>${pick.phase}</b><br>${pick.confidence.toFixed(2)}`,
+                        showarrow: true,
+                        arrowhead: 2,
+                        arrowsize: 0.8,
+                        ax: 0, ay: -20,
+                        font: { size: 10, color },
+                        arrowcolor: color,
+                        bgcolor: 'rgba(255,255,255,0.8)',
+                        bordercolor: color,
+                        borderwidth: 1,
+                        borderpad: 2,
+                    });
+                });
+            }
+
+            Plotly.newPlot(plotDiv, plotlyTraces, layout, {
+                responsive: true,
+                displayModeBar: true,
+                modeBarButtonsToRemove: ['toImage', 'sendDataToCloud'],
+            });
+
+            // Scroll after render
+            setTimeout(() => { chatMessages.scrollTop = chatMessages.scrollHeight; }, 300);
+        }
+
         // Add message to chat
-        function addMessage(role, content, imageUrl = null) {
+        function addMessage(role, content, waveformData = null, waveformTitle = '', picksData = null) {
             const messageDiv = document.createElement('div');
             messageDiv.className = `message message-${role}`;
 
@@ -385,31 +490,19 @@
                 .replace(/\n/g, '<br>');
 
             bubbleDiv.innerHTML = formattedContent;
+            messageDiv.appendChild(bubbleDiv);
 
-            // If there's an image URL, add it
-            if (imageUrl) {
-                const imgDiv = document.createElement('div');
-                imgDiv.style.marginTop = '15px';
-                imgDiv.innerHTML = `
-                    <img src="${imageUrl}" alt="Waveform" 
-                         style="max-width: 100%; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);"
-                         onload="chatMessages.scrollTop = chatMessages.scrollHeight;">
-                    <div style="margin-top: 10px; text-align: center;">
-                        <a href="${imageUrl}" download class="btn btn-sm btn-outline-primary">
-                            <i class="bi bi-download"></i> 下载图片
-                        </a>
-                    </div>
-                `;
-                messageDiv.appendChild(bubbleDiv);
-                messageDiv.appendChild(imgDiv);
-            } else {
-                messageDiv.appendChild(bubbleDiv);
+            // If there's waveform data, render Plotly chart directly
+            if (waveformData && waveformData.length > 0) {
+                // Widen the bubble so the chart has room
+                bubbleDiv.style.maxWidth = '100%';
+                messageDiv.style.maxWidth = '95%';
+                renderWaveform(messageDiv, waveformData, waveformTitle, picksData || []);
             }
 
             const timeDiv = document.createElement('div');
             timeDiv.className = 'message-time';
             timeDiv.textContent = new Date().toLocaleTimeString('zh-CN', {hour: '2-digit', minute:'2-digit'});
-
             messageDiv.appendChild(timeDiv);
 
             // Remove welcome message if exists
@@ -420,6 +513,138 @@
 
             chatMessages.appendChild(messageDiv);
             chatMessages.scrollTop = chatMessages.scrollHeight;
+            return messageDiv;
+        }
+
+        // Poll for async pick results and update the chart
+        function pollPickTask(taskId, msgEl, waveformData, title, interval = 3000) {
+            // Show spinner on the bubble
+            const bubble = msgEl.querySelector('.message-bubble');
+            const spinner = document.createElement('div');
+            spinner.id = `spinner-${taskId}`;
+            spinner.style.cssText = 'margin-top:8px;color:#667eea;font-size:0.85rem;';
+            spinner.innerHTML = '<span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span> 拾取中，请稍候...';
+            bubble.appendChild(spinner);
+
+            const timer = setInterval(async () => {
+                try {
+                    const res = await fetch(`/api/chat_picks/${taskId}`);
+                    const data = await res.json();
+                    if (data.status === 'running') return; // keep polling
+
+                    clearInterval(timer);
+                    spinner.remove();
+
+                    if (data.status === 'completed') {
+                        const picks = data.picks || [];
+                        // Re-render the chart with picks overlaid
+                        const oldPlot = msgEl.querySelector('div[id^="plotly-"]') ||
+                                        msgEl.querySelector('.js-plotly-plot');
+                        if (oldPlot) oldPlot.remove();
+                        renderWaveform(msgEl, waveformData,
+                            title.replace('拾取中...', '震相拾取结果'), picks);
+
+                        // Append pick summary text
+                        const bubble2 = msgEl.querySelector('.message-bubble');
+                        const summary = document.createElement('div');
+                        summary.style.cssText = 'margin-top:8px;font-size:0.85rem;color:#555;';
+                        summary.innerHTML = picks.length > 0
+                            ? `✓ 检测到 <b>${picks.length}</b> 个震相`
+                            : '⚠️ 未检测到震相';
+                        bubble2.appendChild(summary);
+                    } else {
+                        const bubble2 = msgEl.querySelector('.message-bubble');
+                        const err = document.createElement('div');
+                        err.style.cssText = 'color:#e74c3c;margin-top:8px;font-size:0.85rem;';
+                        err.textContent = `拾取失败: ${data.error || data.status}`;
+                        bubble2.appendChild(err);
+                    }
+                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                } catch(e) {
+                    clearInterval(timer);
+                    spinner.remove();
+                }
+            }, interval);
+        }
+
+        // Poll batch / sage_picker task — shows real-time progress every 3 s
+        function pollBatchTask(taskId, msgEl, picksFile, interval = 3000) {
+            const bubble = msgEl.querySelector('.message-bubble');
+
+            // Progress UI
+            const bar = document.createElement('div');
+            bar.id = `bar-wrap-${taskId}`;
+            bar.style.cssText = 'margin-top:12px;';
+            bar.innerHTML = `
+                <div style="background:#f0f0f0;border-radius:4px;height:10px;overflow:hidden;">
+                    <div id="bar-${taskId}" style="height:100%;width:3%;
+                         background:linear-gradient(90deg,#667eea,#764ba2);
+                         border-radius:4px;transition:width 0.6s ease;"></div>
+                </div>
+                <div id="bar-label-${taskId}"
+                     style="font-size:0.82rem;color:#666;margin-top:5px;line-height:1.5;">
+                    ⏳ 正在初始化拾取器...
+                </div>`;
+            bubble.appendChild(bar);
+
+            const timer = setInterval(async () => {
+                try {
+                    const res = await fetch(`/api/task/${taskId}`);
+                    const data = await res.json();
+
+                    // Update progress bar & label while running
+                    const prog = data.progress || {};
+                    const barEl   = document.getElementById(`bar-${taskId}`);
+                    const labelEl = document.getElementById(`bar-label-${taskId}`);
+
+                    if (data.status === 'running') {
+                        const total   = prog.total   || 0;
+                        const current = prog.current || 0;
+                        const nPicks  = prog.n_picks  || 0;
+                        const sta     = prog.current_station || '';
+                        const pct = total > 0
+                            ? Math.max(3, Math.round(current / total * 100))
+                            : Math.min(30, 3 + (Date.now() % 30000) / 1000);
+                        if (barEl) barEl.style.width = pct + '%';
+                        if (labelEl) {
+                            labelEl.innerHTML = total > 0
+                                ? `⚙️ <b>${current} / ${total}</b> 台站 &nbsp;|&nbsp; 已检出 <b style="color:#764ba2">${nPicks}</b> 个震相` +
+                                  (sta ? `<br><small style="color:#aaa">当前: ${sta}</small>` : '')
+                                : `⏳ 正在读取数据，请稍候...`;
+                        }
+                        return; // keep polling
+                    }
+
+                    // Done
+                    clearInterval(timer);
+                    bar.remove();
+
+                    const summary = document.createElement('div');
+                    summary.style.cssText = 'margin-top:10px;font-size:0.85rem;line-height:1.8;';
+
+                    if (data.status === 'completed') {
+                        const r = data.result || {};
+                        const nSta   = r.n_stations ?? (prog.total   || '?');
+                        const nPicks = r.n_picks    ?? (prog.n_picks  || '?');
+                        const skipped = r.skipped != null ? `，跳过 ${r.skipped} 个台站` : '';
+                        summary.innerHTML =
+                            `✅ <b>批量拾取完成！</b><br>` +
+                            `处理台站: <b>${nSta}</b> &nbsp;|&nbsp; 检出震相: <b style="color:#764ba2">${nPicks}</b>${skipped}<br>` +
+                            `输出文件: <code style="font-size:0.78rem">${picksFile}</code>`;
+                    } else {
+                        const errMsg = data.stderr || data.logs?.stderr || '';
+                        summary.innerHTML =
+                            `❌ <b>拾取失败</b> (${data.status})<br>` +
+                            `<small style="color:#e74c3c">${errMsg.slice(-300)}</small>`;
+                    }
+                    bubble.appendChild(summary);
+                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                } catch(e) {
+                    clearInterval(timer);
+                    const barWrap = document.getElementById(`bar-wrap-${taskId}`);
+                    if (barWrap) barWrap.remove();
+                }
+            }, interval);
         }
 
         // Show/hide typing indicator
@@ -454,8 +679,20 @@
                 const data = await response.json();
                 hideTyping();
 
-                // Add assistant response with image if available
-                addMessage('assistant', data.response, data.image_url || null);
+                // Add assistant response; render waveform + picks inline if available
+                const msgEl = addMessage('assistant', data.response,
+                           data.waveform_data || null,
+                           data.waveform_title || '',
+                           data.picks_data || null);
+
+                // Single-station async picking: poll and overlay picks on waveform
+                if (data.pick_task_id && data.waveform_data) {
+                    pollPickTask(data.pick_task_id, msgEl, data.waveform_data, data.waveform_title || '');
+                }
+                // Batch picking: poll run_task status and show completion summary
+                if (data.pick_task_id && !data.waveform_data) {
+                    pollBatchTask(data.pick_task_id, msgEl, data.picks_file || '');
+                }
 
                 // If there's an action to execute
                 if (data.action === 'execute_command' && data.data && data.data.command) {

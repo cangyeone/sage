@@ -1,279 +1,289 @@
-# 地质解释Agent系统
+# SeismicX
 
-SAGE (Seismological Agent for Guided Exploration) 是一个旨在将先进的大语言模型（LLM）能力与地震学专业物理知识深度融合的智能体系统。
+SeismicX 是一个面向地震学研究的 AI 辅助分析平台，提供基于对话的波形浏览、震相拾取、震相关联与极性分析功能。用户可以通过自然语言（中文/英文）向系统下达指令，无需记忆命令行参数。
 
-## 功能特性
+---
 
-### 1. 地质解释Agent
-- **区域地质分析**: 输入地区名称和描述,自动生成专业地质解释
-- **速度结构分析**: 分析速度剖面图和数据结构,识别地质层位和构造特征
-- **地震剖面解释**: 支持上传地震剖面图像进行自动解释
-- **多区域对比**: 对比不同地区的地质特征
+## 功能概览
 
-### 2. 编程Agent
-- **算法文档解析**: 读取Markdown格式的算法说明文档
-- **自动代码生成**: 根据算法文档自动生成Python实现代码
-- **代码执行**: 安全执行生成的代码
-- **反演/正演**: 支持地球物理反演和正演模拟
+| 功能 | 说明 |
+|------|------|
+| 🗂 波形浏览 | 列出目录下的地震波形文件，支持 SAC / MSEED / SEED 等格式 |
+| 📈 波形可视化 | 在对话窗口内直接渲染三分量交互式波形图（Plotly.js） |
+| 🔍 震相拾取（单台） | 对指定台站的三分量数据进行在线 JIT 模型推理，检测 Pg/Sg/Pn/Sn/P/S 震相并叠加到波形图 |
+| 📂 批量拾取（目录） | 遍历整个目录，自动识别数据格式、分组三分量、批量推理，实时显示进度 |
+| 🔗 震相关联 | 将多台站拾取结果关联为地震事件（FastLink / REAL / Gamma） |
+| 🧭 极性分析 | 分析 P 波初动方向 |
+| ⚙️ 配置自动检测 | 自动识别文件扩展名、采样率、通道索引，更新 `pnsn/config/picker.py` |
 
-### 3. 可视化模块
-- 速度剖面图绘制
-- 二维速度断面图
-- 反演结果可视化
-- 残差分布分析
+---
 
-### 4. 双界面支持
-- **命令行界面(CLI)**: 适合脚本化处理和自动化
-- **Web界面**: 友好的图形界面,支持文件上传和交互式分析
+## 系统要求
 
-## 技术架构
-
-- **AI模型**: Ollama + Qwen3-VL-30B (支持视觉理解)
-- **后端**: Python + FastAPI
-- **科学计算**: NumPy, SciPy
-- **可视化**: Matplotlib, Plotly
-- **前端**: HTML5 + CSS3 + JavaScript
-
-## 安装
-
-### 前置要求
-
-1. Python 3.9+
-2. Ollama (用于运行LLM)
-
-### 安装步骤
+- Python ≥ 3.8
+- PyTorch ≥ 1.9（CPU 即可，GPU 可选）
+- ObsPy ≥ 1.3
+- Flask ≥ 2.0
 
 ```bash
-# 克隆或下载项目
-cd geo_agent
+pip install torch obspy flask numpy scipy
+```
+
+---
+
+## 安装与启动
+
+```bash
+git clone https://github.com/yourname/sage.git
+cd sage
 
 # 安装依赖
-pip install -r requirements.txt
+pip install torch obspy flask numpy scipy
 
-# 或者使用setup.py
-pip install -e .
+# 启动 Web 服务（默认端口 5000）
+python web_app/app.py
+
+# 指定端口和主机
+python web_app/app.py --port 8080 --host 0.0.0.0
 ```
 
-### 配置Ollama
+浏览器访问 `http://localhost:5000`，进入对话界面。
+
+---
+
+## 目录结构
+
+```
+sage/
+├── web_app/
+│   ├── app.py                  # Flask 主服务
+│   └── templates/
+│       └── chat.html           # 对话界面（含 Plotly.js 波形渲染）
+├── pnsn/
+│   ├── sage_picker.py          # 批量拾取核心模块（SagePicker）
+│   ├── picker.py               # 传统命令行批量拾取器
+│   ├── pickers/
+│   │   └── pnsn.v3.jit         # 预训练 JIT 震相拾取模型
+│   ├── config/
+│   │   └── picker.py           # 数据参数配置（自动更新）
+│   └── models/                 # 模型定义（UNet、EQTransformer 等）
+├── conversational_agent.py     # 意图分类 + 技能路由
+├── llm_agent.py                # LLM 对话后端（可选）
+├── config_manager.py           # LLM 提供商配置
+└── results/                    # 拾取输出文件（自动创建）
+```
+
+---
+
+## 使用说明
+
+### 对话式操作
+
+在浏览器对话框中直接输入自然语言，例如：
+
+```
+拾取一下 /data/waveforms 目录下所有的震相
+绘制第 3 个文件的波形
+拾取 X1.53085 台站的震相
+遍历 /data 目录批量拾取震相
+查看当前目录下的 SAC 文件
+```
+
+系统会自动识别意图，调用对应功能。
+
+---
+
+### 批量震相拾取
+
+对话中提及目录路径，系统将：
+
+1. **预扫描**：用 ObsPy 读取目录中所有可识别文件，按 `NET.STA.LOC` 分组
+2. **询问处理方式**（若存在不足三分量台站）：
+   - **跳过**：只处理有完整三分量的台站
+   - **复制**：将现有分量复制补齐，仍可拾取（精度略低）
+3. **后台拾取**：在后台线程中执行，对话界面每 3 秒刷新一次进度
+
+进度显示示例：
+
+```
+⚙️ 12 / 47 台站 | 已检出 89 个震相
+当前: X1.53085.
+```
+
+完成后显示：
+
+```
+✅ 批量拾取完成！
+处理台站: 47 | 检出震相: 312
+输出文件: results/sage_picks_20260422_194512.txt
+```
+
+#### 输出文件格式
+
+```
+##数据格式为:
+##数据位置
+##震相,相对时间（秒）,置信度,绝对时间（%Y-%m-%d %H:%M:%S.%f）,信噪比,振幅均值,台站,初动,初动概率
+#/data/waveforms/X1.53085.
+Pg,12.340,0.923,2022-05-21 07:26:47.340000,8.521,0.000142,X1.53085.,N,0.000
+Sg,22.150,0.871,2022-05-21 07:26:57.150000,6.103,0.000089,X1.53085.,N,0.000
+```
+
+---
+
+### 命令行批量拾取（不使用 Web 界面）
 
 ```bash
-# 启动Ollama服务
-ollama serve
-
-# 拉取所需模型
-ollama pull qwen3-vl:30b
-
-# 验证模型
-ollama list
+cd sage
+python pnsn/sage_picker.py \
+    -i /path/to/data \
+    -o results/my_picks \
+    -m pnsn/pickers/pnsn.v3.jit \
+    --incomplete skip        # 或 duplicate
 ```
 
-### 环境变量配置
+参数说明：
 
-```bash
-# 复制环境变量模板
-cp .env.example .env
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `-i` | 必填 | 输入数据目录 |
+| `-o` | 必填 | 输出文件前缀（自动添加 .txt / .log / .err） |
+| `-m` | 必填 | JIT 模型路径 |
+| `-r` / `--samplerate` | `100` | 目标采样率（Hz） |
+| `-d` / `--device` | `cpu` | 推理设备（`cpu` 或 `cuda`） |
+| `--incomplete` | `skip` | 不足三分量处理：`skip` 跳过 / `duplicate` 复制补齐 |
 
-# 编辑.env文件,配置Ollama地址等参数
-```
+---
 
-## 使用方法
-
-### CLI命令行工具
-
-```bash
-# 检查系统状态
-python main.py check
-
-# 区域地质分析
-python main.py analyze-region --region "塔里木盆地" --description "中国西部大型含油气盆地" --output report.md
-
-# 速度结构分析(带图片)
-python main.py analyze-velocity --image velocity.png --description "某地区速度剖面" --depth-min 0 --depth-max 50
-
-# 从算法文档生成代码
-python main.py generate-code --doc docs/algorithms/linear_inversion.md --output inversion_code.py
-
-# 执行生成的代码
-python main.py execute-code --code inversion_code.py
-
-# 运行反演
-python main.py run-inversion --algorithm algo.md --data data.npy --params '{"reg_weight": 0.01}'
-
-# 创建示例图表
-python main.py create-plot --type velocity-profile --output plot.png
-
-# 启动Web界面
-python main.py web
-```
-
-### Web界面
-
-```bash
-# 启动Web服务
-python main.py web
-
-# 或使用uvicorn直接启动
-uvicorn web.app:app --host 0.0.0.0 --port 8000
-```
-
-然后在浏览器访问: http://localhost:8000
-
-Web界面提供以下功能:
-- 区域地质分析表单
-- 速度结构图上传和分析
-- 算法文档上传和代码生成
-- 反演任务提交和执行
-
-## 项目结构
-
-```
-geo_agent/
-├── agents/                  # Agent模块
-│   ├── geological_interpreter.py  # 地质解释Agent
-│   └── programming_agent.py       # 编程Agent
-├── core/                    # 核心模块
-│   └── ollama_client.py    # Ollama客户端
-├── inversion/               # 反演算法
-│   └── base.py             # 基础反演类
-├── visualization/           # 可视化模块
-│   └── plotter.py          # 绘图工具
-├── utils/                   # 工具函数
-│   └── document_parser.py  # 文档解析器
-├── web/                     # Web应用
-│   ├── app.py              # FastAPI应用
-│   ├── templates/          # HTML模板
-│   └── static/             # 静态文件
-├── cli/                     # 命令行工具
-│   └── main.py             # CLI入口
-├── docs/                    # 文档
-│   └── algorithms/         # 算法文档
-├── data/                    # 数据目录
-├── output/                  # 输出目录
-├── requirements.txt         # Python依赖
-├── .env.example            # 环境变量模板
-└── README.md               # 本文件
-```
-
-## 算法文档格式
-
-编程Agent可以读取Markdown格式的算法文档并自动生成代码。文档应包含:
-
-```markdown
-# 算法名称
-
-## 概述
-算法的简要说明
-
-## 数学原理
-关键公式和推导过程
-
-## 算法步骤
-1. 步骤一
-2. 步骤二
-...
-
-## 参数说明
-- 参数1: 说明
-- 参数2: 说明
-
-## Python实现要点
-代码示例和注意事项
-```
-
-参考示例: `docs/algorithms/linear_inversion.md`
-
-## API接口
-
-### REST API
-
-```
-POST /api/analyze-region          # 区域分析
-POST /api/analyze-velocity        # 速度结构分析
-POST /api/upload-velocity-image   # 上传速度图
-POST /api/generate-code           # 生成代码
-POST /api/execute-code            # 执行代码
-POST /api/run-inversion           # 运行反演
-GET  /api/plot/velocity-profile   # 获取示例图
-GET  /health                      # 健康检查
-```
-
-## 示例工作流
-
-### 示例1: 区域地质分析
+### Python API
 
 ```python
-from agents.geological_interpreter import GeologicalInterpreterAgent
+from pnsn.sage_picker import SagePicker
 
-interpreter = GeologicalInterpreterAgent()
-result = interpreter.analyze_region(
-    region_name="四川盆地",
-    description="中国南方大型沉积盆地"
+picker = SagePicker(
+    model_path='pnsn/pickers/pnsn.v3.jit',
+    samplerate=100.0,
+    device='cpu'
 )
-print(result)
+
+# 预扫描（不加载波形，速度快）
+info = picker.scan_directory('/path/to/data')
+print(f"完整台站: {info['n_complete']}，不足三分量: {info['n_incomplete']}")
+
+# 批量拾取
+result = picker.pick_directory(
+    input_dir='/path/to/data',
+    output_base='results/picks',
+    incomplete='skip',            # 'skip' | 'duplicate'
+    progress_cb=lambda sta, done, total, n_picks:
+        print(f"{done}/{total} {sta}  picks={n_picks}")
+)
+print(f"台站: {result['n_stations']}  震相: {result['n_picks']}")
+print(f"输出: {result['output']}")
 ```
 
-### 示例2: 速度结构分析
+---
+
+## 模型说明
+
+### 默认模型：pnsn.v3.jit
+
+- 格式：PyTorch TorchScript（`.jit`）
+- 输入：`[N, 3]` float32 张量，列顺序为 E / N / Z
+- 输出：`[n_picks, 3]` 张量，每行为 `[phase_type, sample_index, confidence]`
+- 采样率：100 Hz
+- 震相类型编码：
+
+| 编码 | 震相 |
+|------|------|
+| 0 | Pg |
+| 1 | Sg |
+| 2 | Pn |
+| 3 | Sn |
+| 4 | P |
+| 5 | S |
+
+### 更换模型
+
+在对话中指定模型名称，或修改 `pnsn/config/picker.py`。系统每次批量拾取前会自动重新检测数据格式并更新配置文件。
+
+---
+
+## 支持的数据格式
+
+系统使用 ObsPy 读取波形，凡是 ObsPy 支持的格式均可使用，包括但不限于：
+
+- **SAC**（`.sac`）
+- **MiniSEED**（`.mseed`、`.miniseed`、`.MSEED`）
+- **SEED**（`.seed`）
+
+文件命名无强制要求，系统通过 ObsPy 直接解析文件头获取网络、台站、通道等元数据。推荐文件名格式：
+
+```
+NET.STA.LOC.CHANNEL.D.YYYYMMDDHHMMSS.sac
+例：X1.53085.01.BHZ.D.20220521072623.sac
+```
+
+---
+
+## 配置文件
+
+`pnsn/config/picker.py` 在每次批量拾取前由系统自动更新，也可手动修改：
 
 ```python
-result = interpreter.analyze_velocity_structure(
-    structure_description="某地区速度随深度增加而增大",
-    image_path="velocity_section.png",
-    depth_range=(0, 50)
-)
+class Parameter:
+    nchannel   = 3              # 通道数
+    samplerate = 100            # 采样率（Hz）
+    prob       = 0.3            # 拾取概率阈值
+    nmslen     = 1000           # NMS 窗口长度（采样点）
+    filenametag = ".sac"        # 文件扩展名
+    namekeyindex = [0, 1]       # NET/STA 在文件名中的字段索引
+    channelindex = 3            # 通道名在文件名中的字段索引
+    chnames    = [['BHE','BHN','BHZ']]   # 有效通道组合
+    bandpass   = [1, 10]        # 信噪比计算带通滤波范围（Hz）
 ```
 
-### 示例3: 自动生成反演代码
-
-```python
-from agents.programming_agent import ProgrammingAgent
-
-prog_agent = ProgrammingAgent()
-code = prog_agent.generate_code_from_markdown(
-    markdown_path="docs/algorithms/linear_inversion.md",
-    task_description="实现线性反演,处理地震走时数据"
-)
-
-# 保存并执行
-with open("my_inversion.py", "w") as f:
-    f.write(code)
-
-result = prog_agent.execute_code(code)
-```
-
-## 开发指南
-
-### 添加新的反演算法
-
-1. 在 `inversion/` 目录下创建新模块
-2. 继承 `InversionAlgorithm` 基类
-3. 实现 `forward()` 和 `invert()` 方法
-4. 编写算法文档放到 `docs/algorithms/`
-
-### 扩展Agent功能
-
-1. 在 `agents/` 目录下创建新Agent
-2. 使用 `OllamaClient` 进行AI交互
-3. 在CLI和Web中添加对应接口
+---
 
 ## 常见问题
 
-### Q: Ollama连接失败?
-A: 确保Ollama服务已启动 (`ollama serve`),并且模型已下载 (`ollama pull qwen3-vl:30b`)
+**Q：对话时说"我需要更多信息"？**  
+A：确保消息中包含完整的目录路径（以 `/` 开头），例如 `拾取 /data/ev001 目录下所有震相`。
 
-### Q: 生成的代码执行出错?
-A: 检查算法文档是否清晰完整,可以在任务描述中提供更多细节
+**Q：拾取进度条一直不动？**  
+A：数据量大时，系统首先需要遍历并读取所有文件头（预扫描阶段），完成后进度条才开始更新。如目录中有大量非地震数据文件，此步骤可能略慢。
 
-### Q: 如何更换AI模型?
-A: 修改 `.env` 文件中的 `OLLAMA_MODEL` 参数,或使用其他支持vision的模型
+**Q：批量拾取结果为 0 个震相？**  
+A：检查同路径下的 `.err` 文件，其中记录了每个台站失败的原因。常见原因：三分量时间不重叠、数据段过短、重采样后长度不足。
+
+**Q：如何使用 GPU 加速？**  
+A：安装 CUDA 版 PyTorch 后，在命令行参数中添加 `-d cuda`，或在 `SagePicker` 初始化时指定 `device='cuda'`。
+
+---
+
+## 开发说明
+
+### 新增模型
+
+1. 将模型转换为 TorchScript：参考 `pnsn/makejit.*.py` 系列脚本
+2. 将 `.jit` 文件放入 `pnsn/pickers/`
+3. 在对话中指定模型名称即可调用
+
+### 修改意图识别
+
+编辑 `conversational_agent.py` 中 `IntentClassifier.intent_patterns`，添加新的关键词和正则模式。
+
+### Web API 接口
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/chat` | POST | 对话接口，接收 `{"message": "..."}` |
+| `/api/task/<task_id>` | GET | 查询后台任务状态与实时进度 |
+| `/api/chat_picks/<task_id>` | GET | 查询单台拾取结果（含解析后的 picks 列表） |
+| `/api/tasks` | GET | 列出所有任务 |
+
+---
 
 ## 许可证
 
 MIT License
-
-## 贡献
-
-欢迎提交Issue和Pull Request!
-
-## 联系方式
-
-如有问题或建议,请提交Issue。
