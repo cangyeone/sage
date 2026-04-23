@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>知识库 — SeismicX</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+<style>
+:root { --accent: #667eea; --accent2: #764ba2; }
+body { background: #f5f7fa; min-height: 100vh; }
+.navbar { background: #fff !important; box-shadow: 0 2px 10px rgba(0,0,0,.08); }
+.navbar-brand span { background: linear-gradient(135deg,var(--accent),var(--accent2));
+  -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+
+.page-header { background: linear-gradient(135deg,var(--accent),var(--accent2));
+  color:#fff; padding: 2rem 0 1.5rem; }
+
+/* Drop zone */
+.drop-zone {
+  border: 2.5px dashed #c5cae9; border-radius: 14px;
+  background: #fff; padding: 2.5rem 1rem; text-align: center;
+  cursor: pointer; transition: all .25s;
+}
+.drop-zone.dragover { border-color: var(--accent); background: #f0f2ff; }
+.drop-zone i { font-size: 3rem; color: var(--accent); margin-bottom: .75rem; }
+
+/* Doc card */
+.doc-card {
+  background: #fff; border-radius: 12px; padding: 1rem 1.25rem;
+  box-shadow: 0 2px 8px rgba(0,0,0,.06); margin-bottom: .75rem;
+  display: flex; align-items: center; gap: 1rem; transition: box-shadow .2s;
+}
+.doc-card:hover { box-shadow: 0 4px 16px rgba(0,0,0,.1); }
+.doc-icon { font-size: 1.8rem; color: #e53935; flex-shrink: 0; }
+.doc-info { flex: 1; min-width: 0; }
+.doc-name { font-weight: 600; color: #333; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.doc-meta { font-size: .8rem; color: #888; margin-top: .2rem; }
+.btn-del { background: none; border: none; color: #bbb; font-size: 1.1rem;
+  padding: .2rem .5rem; border-radius: 6px; transition: all .2s; }
+.btn-del:hover { color: #e53935; background: #fce4e4; }
+
+/* Status bar */
+.stat-pill { background: linear-gradient(135deg,var(--accent),var(--accent2));
+  color:#fff; border-radius:20px; padding:.35rem 1rem;
+  font-size:.82rem; font-weight:600; }
+
+/* Upload queue */
+.upload-item { display:flex; align-items:center; gap:.75rem; padding:.5rem 0;
+  border-bottom:1px solid #f0f0f0; }
+.upload-item:last-child { border-bottom:none; }
+.progress-sm { height:6px; border-radius:3px; }
+</style>
+</head>
+<body>
+<!-- Nav -->
+<nav class="navbar navbar-expand-lg navbar-light">
+  <div class="container">
+    <a class="navbar-brand" href="/chat">
+      <i class="bi bi-activity text-primary"></i>
+      <span><strong>SeismicX</strong></span>
+    </a>
+    <div class="collapse navbar-collapse">
+      <ul class="navbar-nav ms-auto gap-1">
+        <li class="nav-item"><a class="nav-link" href="/chat"><i class="bi bi-chat-dots"></i> 对话</a></li>
+        <li class="nav-item"><a class="nav-link active fw-bold" href="/knowledge"><i class="bi bi-journal-bookmark-fill"></i> 知识库</a></li>
+        <li class="nav-item"><a class="nav-link" href="/skills"><i class="bi bi-lightning-charge"></i> 技能</a></li>
+        <li class="nav-item"><a class="nav-link" href="/llm-settings"><i class="bi bi-cpu"></i> LLM</a></li>
+      </ul>
+    </div>
+  </div>
+</nav>
+
+<!-- Header -->
+<div class="page-header">
+  <div class="container">
+    <h4 class="mb-1"><i class="bi bi-journal-bookmark-fill me-2"></i>文献知识库</h4>
+    <p class="mb-0 opacity-75" style="font-size:.9rem">
+      上传 PDF 文献，使用 BGE-M3 向量化后供 RAG 对话检索
+    </p>
+  </div>
+</div>
+
+<div class="container mt-4">
+  <div class="row g-4">
+
+    <!-- Left: upload + status -->
+    <div class="col-lg-4">
+      <!-- Status card -->
+      <div class="card border-0 shadow-sm mb-3">
+        <div class="card-body py-3">
+          <div class="d-flex align-items-center justify-content-between mb-2">
+            <h6 class="mb-0 fw-bold text-muted">知识库状态</h6>
+            <button class="btn btn-sm btn-outline-secondary" onclick="refreshStatus()">
+              <i class="bi bi-arrow-clockwise"></i>
+            </button>
+          </div>
+          <div class="d-flex gap-2 flex-wrap" id="statusPills">
+            <span class="stat-pill" id="pillDocs">0 篇文献</span>
+            <span class="stat-pill" id="pillChunks">0 个片段</span>
+          </div>
+          <div class="mt-2" id="embStatus" style="font-size:.8rem;color:#888;">检查中…</div>
+        </div>
+      </div>
+
+      <!-- Drop zone -->
+      <div class="card border-0 shadow-sm mb-3">
+        <div class="card-body">
+          <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+            <i class="bi bi-cloud-arrow-up"></i>
+            <div class="fw-semibold mt-1">拖拽 PDF 到此处上传</div>
+            <div class="text-muted" style="font-size:.85rem;">或点击选择文件（可多选）</div>
+          </div>
+          <input type="file" id="fileInput" accept=".pdf" multiple style="display:none" onchange="handleFiles(this.files)">
+          <div id="uploadQueue" class="mt-3" style="display:none">
+            <div class="fw-semibold mb-2" style="font-size:.85rem;">上传队列</div>
+            <div id="uploadList"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Clear all -->
+      <button class="btn btn-outline-danger w-100" onclick="clearAll()">
+        <i class="bi bi-trash3"></i> 清空知识库
+      </button>
+    </div>
+
+    <!-- Right: document list -->
+    <div class="col-lg-8">
+      <div class="d-flex align-items-center justify-content-between mb-3">
+        <h6 class="mb-0 fw-bold text-muted">已索引文献</h6>
+        <span class="badge bg-secondary" id="docCount">0 篇</span>
+      </div>
+      <div id="docList">
+        <div class="text-center text-muted py-5" id="emptyHint">
+          <i class="bi bi-inbox" style="font-size:2.5rem;opacity:.3;"></i>
+          <div class="mt-2">知识库为空，上传 PDF 文献开始构建</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index:9999">
+  <div id="toast" class="toast align-items-center text-bg-success border-0" role="alert">
+    <div class="d-flex">
+      <div class="toast-body" id="toastMsg">操作成功</div>
+      <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+const dropZone = document.getElementById('dropZone');
+const uploadQueue = document.getElementById('uploadQueue');
+const uploadList  = document.getElementById('uploadList');
+const docList     = document.getElementById('docList');
+
+// ── Drag & Drop ────────────────────────────────────────────────────────────
+['dragenter','dragover'].forEach(e => dropZone.addEventListener(e, ev => {
+  ev.preventDefault(); dropZone.classList.add('dragover');
+}));
+['dragleave','drop'].forEach(e => dropZone.addEventListener(e, ev => {
+  ev.preventDefault(); dropZone.classList.remove('dragover');
+}));
+dropZone.addEventListener('drop', ev => {
+  ev.preventDefault();
+  handleFiles(ev.dataTransfer.files);
+});
+
+// ── Status ─────────────────────────────────────────────────────────────────
+async function refreshStatus() {
+  try {
+    const r = await fetch('/api/knowledge/status');
+    const d = await r.json();
+    document.getElementById('pillDocs').textContent   = `${d.n_docs} 篇文献`;
+    document.getElementById('pillChunks').textContent = `${d.n_vectors || d.n_chunks} 个片段`;
+    document.getElementById('embStatus').textContent  = d.ok
+      ? `存储路径：${d.kb_dir}`
+      : `⚠ ${d.error}`;
+  } catch(e) {
+    document.getElementById('embStatus').textContent = '无法连接后端';
+  }
+}
+
+async function loadDocs() {
+  const r = await fetch('/api/knowledge/list');
+  const d = await r.json();
+  document.getElementById('docCount').textContent = `${(d.docs||[]).length} 篇`;
+
+  if (!d.docs || d.docs.length === 0) {
+    docList.innerHTML = `<div class="text-center text-muted py-5" id="emptyHint">
+      <i class="bi bi-inbox" style="font-size:2.5rem;opacity:.3;"></i>
+      <div class="mt-2">知识库为空，上传 PDF 文献开始构建</div></div>`;
+    return;
+  }
+
+  docList.innerHTML = d.docs.map(doc => `
+    <div class="doc-card" id="doc-${doc.doc_id}">
+      <div class="doc-icon"><i class="bi bi-file-earmark-pdf-fill"></i></div>
+      <div class="doc-info">
+        <div class="doc-name" title="${doc.doc_name}">${doc.doc_name}</div>
+        <div class="doc-meta">
+          ${doc.n_pages} 页 &nbsp;·&nbsp; ${doc.n_chunks} 片段 &nbsp;·&nbsp;
+          ${doc.size_kb} KB &nbsp;·&nbsp;
+          ${new Date(doc.added_at).toLocaleDateString('zh-CN')}
+        </div>
+      </div>
+      <button class="btn-del" title="删除" onclick="deleteDoc('${doc.doc_id}','${doc.doc_name}')">
+        <i class="bi bi-trash"></i>
+      </button>
+    </div>
+  `).join('');
+}
+
+// ── Upload ─────────────────────────────────────────────────────────────────
+async function handleFiles(files) {
+  if (!files || files.length === 0) return;
+  uploadQueue.style.display = 'block';
+  uploadList.innerHTML = '';
+
+  for (const file of files) {
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
+      showToast(`跳过非PDF文件：${file.name}`, 'warning'); continue;
+    }
+    const itemId = 'upl_' + Date.now() + Math.random().toString(36).slice(2,6);
+    uploadList.innerHTML += `
+      <div class="upload-item" id="${itemId}">
+        <i class="bi bi-file-earmark-pdf text-danger"></i>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:.85rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${file.name}</div>
+          <div class="progress progress-sm mt-1">
+            <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary"
+                 id="${itemId}_bar" style="width:5%"></div>
+          </div>
+          <div id="${itemId}_status" style="font-size:.75rem;color:#888;margin-top:.2rem">准备上传…</div>
+        </div>
+      </div>`;
+
+    await uploadFile(file, itemId);
+  }
+  loadDocs();
+  refreshStatus();
+}
+
+async function uploadFile(file, itemId) {
+  const bar    = document.getElementById(itemId + '_bar');
+  const status = document.getElementById(itemId + '_status');
+
+  const fd = new FormData();
+  fd.append('file', file);
+  status.textContent = '上传中…';
+  bar.style.width    = '20%';
+
+  try {
+    const r  = await fetch('/api/knowledge/upload', {method:'POST', body: fd});
+    const d  = await r.json();
+    if (!d.ok) throw new Error(d.error);
+
+    bar.style.width   = '40%';
+    status.textContent = 'BGE-M3 向量化中…';
+
+    // Poll index task
+    await pollIndexTask(d.task_id, bar, status);
+  } catch(e) {
+    bar.style.width           = '100%';
+    bar.className             = 'progress-bar bg-danger';
+    status.textContent        = `✗ ${e.message}`;
+  }
+}
+
+async function pollIndexTask(taskId, bar, status) {
+  while (true) {
+    await new Promise(r => setTimeout(r, 1500));
+    const r = await fetch(`/api/knowledge/index_status/${taskId}`);
+    const d = await r.json();
+    if (d.status === 'completed') {
+      bar.style.width = '100%';
+      bar.className   = 'progress-bar bg-success';
+      status.textContent = `✅ 索引完成，${d.n_chunks} 个片段`;
+      return;
+    }
+    if (d.status === 'error') {
+      bar.style.width = '100%';
+      bar.className   = 'progress-bar bg-danger';
+      status.textContent = `✗ ${d.error}`;
+      return;
+    }
+    // still running — animate
+    const w = parseInt(bar.style.width) || 40;
+    bar.style.width = Math.min(w + 5, 90) + '%';
+  }
+}
+
+// ── Delete / Clear ─────────────────────────────────────────────────────────
+async function deleteDoc(docId, docName) {
+  if (!confirm(`确认删除「${docName}」？`)) return;
+  const r = await fetch(`/api/knowledge/delete/${docId}`, {method:'DELETE'});
+  const d = await r.json();
+  if (d.ok) {
+    document.getElementById('doc-' + docId)?.remove();
+    showToast(`已删除：${docName}`);
+    refreshStatus(); loadDocs();
+  } else {
+    showToast(`删除失败：${d.error}`, 'danger');
+  }
+}
+
+async function clearAll() {
+  if (!confirm('确认清空整个知识库？此操作不可恢复。')) return;
+  const r = await fetch('/api/knowledge/clear', {method:'POST'});
+  const d = await r.json();
+  if (d.ok) { showToast('知识库已清空'); loadDocs(); refreshStatus(); }
+  else showToast(`失败：${d.error}`, 'danger');
+}
+
+function showToast(msg, type='success') {
+  const t = document.getElementById('toast');
+  document.getElementById('toastMsg').textContent = msg;
+  t.className = `toast align-items-center text-bg-${type} border-0`;
+  new bootstrap.Toast(t, {delay:3000}).show();
+}
+
+// Init
+refreshStatus();
+loadDocs();
+</script>
+</body>
+</html>

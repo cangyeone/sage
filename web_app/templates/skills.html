@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>技能管理 — SeismicX</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css">
+<style>
+:root { --accent:#667eea; --accent2:#764ba2; --grad:linear-gradient(135deg,var(--accent),var(--accent2)); }
+body { background:#f5f7fa; min-height:100vh; }
+.navbar { background:#fff !important; box-shadow:0 2px 10px rgba(0,0,0,.08); }
+.navbar-brand span { background:var(--grad); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+
+.page-header { background:var(--grad); color:#fff; padding:1.75rem 0 1.4rem; }
+.page-header p { opacity:.8; font-size:.9rem; }
+
+/* Layout */
+.skills-layout { display:flex; gap:1.25rem; align-items:flex-start; }
+.skill-list-col { width:260px; flex-shrink:0; }
+.skill-editor-col { flex:1; min-width:0; }
+
+/* Skill card */
+.skill-card {
+  border:1px solid #e5e5e5; border-radius:10px; padding:.65rem .9rem;
+  margin-bottom:.5rem; cursor:pointer; transition:all .15s; background:#fff;
+  display:flex; align-items:center; gap:.6rem;
+}
+.skill-card:hover { border-color:var(--accent); background:#f8f9ff; }
+.skill-card.active { border-color:var(--accent); background:#eef0ff; box-shadow:0 0 0 2px rgba(102,126,234,.2); }
+.skill-icon { font-size:1.1rem; flex-shrink:0; }
+.skill-info { flex:1; min-width:0; }
+.skill-name { font-size:.88rem; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.skill-cat { font-size:.72rem; color:#999; }
+.skill-src { font-size:.7rem; padding:.1rem .45rem; border-radius:8px; flex-shrink:0; }
+.src-builtin { background:#f0f0f0; color:#888; }
+.src-user { background:#e8f5e9; color:#2e7d32; font-weight:600; }
+
+/* Editor panel */
+.editor-panel { background:#fff; border-radius:12px; border:1px solid #e5e5e5; overflow:hidden; }
+.editor-tabs { display:flex; border-bottom:1px solid #eee; background:#fafafa; }
+.etab { padding:.55rem 1.1rem; font-size:.85rem; cursor:pointer; border:none; background:none;
+  color:#888; border-bottom:2px solid transparent; transition:all .15s; }
+.etab.active { color:var(--accent); font-weight:600; border-bottom-color:var(--accent); background:#fff; }
+.etab:hover:not(.active) { color:#555; background:#f0f2ff; }
+
+#mdEditor {
+  width:100%; border:none; outline:none; resize:none; padding:1rem 1.1rem;
+  font-family:'Menlo','Courier New',monospace; font-size:.84rem; line-height:1.6;
+  background:#fff; min-height:420px; color:#333;
+}
+.preview-pane {
+  padding:1rem 1.25rem; min-height:420px; overflow-y:auto;
+  font-size:.9rem; line-height:1.65; color:#333;
+}
+.preview-pane h1,.preview-pane h2,.preview-pane h3 { font-weight:700; color:#222; }
+.preview-pane h2 { font-size:1.1em; border-bottom:1px solid #eee; padding-bottom:.3rem; margin-top:1rem; }
+.preview-pane h3 { font-size:1em; color:#444; }
+.preview-pane code { background:#f0f0f0; padding:1px 5px; border-radius:4px; font-size:.86em; color:#c7254e; }
+.preview-pane pre { background:#f6f8fa; border:1px solid #e0e0e0; border-radius:8px; padding:.75rem 1rem; overflow-x:auto; }
+.preview-pane pre code { background:none; padding:0; color:inherit; }
+.preview-pane blockquote { border-left:3px solid var(--accent); padding:.3rem .8rem; background:#f8f9ff; color:#555; }
+.preview-pane table { border-collapse:collapse; width:100%; font-size:.88em; }
+.preview-pane th { background:#f0f2ff; }
+.preview-pane th, .preview-pane td { border:1px solid #dde; padding:.3rem .6rem; }
+.preview-pane hr { border:none; border-top:1px solid #eee; }
+
+.editor-toolbar {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:.5rem .9rem; border-top:1px solid #eee; background:#fafafa;
+}
+.btn-accent {
+  background:var(--grad); color:#fff; border:none; border-radius:20px;
+  padding:.4rem 1.25rem; font-size:.84rem; font-weight:600;
+}
+.btn-accent:hover { opacity:.9; color:#fff; }
+
+/* Empty state */
+.empty-state { text-align:center; padding:3rem 1rem; color:#aaa; }
+.empty-state i { font-size:2.5rem; display:block; margin-bottom:.75rem; }
+
+/* Keywords input */
+.kw-pill { display:inline-flex; align-items:center; gap:.3rem; background:#e8eaf6;
+  color:#3949ab; border-radius:10px; padding:.15rem .55rem; font-size:.78rem; margin:.15rem; }
+.kw-pill button { border:none; background:none; color:#9fa8da; font-size:.8rem; padding:0 1px; line-height:1; }
+
+/* Toast */
+.toast-wrap { position:fixed; bottom:1.5rem; right:1.5rem; z-index:9999; display:flex; flex-direction:column; gap:.5rem; }
+.toast-item { background:#333; color:#fff; border-radius:8px; padding:.55rem 1rem;
+  font-size:.84rem; animation:slideUp .2s ease; min-width:200px; max-width:320px; }
+.toast-item.ok { background:#2e7d32; }
+.toast-item.err { background:#c62828; }
+@keyframes slideUp { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:none} }
+
+.new-btn { border:1px dashed #ccc; background:#fafafa; border-radius:10px;
+  padding:.55rem; font-size:.82rem; color:#888; text-align:center; cursor:pointer; transition:all .15s; }
+.new-btn:hover { border-color:var(--accent); color:var(--accent); background:#f0f2ff; }
+
+.skill-dir-hint { font-size:.75rem; color:#aaa; padding:.3rem .4rem; word-break:break-all; }
+</style>
+</head>
+<body>
+<!-- Nav -->
+<nav class="navbar navbar-expand-lg navbar-light">
+  <div class="container-fluid px-4">
+    <a class="navbar-brand" href="/chat">
+      <i class="bi bi-activity text-primary"></i>
+      <span><strong>SeismicX</strong></span>
+    </a>
+    <div class="collapse navbar-collapse">
+      <ul class="navbar-nav ms-auto gap-1">
+        <li class="nav-item"><a class="nav-link" href="/chat"><i class="bi bi-chat-dots"></i> 对话</a></li>
+        <li class="nav-item"><a class="nav-link" href="/knowledge"><i class="bi bi-journal-bookmark-fill"></i> 知识库</a></li>
+        <li class="nav-item"><a class="nav-link active fw-bold" href="/skills"><i class="bi bi-lightning-charge"></i> 技能</a></li>
+        <li class="nav-item"><a class="nav-link" href="/llm-settings"><i class="bi bi-cpu"></i> LLM</a></li>
+      </ul>
+    </div>
+  </div>
+</nav>
+
+<!-- Header -->
+<div class="page-header">
+  <div class="container-fluid px-4">
+    <h4 class="mb-1"><i class="bi bi-lightning-charge me-2"></i>技能管理</h4>
+    <p class="mb-0">查看内置技能文档，新建或编辑自定义技能，对话时 AI 会自动参考匹配的技能说明</p>
+  </div>
+</div>
+
+<div class="container-fluid px-4 mt-4">
+  <div class="skills-layout">
+    <!-- Left: skill list -->
+    <div class="skill-list-col">
+      <div class="d-flex align-items-center justify-content-between mb-2">
+        <span class="fw-semibold text-muted" style="font-size:.82rem;text-transform:uppercase;letter-spacing:.05em">
+          <i class="bi bi-list-ul me-1"></i>技能列表
+        </span>
+        <span id="skillCount" class="badge bg-light text-muted" style="font-size:.72rem;">…</span>
+      </div>
+
+      <div class="new-btn mb-2" onclick="newSkill()">
+        <i class="bi bi-plus-lg me-1"></i>新建自定义技能
+      </div>
+
+      <div id="skillList"></div>
+
+      <div class="skill-dir-hint mt-2">
+        <i class="bi bi-folder2 me-1"></i>自定义技能存储于：
+        <br><code id="userSkillDir">~/.seismicx/skills/</code>
+      </div>
+    </div>
+
+    <!-- Right: editor / preview -->
+    <div class="skill-editor-col">
+      <!-- Empty state -->
+      <div class="empty-state" id="emptyState">
+        <i class="bi bi-lightning-charge"></i>
+        <div class="fw-semibold mb-1">点击左侧技能查看详情</div>
+        <div style="font-size:.84rem">或点击「新建自定义技能」创建你自己的技能文档</div>
+      </div>
+
+      <!-- Editor panel -->
+      <div class="editor-panel" id="editorPanel" style="display:none">
+        <!-- Header row -->
+        <div class="d-flex align-items-center justify-content-between px-3 py-2 border-bottom">
+          <div class="d-flex align-items-center gap-2">
+            <span id="editorTitle" class="fw-bold" style="font-size:.95rem"></span>
+            <span id="editorSrcBadge" class="skill-src"></span>
+          </div>
+          <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-outline-secondary" id="editBtn" onclick="enableEdit()" title="编辑">
+              <i class="bi bi-pencil"></i> 编辑
+            </button>
+            <button class="btn btn-sm btn-outline-danger" id="deleteBtn" onclick="deleteSkill()" title="删除（仅自定义）"
+                    style="display:none">
+              <i class="bi bi-trash"></i>
+            </button>
+          </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="editor-tabs">
+          <button class="etab active" id="tabEdit" onclick="switchTab('edit')">
+            <i class="bi bi-code-slash me-1"></i>编辑
+          </button>
+          <button class="etab" id="tabPreview" onclick="switchTab('preview')">
+            <i class="bi bi-eye me-1"></i>预览
+          </button>
+        </div>
+
+        <!-- Edit pane -->
+        <div id="paneEdit">
+          <textarea id="mdEditor" spellcheck="false" placeholder="在此输入 Markdown 技能文档…"
+                    oninput="onEditorInput()" readonly></textarea>
+        </div>
+
+        <!-- Preview pane -->
+        <div id="panePreview" class="preview-pane" style="display:none"></div>
+
+        <!-- Toolbar -->
+        <div class="editor-toolbar">
+          <div style="font-size:.78rem; color:#aaa" id="editorHint">选择技能后可查看详情</div>
+          <div class="d-flex gap-2" id="saveRow" style="display:none !important">
+            <button class="btn btn-sm btn-outline-secondary" onclick="cancelEdit()">取消</button>
+            <button class="btn-accent btn" onclick="saveSkill()"><i class="bi bi-cloud-check me-1"></i>保存技能</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- New skill name modal -->
+      <div class="modal fade" id="newSkillModal" tabindex="-1">
+        <div class="modal-dialog modal-sm">
+          <div class="modal-content">
+            <div class="modal-header py-2">
+              <h6 class="modal-title mb-0"><i class="bi bi-plus-lg me-1"></i>新建技能</h6>
+              <button type="button" class="btn-close btn-sm" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+              <div class="mb-2">
+                <label class="form-label small fw-semibold">技能 ID（英文下划线）</label>
+                <input type="text" class="form-control form-control-sm" id="newSkillName"
+                       placeholder="my_custom_skill" pattern="[\w\-]+"
+                       oninput="this.value=this.value.replace(/[^\w\-]/g,'_')">
+              </div>
+              <div class="mb-2">
+                <label class="form-label small fw-semibold">标题（中文）</label>
+                <input type="text" class="form-control form-control-sm" id="newSkillTitle" placeholder="我的自定义技能">
+              </div>
+              <div class="mb-2">
+                <label class="form-label small fw-semibold">关键词（逗号分隔）</label>
+                <input type="text" class="form-control form-control-sm" id="newSkillKeywords"
+                       placeholder="keyword1, 关键词2">
+              </div>
+              <div class="mb-0">
+                <label class="form-label small fw-semibold">简短描述</label>
+                <input type="text" class="form-control form-control-sm" id="newSkillDesc" placeholder="功能描述">
+              </div>
+            </div>
+            <div class="modal-footer py-2">
+              <button class="btn btn-sm btn-secondary" data-bs-dismiss="modal">取消</button>
+              <button class="btn-accent btn btn-sm" onclick="createSkillFromModal()">创建</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast-wrap" id="toastWrap"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/highlight.min.js"></script>
+<script>
+// ── Marked config ──────────────────────────────────────────────────────────
+marked.setOptions({
+  breaks: true, gfm: true,
+  highlight: (code, lang) => {
+    if (lang && hljs.getLanguage(lang)) {
+      try { return hljs.highlight(code, {language: lang}).value; } catch(_){}
+    }
+    return hljs.highlightAuto(code).value;
+  }
+});
+
+// ── State ──────────────────────────────────────────────────────────────────
+let skills = [];
+let currentSkill = null;
+let editMode = false;
+let originalText = '';
+
+// ── Init ───────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  loadSkills();
+});
+
+async function loadSkills() {
+  try {
+    const r = await fetch('/api/skills');
+    const d = await r.json();
+    if (!d.ok) { toast('加载失败: ' + d.error, 'err'); return; }
+    skills = d.skills;
+    renderList();
+  } catch(e) { toast('网络错误', 'err'); }
+}
+
+function renderList() {
+  const list = document.getElementById('skillList');
+  document.getElementById('skillCount').textContent = skills.length + ' 个';
+
+  const catIcons = {
+    waveform: '🌊', visualization: '📊', analysis: '🔬',
+    statistics: '📈', custom: '⚡', '': '📄'
+  };
+
+  let html = '';
+  // Group: user first, then builtin
+  const userSkills = skills.filter(s => s.source === 'user');
+  const builtinSkills = skills.filter(s => s.source === 'builtin');
+
+  if (userSkills.length) {
+    html += `<div class="text-muted mb-1 mt-2" style="font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;padding:0 .25rem">
+      <i class="bi bi-person-gear me-1"></i>自定义</div>`;
+    userSkills.forEach(s => html += skillCardHtml(s, catIcons));
+  }
+
+  if (builtinSkills.length) {
+    html += `<div class="text-muted mb-1 mt-2" style="font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;padding:0 .25rem">
+      <i class="bi bi-box-seam me-1"></i>内置</div>`;
+    builtinSkills.forEach(s => html += skillCardHtml(s, catIcons));
+  }
+
+  list.innerHTML = html;
+
+  if (currentSkill) {
+    const el = document.querySelector(`.skill-card[data-name="${currentSkill.name}"]`);
+    if (el) el.classList.add('active');
+  }
+}
+
+function skillCardHtml(s, catIcons) {
+  const icon = catIcons[s.category] || '📄';
+  const srcClass = s.source === 'user' ? 'src-user' : 'src-builtin';
+  const srcLabel = s.source === 'user' ? '自定义' : '内置';
+  const isActive = currentSkill && currentSkill.name === s.name ? 'active' : '';
+  return `<div class="skill-card ${isActive}" data-name="${s.name}" onclick="openSkill('${s.name}')">
+    <span class="skill-icon">${icon}</span>
+    <div class="skill-info">
+      <div class="skill-name">${s.name}</div>
+      <div class="skill-cat">${s.category || '—'}</div>
+    </div>
+    <span class="skill-src ${srcClass}">${srcLabel}</span>
+  </div>`;
+}
+
+// ── Open / view skill ──────────────────────────────────────────────────────
+async function openSkill(name) {
+  // Deactivate edit mode first
+  if (editMode) { cancelEdit(); }
+
+  const skill = skills.find(s => s.name === name);
+  if (!skill) return;
+  currentSkill = skill;
+  editMode = false;
+
+  // Mark active
+  document.querySelectorAll('.skill-card').forEach(el => el.classList.remove('active'));
+  document.querySelector(`.skill-card[data-name="${name}"]`)?.classList.add('active');
+
+  // Load full text
+  try {
+    const r = await fetch(`/api/skills/${encodeURIComponent(name)}`);
+    const d = await r.json();
+    if (!d.ok) { toast(d.error, 'err'); return; }
+    originalText = d.full_text || '';
+  } catch(_) {
+    originalText = '';
+  }
+
+  // Show panel
+  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('editorPanel').style.display = '';
+
+  document.getElementById('editorTitle').textContent = name;
+  const badge = document.getElementById('editorSrcBadge');
+  badge.className = 'skill-src ' + (skill.source === 'user' ? 'src-user' : 'src-builtin');
+  badge.textContent = skill.source === 'user' ? '自定义' : '内置';
+
+  // Edit / delete buttons
+  document.getElementById('editBtn').style.display = '';
+  document.getElementById('deleteBtn').style.display = skill.source === 'user' ? '' : 'none';
+
+  // Load into editor (read-only)
+  const ta = document.getElementById('mdEditor');
+  ta.value = originalText;
+  ta.readOnly = true;
+  ta.style.background = '#fafafa';
+  ta.style.color = '#666';
+
+  document.getElementById('saveRow').style.display = 'none';
+  document.getElementById('editorHint').textContent =
+    skill.source === 'user' ? '点击「编辑」修改此技能' : '内置技能只读，可复制后创建自定义版本';
+
+  switchTab('edit');
+}
+
+// ── Edit mode ──────────────────────────────────────────────────────────────
+function enableEdit() {
+  if (!currentSkill || currentSkill.source !== 'user') {
+    toast('内置技能不可编辑，请新建自定义技能', 'err');
+    return;
+  }
+  editMode = true;
+  const ta = document.getElementById('mdEditor');
+  ta.readOnly = false;
+  ta.style.background = '#fff';
+  ta.style.color = '#333';
+  ta.focus();
+  document.getElementById('saveRow').style.display = '';
+  document.getElementById('editorHint').textContent = '编辑 Markdown，支持实时预览';
+  document.getElementById('editBtn').style.display = 'none';
+}
+
+function cancelEdit() {
+  editMode = false;
+  const ta = document.getElementById('mdEditor');
+  ta.value = originalText;
+  ta.readOnly = true;
+  ta.style.background = '#fafafa';
+  ta.style.color = '#666';
+  document.getElementById('saveRow').style.display = 'none';
+  document.getElementById('editBtn').style.display = '';
+  document.getElementById('editorHint').textContent =
+    currentSkill?.source === 'user' ? '点击「编辑」修改此技能' : '内置技能只读';
+}
+
+function onEditorInput() {
+  if (document.getElementById('tabPreview').classList.contains('active')) {
+    renderPreview();
+  }
+}
+
+function switchTab(tab) {
+  document.getElementById('tabEdit').classList.toggle('active', tab === 'edit');
+  document.getElementById('tabPreview').classList.toggle('active', tab === 'preview');
+  document.getElementById('paneEdit').style.display = tab === 'edit' ? '' : 'none';
+  document.getElementById('panePreview').style.display = tab === 'preview' ? '' : 'none';
+  if (tab === 'preview') renderPreview();
+}
+
+function renderPreview() {
+  const text = document.getElementById('mdEditor').value;
+  document.getElementById('panePreview').innerHTML = marked.parse(text);
+  document.querySelectorAll('.preview-pane pre code').forEach(el => hljs.highlightElement(el));
+}
+
+// ── Save skill ─────────────────────────────────────────────────────────────
+async function saveSkill() {
+  const text = document.getElementById('mdEditor').value.trim();
+  if (!text) { toast('内容不能为空', 'err'); return; }
+  const name = currentSkill?.name;
+  if (!name) return;
+  try {
+    const r = await fetch('/api/skills', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({name, text})
+    });
+    const d = await r.json();
+    if (!d.ok) { toast('保存失败: ' + d.error, 'err'); return; }
+    originalText = text;
+    cancelEdit();
+    toast('技能已保存', 'ok');
+    await loadSkills();
+  } catch(e) { toast('网络错误', 'err'); }
+}
+
+// ── Delete skill ──────────────────────────────────────────────────────────
+async function deleteSkill() {
+  if (!currentSkill || currentSkill.source !== 'user') return;
+  if (!confirm(`确认删除自定义技能「${currentSkill.name}」？`)) return;
+  try {
+    const r = await fetch(`/api/skills/${encodeURIComponent(currentSkill.name)}`, {method:'DELETE'});
+    const d = await r.json();
+    if (!d.ok) { toast(d.error, 'err'); return; }
+    toast('技能已删除', 'ok');
+    currentSkill = null;
+    document.getElementById('emptyState').style.display = '';
+    document.getElementById('editorPanel').style.display = 'none';
+    await loadSkills();
+  } catch(e) { toast('网络错误', 'err'); }
+}
+
+// ── New skill ──────────────────────────────────────────────────────────────
+const newModal = new bootstrap.Modal(document.getElementById('newSkillModal'));
+
+function newSkill() {
+  document.getElementById('newSkillName').value = '';
+  document.getElementById('newSkillTitle').value = '';
+  document.getElementById('newSkillKeywords').value = '';
+  document.getElementById('newSkillDesc').value = '';
+  newModal.show();
+  setTimeout(() => document.getElementById('newSkillName').focus(), 300);
+}
+
+async function createSkillFromModal() {
+  const name = document.getElementById('newSkillName').value.trim();
+  const title = document.getElementById('newSkillTitle').value.trim() || name;
+  const keywords = document.getElementById('newSkillKeywords').value.trim() || name;
+  const desc = document.getElementById('newSkillDesc').value.trim() || '自定义技能';
+
+  if (!name) { toast('技能 ID 不能为空', 'err'); return; }
+
+  // Fetch template from server
+  let tplText = '';
+  try {
+    const r = await fetch(`/api/skills/template?name=${encodeURIComponent(name)}&title=${encodeURIComponent(title)}&keywords=${encodeURIComponent(keywords)}&desc=${encodeURIComponent(desc)}`);
+    const d = await r.json();
+    tplText = d.template || '';
+  } catch(_) {}
+
+  if (!tplText) {
+    // Fallback inline template
+    tplText = `---\nname: ${name}\ncategory: custom\nkeywords: ${keywords}\n---\n\n# ${title}\n\n## 描述\n\n${desc}\n\n---\n\n## 主要函数\n\n### \`function_name(param1)\`\n\n**参数：**\n- \`param1\` : type — 说明\n\n\`\`\`python\n# 示例代码\nresult = function_name(param1)\nprint(result)\n\`\`\`\n`;
+  }
+
+  // Save to server first
+  try {
+    const r = await fetch('/api/skills', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({name, text: tplText})
+    });
+    const d = await r.json();
+    if (!d.ok) { toast('创建失败: ' + d.error, 'err'); return; }
+  } catch(e) { toast('网络错误', 'err'); return; }
+
+  newModal.hide();
+  toast('技能已创建，请编辑内容', 'ok');
+
+  await loadSkills();
+
+  // Open the new skill in edit mode
+  currentSkill = { name, source: 'user' };
+  await openSkill(name);
+  enableEdit();
+}
+
+// ── Toast ──────────────────────────────────────────────────────────────────
+function toast(msg, type='') {
+  const wrap = document.getElementById('toastWrap');
+  const el = document.createElement('div');
+  el.className = 'toast-item ' + (type === 'ok' ? 'ok' : type === 'err' ? 'err' : '');
+  el.textContent = msg;
+  wrap.appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+</script>
+</body>
+</html>

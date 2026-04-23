@@ -1,508 +1,355 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LLM Settings - SeismicX</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
-    <style>
-        body {
-            background: #f5f7fa;
-            padding-top: 80px;
-        }
-        .navbar {
-            background: white !important;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-        .page-header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 40px 0;
-            margin-bottom: 40px;
-        }
-        .settings-container {
-            background: white;
-            border-radius: 15px;
-            padding: 40px;
-            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
-            margin-bottom: 30px;
-        }
-        .provider-card {
-            border: 2px solid #e0e0e0;
-            border-radius: 10px;
-            padding: 20px;
-            margin-bottom: 15px;
-            cursor: pointer;
-            transition: all 0.3s ease;
-        }
-        .provider-card:hover {
-            border-color: #667eea;
-            background: #f8f9ff;
-        }
-        .provider-card.selected {
-            border-color: #667eea;
-            background: #eef0ff;
-        }
-        .btn-save {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            padding: 12px 40px;
-            border-radius: 25px;
-            font-size: 1.1rem;
-            transition: all 0.3s ease;
-        }
-        .btn-save:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
-        }
-        .model-list {
-            max-height: 300px;
-            overflow-y: auto;
-        }
-        .status-badge {
-            display: inline-block;
-            padding: 5px 10px;
-            border-radius: 15px;
-            font-size: 0.85rem;
-            font-weight: 600;
-        }
-        .status-available {
-            background: #d4edda;
-            color: #155724;
-        }
-        .status-unavailable {
-            background: #f8d7da;
-            color: #721c24;
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM 设置 — SeismicX</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+<style>
+:root { --accent: #667eea; --accent2: #764ba2; }
+body { background: #f5f7fa; min-height: 100vh; }
+.navbar { background: #fff !important; box-shadow: 0 2px 10px rgba(0,0,0,.08); }
+.navbar-brand span { background: linear-gradient(135deg,var(--accent),var(--accent2));
+  -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+.page-header { background: linear-gradient(135deg,var(--accent),var(--accent2));
+  color:#fff; padding: 2rem 0 1.5rem; }
+
+.provider-card {
+  border: 2px solid #e0e0e0; border-radius: 12px;
+  padding: 1rem 1.25rem; margin-bottom: .75rem;
+  cursor: pointer; transition: all .2s;
+}
+.provider-card:hover { border-color: var(--accent); background: #f8f9ff; }
+.provider-card.selected { border-color: var(--accent); background: #eef0ff; }
+
+.model-list { max-height: 280px; overflow-y: auto; }
+
+.btn-save {
+  background: linear-gradient(135deg,var(--accent),var(--accent2));
+  color: #fff; border: none; padding: .6rem 2rem;
+  border-radius: 20px; font-weight: 600;
+}
+.btn-save:hover { opacity: .9; color: #fff; }
+
+.current-model-badge {
+  display: inline-block; background: #e8f5e9; color: #2e7d32;
+  border-radius: 20px; padding: .25rem .85rem; font-size: .85rem; font-weight: 600;
+}
+</style>
 </head>
 <body>
-    <!-- Navigation -->
-    <nav class="navbar navbar-expand-lg navbar-light fixed-top">
-        <div class="container">
-            <a class="navbar-brand" href="/">
-                <i class="bi bi-activity"></i>
-                <strong>SeismicX</strong>
-            </a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav ms-auto">
-                    <li class="nav-item"><a class="nav-link" href="/">Home</a></li>
-                    <li class="nav-item"><a class="nav-link" href="/picker">Phase Picker</a></li>
-                    <li class="nav-item"><a class="nav-link" href="/associator">Associator</a></li>
-                    <li class="nav-item"><a class="nav-link" href="/polarity">Polarity</a></li>
-                    <li class="nav-item"><a class="nav-link active" href="/llm-settings">LLM Settings</a></li>
-                </ul>
-            </div>
-        </div>
-    </nav>
-
-    <!-- Page Header -->
-    <section class="page-header">
-        <div class="container">
-            <h1><i class="bi bi-cpu"></i> LLM Model Settings</h1>
-            <p class="lead mb-0">Configure your preferred AI model provider</p>
-        </div>
-    </section>
-
-    <!-- Main Content -->
-    <div class="container">
-        <div class="row">
-            <div class="col-lg-12">
-                <div class="settings-container">
-                    <form id="llmSettingsForm">
-                        <!-- Provider Selection -->
-                        <div class="mb-4">
-                            <label class="form-label fw-bold">Select LLM Provider</label>
-                            <div class="provider-card selected" data-provider="ollama" onclick="selectProvider(this)">
-                                <h5><i class="bi bi-hdd-network text-primary"></i> Ollama (Local)</h5>
-                                <p class="mb-0 text-muted">Run models locally on your machine. Best for privacy and offline use.</p>
-                                <div id="ollamaStatus" class="mt-2"></div>
-                            </div>
-                            <div class="provider-card" data-provider="openai" onclick="selectProvider(this)">
-                                <h5><i class="bi bi-cloud text-info"></i> OpenAI</h5>
-                                <p class="mb-0 text-muted">Access GPT-4, GPT-3.5 and other OpenAI models via API.</p>
-                            </div>
-                            <div class="provider-card" data-provider="anthropic" onclick="selectProvider(this)">
-                                <h5><i class="bi bi-cloud text-success"></i> Anthropic</h5>
-                                <p class="mb-0 text-muted">Access Claude models via API. Excellent for reasoning tasks.</p>
-                            </div>
-                            <div class="provider-card" data-provider="azure" onclick="selectProvider(this)">
-                                <h5><i class="bi bi-cloud text-warning"></i> Azure OpenAI</h5>
-                                <p class="mb-0 text-muted">Enterprise-grade OpenAI models via Azure.</p>
-                            </div>
-                            <div class="provider-card" data-provider="custom" onclick="selectProvider(this)">
-                                <h5><i class="bi bi-gear text-secondary"></i> Custom API</h5>
-                                <p class="mb-0 text-muted">Connect to any OpenAI-compatible API endpoint.</p>
-                            </div>
-                            <input type="hidden" id="provider" value="ollama">
-                        </div>
-
-                        <!-- Ollama Models Section -->
-                        <div id="ollamaSection">
-                            <div class="mb-4">
-                                <label class="form-label fw-bold">Select Ollama Model</label>
-                                <div id="ollamaModelsLoading" class="text-center py-3">
-                                    <div class="spinner-border text-primary" role="status">
-                                        <span class="visually-hidden">Loading...</span>
-                                    </div>
-                                    <p class="mt-2 text-muted">Checking available models...</p>
-                                </div>
-                                <div id="ollamaModelsList" class="model-list" style="display: none;">
-                                    <!-- Will be populated by JavaScript -->
-                                </div>
-                                <div class="mt-3">
-                                    <input type="text" class="form-control" id="ollamaCustomModel"
-                                           placeholder="Or enter custom model name (e.g., qwen2.5:7b)">
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Online API Section -->
-                        <div id="onlineApiSection" style="display: none;">
-                            <div class="mb-3">
-                                <label class="form-label fw-bold">API Key</label>
-                                <input type="password" class="form-control" id="apiKey"
-                                       placeholder="Enter your API key">
-                                <div class="form-text">Your API key is stored securely and never shared.</div>
-                            </div>
-
-                            <div class="mb-3" id="apiBaseSection" style="display: none;">
-                                <label class="form-label fw-bold">API Base URL</label>
-                                <input type="text" class="form-control" id="apiBase"
-                                       placeholder="https://api.example.com/v1">
-                            </div>
-
-                            <div class="mb-3">
-                                <label class="form-label fw-bold">Model Name</label>
-                                <input type="text" class="form-control" id="onlineModel"
-                                       placeholder="e.g., gpt-4o, claude-3-sonnet-20240229">
-                                <div class="form-text" id="modelSuggestions"></div>
-                            </div>
-                        </div>
-
-                        <!-- Advanced Settings -->
-                        <div class="mb-4">
-                            <h5 class="fw-bold">Advanced Settings</h5>
-                            <div class="row">
-                                <div class="col-md-6 mb-3">
-                                    <label class="form-label">Temperature</label>
-                                    <input type="number" class="form-control" id="temperature"
-                                           min="0" max="2" step="0.1" value="0.7">
-                                    <div class="form-text">Controls randomness (0 = deterministic, 2 = very random)</div>
-                                </div>
-                                <div class="col-md-6 mb-3">
-                                    <label class="form-label">Max Tokens</label>
-                                    <input type="number" class="form-control" id="maxTokens"
-                                           min="100" max="10000" step="100" value="2000">
-                                    <div class="form-text">Maximum response length</div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Action Buttons -->
-                        <div class="d-flex gap-3">
-                            <button type="submit" class="btn btn-save">
-                                <i class="bi bi-check-circle"></i> Save Configuration
-                            </button>
-                            <button type="button" class="btn btn-outline-secondary" onclick="testConnection()">
-                                <i class="bi bi-plug"></i> Test Connection
-                            </button>
-                            <button type="button" class="btn btn-outline-primary" onclick="loadConfig()">
-                                <i class="bi bi-arrow-clockwise"></i> Reload
-                            </button>
-                        </div>
-                    </form>
-                </div>
-
-                <!-- Help Card -->
-                <div class="card">
-                    <div class="card-header bg-info text-white">
-                        <h5 class="mb-0"><i class="bi bi-question-circle"></i> Help & Tips</h5>
-                    </div>
-                    <div class="card-body">
-                        <h6>Choosing a Provider:</h6>
-                        <ul>
-                            <li><strong>Ollama</strong>: Best for privacy, works offline, requires installation from <a href="https://ollama.ai" target="_blank">ollama.ai</a></li>
-                            <li><strong>OpenAI</strong>: High quality models, requires API key from <a href="https://platform.openai.com" target="_blank">platform.openai.com</a></li>
-                            <li><strong>Anthropic</strong>: Great for reasoning, get API key from <a href="https://console.anthropic.com" target="_blank">console.anthropic.com</a></li>
-                        </ul>
-                        <h6>Recommended Ollama Models:</h6>
-                        <ul>
-                            <li><code>qwen2.5:7b</code> - Good balance of speed and quality (~4GB)</li>
-                            <li><code>llama3.2:3b</code> - Fast and lightweight (~2GB)</li>
-                            <li><code>llama3.1:8b</code> - General purpose model (~4.7GB)</li>
-                        </ul>
-                    </div>
-                </div>
-            </div>
-        </div>
+<!-- Nav -->
+<nav class="navbar navbar-expand-lg navbar-light">
+  <div class="container">
+    <a class="navbar-brand" href="/chat">
+      <i class="bi bi-activity text-primary"></i>
+      <span><strong>SeismicX</strong></span>
+    </a>
+    <div class="collapse navbar-collapse">
+      <ul class="navbar-nav ms-auto gap-1">
+        <li class="nav-item"><a class="nav-link" href="/chat"><i class="bi bi-chat-dots"></i> 对话</a></li>
+        <li class="nav-item"><a class="nav-link" href="/knowledge"><i class="bi bi-journal-bookmark-fill"></i> 知识库</a></li>
+        <li class="nav-item"><a class="nav-link active fw-bold" href="/llm-settings"><i class="bi bi-cpu"></i> LLM</a></li>
+      </ul>
     </div>
+  </div>
+</nav>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        let currentConfig = null;
+<!-- Header -->
+<div class="page-header">
+  <div class="container">
+    <h4 class="mb-1"><i class="bi bi-cpu me-2"></i>LLM 模型设置</h4>
+    <p class="mb-0 opacity-75" style="font-size:.9rem">配置 AI 后端，对话、RAG 问答均使用此设置</p>
+  </div>
+</div>
 
-        // Load configuration on page load
-        document.addEventListener('DOMContentLoaded', () => {
-            loadConfig();
-        });
+<div class="container mt-4" style="max-width:760px">
 
-        function selectProvider(element) {
-            document.querySelectorAll('.provider-card').forEach(card => {
-                card.classList.remove('selected');
-            });
-            element.classList.add('selected');
-            document.getElementById('provider').value = element.dataset.provider;
+  <!-- 当前状态 -->
+  <div class="card border-0 shadow-sm mb-3">
+    <div class="card-body py-3 d-flex align-items-center justify-content-between">
+      <div>
+        <span class="fw-bold text-muted me-2">当前模型：</span>
+        <span id="currentModelBadge" class="current-model-badge">读取中…</span>
+      </div>
+      <button class="btn btn-sm btn-outline-secondary" onclick="testConnection()">
+        <i class="bi bi-plug"></i> 测试连接
+      </button>
+    </div>
+  </div>
 
-            const provider = element.dataset.provider;
-            const ollamaSection = document.getElementById('ollamaSection');
-            const onlineApiSection = document.getElementById('onlineApiSection');
-            const apiBaseSection = document.getElementById('apiBaseSection');
-            const modelSuggestions = document.getElementById('modelSuggestions');
+  <!-- 设置表单 -->
+  <div class="card border-0 shadow-sm mb-3">
+    <div class="card-body p-4">
+      <form id="llmForm">
 
-            if (provider === 'ollama') {
-                ollamaSection.style.display = 'block';
-                onlineApiSection.style.display = 'none';
-            } else {
-                ollamaSection.style.display = 'none';
-                onlineApiSection.style.display = 'block';
+        <!-- Provider -->
+        <div class="mb-4">
+          <label class="form-label fw-bold">选择后端</label>
+          <div class="provider-card selected" data-provider="ollama" onclick="selectProvider(this)">
+            <div class="d-flex align-items-center gap-2">
+              <i class="bi bi-hdd-network text-primary fs-5"></i>
+              <div>
+                <div class="fw-bold">Ollama（本地）</div>
+                <div class="text-muted" style="font-size:.85rem">本地运行，保护隐私，支持离线使用</div>
+              </div>
+              <span id="ollamaStatus" class="ms-auto"></span>
+            </div>
+          </div>
+          <div class="provider-card" data-provider="openai" onclick="selectProvider(this)">
+            <div class="d-flex align-items-center gap-2">
+              <i class="bi bi-cloud text-info fs-5"></i>
+              <div>
+                <div class="fw-bold">OpenAI</div>
+                <div class="text-muted" style="font-size:.85rem">GPT-4o / GPT-4o-mini，需要 API Key</div>
+              </div>
+            </div>
+          </div>
+          <div class="provider-card" data-provider="custom" onclick="selectProvider(this)">
+            <div class="d-flex align-items-center gap-2">
+              <i class="bi bi-gear text-secondary fs-5"></i>
+              <div>
+                <div class="fw-bold">自定义 API（兼容 OpenAI 格式）</div>
+                <div class="text-muted" style="font-size:.85rem">DeepSeek / SiliconFlow / 本地 vLLM 等</div>
+              </div>
+            </div>
+          </div>
+          <input type="hidden" id="provider" value="ollama">
+        </div>
 
-                // Show/hide API base for custom/azure
-                if (provider === 'azure' || provider === 'custom') {
-                    apiBaseSection.style.display = 'block';
-                } else {
-                    apiBaseSection.style.display = 'none';
-                }
+        <!-- Ollama 模型列表 -->
+        <div id="ollamaSection">
+          <label class="form-label fw-bold">选择 Ollama 模型</label>
+          <div id="ollamaModelsLoading" class="text-center py-3">
+            <div class="spinner-border spinner-border-sm text-primary"></div>
+            <span class="ms-2 text-muted">正在读取已安装模型…</span>
+          </div>
+          <div id="ollamaModelsList" class="model-list mb-3" style="display:none"></div>
+          <input type="text" class="form-control" id="ollamaCustomModel"
+                 placeholder="或手动输入模型名称，如 qwen3:30b">
+        </div>
 
-                // Update model suggestions
-                const suggestions = {
-                    'openai': 'Suggested: gpt-4o, gpt-4o-mini, gpt-3.5-turbo',
-                    'anthropic': 'Suggested: claude-3-sonnet-20240229, claude-3-haiku-20240307',
-                    'azure': 'Enter your Azure deployment name',
-                    'custom': 'Enter model name supported by your API'
-                };
-                modelSuggestions.textContent = suggestions[provider] || '';
-            }
-        }
+        <!-- 在线 API 设置 -->
+        <div id="onlineSection" style="display:none">
+          <div class="mb-3">
+            <label class="form-label fw-bold">API Base URL</label>
+            <input type="text" class="form-control" id="apiBase"
+                   placeholder="https://api.openai.com/v1">
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-bold">API Key</label>
+            <input type="password" class="form-control" id="apiKey"
+                   placeholder="sk-…">
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-bold">模型名称</label>
+            <input type="text" class="form-control" id="onlineModel"
+                   placeholder="gpt-4o / deepseek-chat / …">
+          </div>
+        </div>
 
-        async function loadConfig() {
-            try {
-                const response = await fetch('/api/llm/config');
-                const data = await response.json();
-                currentConfig = data.config;
+        <!-- 保存 -->
+        <div class="d-flex gap-2 mt-4">
+          <button type="submit" class="btn btn-save">
+            <i class="bi bi-check-circle me-1"></i>保存配置
+          </button>
+          <button type="button" class="btn btn-outline-secondary" onclick="loadConfig()">
+            <i class="bi bi-arrow-clockwise me-1"></i>刷新
+          </button>
+        </div>
 
-                // Set provider
-                const provider = currentConfig.provider || 'ollama';
-                document.getElementById('provider').value = provider;
-                document.querySelectorAll('.provider-card').forEach(card => {
-                    card.classList.toggle('selected', card.dataset.provider === provider);
-                });
-                selectProvider(document.querySelector(`.provider-card[data-provider="${provider}"]`));
+      </form>
+    </div>
+  </div>
 
-                // Set values
-                document.getElementById('temperature').value = currentConfig.temperature || 0.7;
-                document.getElementById('maxTokens').value = currentConfig.max_tokens || 2000;
+  <!-- Toast -->
+  <div class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index:9999">
+    <div id="toast" class="toast align-items-center text-bg-success border-0">
+      <div class="d-flex">
+        <div class="toast-body" id="toastMsg"></div>
+        <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+      </div>
+    </div>
+  </div>
+</div>
 
-                if (provider === 'ollama') {
-                    document.getElementById('ollamaCustomModel').value = currentConfig.model || '';
-                    loadOllamaModels();
-                } else {
-                    document.getElementById('apiKey').value = '';
-                    document.getElementById('onlineModel').value = currentConfig.model || '';
-                    if (currentConfig.api_base) {
-                        document.getElementById('apiBase').value = currentConfig.api_base;
-                    }
-                }
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+let currentConfig = null;
 
-                // Update Ollama status
-                updateOllamaStatus(data.ollama_available);
+document.addEventListener('DOMContentLoaded', loadConfig);
 
-            } catch (error) {
-                console.error('Error loading config:', error);
-                showAlert('Failed to load configuration', 'danger');
-            }
-        }
+// ── Provider selection ────────────────────────────────────────────────────
+function selectProvider(el) {
+  document.querySelectorAll('.provider-card').forEach(c => c.classList.remove('selected'));
+  el.classList.add('selected');
+  const p = el.dataset.provider;
+  document.getElementById('provider').value = p;
+  document.getElementById('ollamaSection').style.display  = p === 'ollama'  ? 'block' : 'none';
+  document.getElementById('onlineSection').style.display  = p !== 'ollama'  ? 'block' : 'none';
+}
 
-        async function loadOllamaModels() {
-            try {
-                const response = await fetch('/api/llm/ollama/models');
-                const data = await response.json();
+// ── Load config ───────────────────────────────────────────────────────────
+async function loadConfig() {
+  try {
+    const r = await fetch('/api/llm/config');
+    const d = await r.json();
+    currentConfig = d.config || {};
 
-                document.getElementById('ollamaModelsLoading').style.display = 'none';
-                const modelsList = document.getElementById('ollamaModelsList');
-                modelsList.style.display = 'block';
+    const provider = currentConfig.provider || 'ollama';
+    document.getElementById('provider').value = provider;
+    const card = document.querySelector(`.provider-card[data-provider="${provider}"]`);
+    if (card) { document.querySelectorAll('.provider-card').forEach(c=>c.classList.remove('selected')); card.classList.add('selected'); }
+    selectProvider(card || document.querySelector('.provider-card'));
 
-                let html = '';
+    if (provider === 'ollama') {
+      document.getElementById('ollamaCustomModel').value = currentConfig.model || '';
+      loadOllamaModels();
+    } else {
+      document.getElementById('apiBase').value    = currentConfig.api_base || '';
+      document.getElementById('onlineModel').value = currentConfig.model   || '';
+    }
 
-                // Installed models
-                if (data.installed && data.installed.length > 0) {
-                    html += '<h6 class="mt-3">Installed Models</h6>';
-                    data.installed.forEach(model => {
-                        html += `
-                            <div class="form-check mb-2">
-                                <input class="form-check-input" type="radio" name="ollamaModel"
-                                       id="model_${model}" value="${model}">
-                                <label class="form-check-label" for="model_${model}">
-                                    ${model}
-                                </label>
-                            </div>
-                        `;
-                    });
-                }
+    updateOllamaStatus(d.ollama_available);
+    updateCurrentBadge();
+  } catch(e) {
+    showToast('读取配置失败: ' + e.message, 'danger');
+  }
+}
 
-                // Recommended models
-                if (data.recommended && data.recommended.length > 0) {
-                    html += '<h6 class="mt-4">Recommended Models (click to install)</h6>';
-                    data.recommended.forEach(model => {
-                        const isInstalled = data.installed.includes(model.name);
-                        html += `
-                            <div class="d-flex justify-content-between align-items-center mb-2 p-2 border rounded">
-                                <div>
-                                    <strong>${model.name}</strong>
-                                    <small class="text-muted d-block">${model.description}</small>
-                                    <small class="text-muted">${model.size}</small>
-                                </div>
-                                ${isInstalled ?
-                                    '<span class="badge bg-success">Installed</span>' :
-                                    `<button class="btn btn-sm btn-outline-primary" onclick="pullModel('${model.name}')">
-                                        <i class="bi bi-download"></i> Install
-                                    </button>`
-                                }
-                            </div>
-                        `;
-                    });
-                }
+function updateCurrentBadge() {
+  const badge = document.getElementById('currentModelBadge');
+  if (!currentConfig || !currentConfig.model) {
+    badge.textContent = '未配置';
+    badge.style.background = '#fce4e4'; badge.style.color = '#c62828';
+  } else {
+    badge.textContent = `${currentConfig.provider === 'ollama' ? 'Ollama' : currentConfig.provider} · ${currentConfig.model}`;
+    badge.style.background = '#e8f5e9'; badge.style.color = '#2e7d32';
+  }
+}
 
-                if (!data.ollama_available) {
-                    html += `
-                        <div class="alert alert-warning mt-3">
-                            <i class="bi bi-exclamation-triangle"></i>
-                            Ollama is not available. Please install from <a href="https://ollama.ai" target="_blank">ollama.ai</a>
-                        </div>
-                    `;
-                }
+// ── Load Ollama models ────────────────────────────────────────────────────
+async function loadOllamaModels() {
+  try {
+    const r = await fetch('/api/llm/ollama/models');
+    const d = await r.json();
 
-                modelsList.innerHTML = html;
+    document.getElementById('ollamaModelsLoading').style.display = 'none';
+    const list = document.getElementById('ollamaModelsList');
+    list.style.display = 'block';
 
-                // Select current model
-                if (currentConfig && currentConfig.model) {
-                    const radio = document.querySelector(`input[value="${currentConfig.model}"]`);
-                    if (radio) radio.checked = true;
-                }
+    if (!d.ollama_available) {
+      list.innerHTML = `<div class="alert alert-warning py-2">
+        <i class="bi bi-exclamation-triangle"></i>
+        Ollama 未启动，请运行 <code>ollama serve</code> 后刷新
+      </div>`;
+      return;
+    }
 
-            } catch (error) {
-                console.error('Error loading Ollama models:', error);
-                document.getElementById('ollamaModelsLoading').innerHTML =
-                    '<p class="text-danger">Failed to load models</p>';
-            }
-        }
+    if (!d.installed || d.installed.length === 0) {
+      list.innerHTML = `<div class="text-muted">暂无已安装模型，请先用 <code>ollama pull &lt;模型名&gt;</code> 安装</div>`;
+      return;
+    }
 
-        function updateOllamaStatus(available) {
-            const statusDiv = document.getElementById('ollamaStatus');
-            if (available) {
-                statusDiv.innerHTML = '<span class="status-badge status-available"><i class="bi bi-check-circle"></i> Available</span>';
-            } else {
-                statusDiv.innerHTML = '<span class="status-badge status-unavailable"><i class="bi bi-x-circle"></i> Not Detected</span>';
-            }
-        }
+    const savedModel = currentConfig?.model || '';
+    list.innerHTML = '<div class="fw-semibold mb-2" style="font-size:.85rem">已安装模型</div>' +
+      d.installed.map(m => `
+        <div class="form-check mb-1">
+          <input class="form-check-input" type="radio" name="ollamaModel"
+                 id="m_${m}" value="${m}" ${m === savedModel ? 'checked' : ''}
+                 onchange="document.getElementById('ollamaCustomModel').value=''">
+          <label class="form-check-label" for="m_${m}">${m}</label>
+        </div>`).join('');
 
-        async function pullModel(modelName) {
-            if (!confirm(`Install model "${modelName}"? This may take several minutes.`)) {
-                return;
-            }
+  } catch(e) {
+    document.getElementById('ollamaModelsLoading').innerHTML =
+      '<p class="text-danger">读取模型失败</p>';
+  }
+}
 
-            try {
-                const response = await fetch('/api/llm/ollama/pull', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({model: modelName})
-                });
+function updateOllamaStatus(available) {
+  const el = document.getElementById('ollamaStatus');
+  el.innerHTML = available
+    ? '<span class="badge bg-success">● 运行中</span>'
+    : '<span class="badge bg-secondary">● 未启动</span>';
+}
 
-                const result = await response.json();
-                showAlert(result.message, 'info');
+// ── Save ─────────────────────────────────────────────────────────────────
+document.getElementById('llmForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const provider = document.getElementById('provider').value;
+  const payload  = { provider };
 
-                // Reload models after a delay
-                setTimeout(() => loadOllamaModels(), 5000);
+  if (provider === 'ollama') {
+    const radio  = document.querySelector('input[name="ollamaModel"]:checked');
+    const custom = document.getElementById('ollamaCustomModel').value.trim();
+    const model  = custom || (radio ? radio.value : '');
+    if (!model) { showToast('请选择或输入一个模型名称', 'warning'); return; }
+    payload.model    = model;
+    payload.api_base = 'http://localhost:11434';
+  } else {
+    payload.api_base = document.getElementById('apiBase').value.trim();
+    payload.model    = document.getElementById('onlineModel').value.trim();
+    const key = document.getElementById('apiKey').value.trim();
+    if (key) payload.api_key = key;
+    if (!payload.api_base || !payload.model) {
+      showToast('请填写 API URL 和模型名称', 'warning'); return;
+    }
+  }
 
-            } catch (error) {
-                showAlert('Failed to start download: ' + error.message, 'danger');
-            }
-        }
+  try {
+    const r = await fetch('/api/llm/config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const d = await r.json();
+    if (r.ok) {
+      currentConfig = { ...currentConfig, ...payload };
+      updateCurrentBadge();
+      showToast('✓ 配置已保存', 'success');
+    } else {
+      showToast('保存失败: ' + d.error, 'danger');
+    }
+  } catch(e) {
+    showToast('保存失败: ' + e.message, 'danger');
+  }
+});
 
-        document.getElementById('llmSettingsForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
+// ── Test connection ───────────────────────────────────────────────────────
+async function testConnection() {
+  showToast('正在测试连接…', 'info');
+  try {
+    const r = await fetch('/api/llm/config');
+    const d = await r.json();
+    const cfg = d.config || {};
+    if (!cfg.model || !cfg.api_base) {
+      showToast('请先保存配置再测试', 'warning'); return;
+    }
+    // Send a tiny chat message
+    const resp = await fetch('/api/chat/rag', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ message: 'hello', session_id: 'llm_test', mode: 'rag' })
+    });
+    const data = await resp.json();
+    if (data.ok && data.response) {
+      showToast('✓ 连接正常，模型响应成功', 'success');
+    } else {
+      showToast('模型无响应，请检查配置', 'warning');
+    }
+  } catch(e) {
+    showToast('连接失败: ' + e.message, 'danger');
+  }
+}
 
-            const provider = document.getElementById('provider').value;
-            const data = {
-                provider: provider,
-                temperature: parseFloat(document.getElementById('temperature').value),
-                max_tokens: parseInt(document.getElementById('maxTokens').value)
-            };
-
-            if (provider === 'ollama') {
-                // Get selected model
-                const selectedRadio = document.querySelector('input[name="ollamaModel"]:checked');
-                const customModel = document.getElementById('ollamaCustomModel').value.trim();
-                data.model = customModel || (selectedRadio ? selectedRadio.value : 'qwen2.5:7b');
-            } else {
-                data.model = document.getElementById('onlineModel').value.trim();
-                const apiKey = document.getElementById('apiKey').value.trim();
-                if (apiKey) {
-                    data.api_key = apiKey;
-                }
-                if (provider === 'azure' || provider === 'custom') {
-                    data.api_base = document.getElementById('apiBase').value.trim();
-                }
-            }
-
-            try {
-                const response = await fetch('/api/llm/config', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(data)
-                });
-
-                const result = await response.json();
-
-                if (response.ok) {
-                    showAlert('✓ Configuration saved successfully!', 'success');
-                } else {
-                    showAlert('Error: ' + result.error, 'danger');
-                }
-            } catch (error) {
-                showAlert('Failed to save configuration: ' + error.message, 'danger');
-            }
-        });
-
-        async function testConnection() {
-            showAlert('Testing connection...', 'info');
-            // Implement actual connection test here
-            setTimeout(() => {
-                showAlert('Connection test complete (placeholder)', 'success');
-            }, 1000);
-        }
-
-        function showAlert(message, type) {
-            // Create alert element
-            const alertDiv = document.createElement('div');
-            alertDiv.className = `alert alert-${type} alert-dismissible fade show position-fixed top-0 end-0 m-3`;
-            alertDiv.style.zIndex = '9999';
-            alertDiv.innerHTML = `
-                ${message}
-                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-            `;
-            document.body.appendChild(alertDiv);
-
-            // Auto dismiss after 5 seconds
-            setTimeout(() => {
-                alertDiv.remove();
-            }, 5000);
-        }
-    </script>
+function showToast(msg, type='success') {
+  const t = document.getElementById('toast');
+  document.getElementById('toastMsg').textContent = msg;
+  t.className = `toast align-items-center text-bg-${type} border-0`;
+  new bootstrap.Toast(t, {delay: 3000}).show();
+}
+</script>
 </body>
 </html>

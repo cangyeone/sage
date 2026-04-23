@@ -3,7 +3,7 @@
 LLM Configuration Manager
 
 Manages LLM model selection and configuration for SeismicX.
-Supports Ollama local models and online API models.
+Supports Ollama / vLLM / online API (via BackendManager).
 Configuration is saved to ~/.seismicx/config.json
 """
 
@@ -51,8 +51,17 @@ class LLMConfigManager:
             json.dump(self.config, f, indent=2, ensure_ascii=False)
 
     def get_llm_config(self) -> Dict:
-        """Get current LLM configuration"""
-        return self.config.get('llm', {})
+        """
+        Get current LLM configuration.
+        Reads directly from config.json (set by the LLM settings UI).
+        This is the single source of truth for all components.
+        """
+        return self.config.get('llm', {
+            'provider': 'ollama',
+            'model': '',
+            'api_base': 'http://localhost:11434',
+            'api_key': '',
+        })
 
     def set_llm_provider(self, provider: str):
         """Set LLM provider"""

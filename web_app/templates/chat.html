@@ -1,741 +1,714 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SeismicX AI Assistant</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
-    <style>
-        :root {
-            --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            --chat-bg: #f5f7fa;
-            --user-msg-bg: #667eea;
-            --assistant-msg-bg: white;
-        }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>对话 — SeismicX</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css">
+<style>
+:root {
+  --accent:#667eea; --accent2:#764ba2;
+  --grad:linear-gradient(135deg,var(--accent),var(--accent2));
+  --user-bg:#667eea; --bg:#f5f7fa;
+}
+* { box-sizing:border-box; }
+body { background:var(--bg); height:100vh; display:flex; flex-direction:column; overflow:hidden; font-size:.95rem; }
+.navbar { background:#fff !important; box-shadow:0 2px 10px rgba(0,0,0,.08); z-index:100; flex-shrink:0; }
+.navbar-brand span { background:var(--grad); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
 
-        body {
-            background: var(--chat-bg);
-            height: 100vh;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-        }
+/* Layout */
+.app-body { flex:1; display:flex; overflow:hidden; }
+.sidebar { width:220px; background:#fff; border-right:1px solid #eee; display:flex;
+  flex-direction:column; flex-shrink:0; overflow-y:auto; }
+.chat-area { flex:1; display:flex; flex-direction:column; overflow:hidden; min-width:0; }
 
-        .navbar {
-            background: white !important;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            z-index: 1000;
-        }
+/* Sidebar sections */
+.sb-section { padding:.75rem 1rem; border-bottom:1px solid #f2f2f2; }
+.sb-title { font-size:.72rem; text-transform:uppercase; letter-spacing:.05em; color:#aaa; margin-bottom:.5rem; }
+.sb-doc { display:flex; align-items:center; gap:.5rem; padding:.35rem .5rem;
+  border-radius:8px; font-size:.82rem; cursor:pointer; transition:background .15s; }
+.sb-doc:hover { background:#f5f5f5; }
+.sb-doc .doc-name { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.sb-doc .rm-btn { border:none; background:none; color:#ccc; font-size:.9rem; padding:0 2px;
+  line-height:1; flex-shrink:0; }
+.sb-doc .rm-btn:hover { color:#e53935; }
+.kb-info { font-size:.78rem; color:#888; padding:.25rem .5rem; }
 
-        .chat-container {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            max-width: 1200px;
-            margin: 0 auto;
-            width: 100%;
-            padding: 20px;
-            height: calc(100vh - 70px);
-        }
+/* Chat messages */
+.chat-messages { flex:1; overflow-y:auto; padding:1.25rem 1.5rem; }
+.msg { margin-bottom:1rem; display:flex; animation:fadeIn .25s ease; }
+.msg-user { justify-content:flex-end; }
+.msg-assistant { justify-content:flex-start; }
+@keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none} }
+.bubble { max-width:72%; padding:.75rem 1rem; border-radius:16px; word-break:break-word; line-height:1.55; }
+.msg-user .bubble { background:var(--user-bg); color:#fff; border-bottom-right-radius:4px; }
+.msg-assistant .bubble { background:#fff; border:1px solid #e5e5e5; color:#333; border-bottom-left-radius:4px; box-shadow:0 1px 4px rgba(0,0,0,.05); }
+.bubble code { background:#f0f0f0; padding:1px 6px; border-radius:4px; font-size:.86em; font-family:'Menlo','Courier New',monospace; color:#c7254e; }
+.bubble pre { background:#f6f8fa; border:1px solid #e0e0e0; border-radius:8px; padding:.75rem 1rem; overflow-x:auto; margin:.5rem 0; }
+.bubble pre code { background:none; padding:0; color:inherit; font-size:.86em; }
+.bubble strong { color:#5a5aed; font-weight:700; }
+.bubble em { color:#555; }
+.bubble ul, .bubble ol { margin:.4rem 0; padding-left:1.4rem; }
+.bubble li { margin-bottom:.2rem; }
+.bubble h1,.bubble h2,.bubble h3,.bubble h4,.bubble h5,.bubble h6 {
+  font-weight:700; margin:.6rem 0 .3rem; line-height:1.3; color:#222;
+}
+.bubble h1 { font-size:1.2em; } .bubble h2 { font-size:1.1em; }
+.bubble h3 { font-size:1em; } .bubble h4,.bubble h5,.bubble h6 { font-size:.95em; }
+.bubble blockquote { border-left:3px solid var(--accent); margin:.5rem 0; padding:.3rem .8rem;
+  background:#f8f9ff; border-radius:0 6px 6px 0; color:#555; font-style:italic; }
+.bubble table { border-collapse:collapse; width:100%; margin:.5rem 0; font-size:.88em; }
+.bubble th { background:#f0f2ff; font-weight:600; }
+.bubble th, .bubble td { border:1px solid #dde; padding:.35rem .65rem; text-align:left; }
+.bubble hr { border:none; border-top:1px solid #eee; margin:.6rem 0; }
+.bubble p { margin:.3rem 0; }
+.bubble a { color:var(--accent); text-decoration:underline; }
+/* code block copy button */
+.code-wrapper { position:relative; }
+.copy-btn { position:absolute; top:.4rem; right:.4rem; border:none; background:#e0e0e0;
+  border-radius:5px; font-size:.72rem; padding:2px 8px; cursor:pointer; opacity:.7; }
+.copy-btn:hover { opacity:1; }
+.msg-time { font-size:.72rem; color:#bbb; margin-top:.35rem; }
+.msg-user .msg-time { text-align:right; }
 
-        .chat-messages {
-            flex: 1;
-            overflow-y: auto;
-            padding: 20px;
-            background: white;
-            border-radius: 15px;
-            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
-            margin-bottom: 20px;
-        }
+/* Source badge */
+.source-badge { display:inline-block; background:#f0f2ff; color:var(--accent); border-radius:10px;
+  padding:.15rem .6rem; font-size:.75rem; margin:.4rem .2rem 0 0; }
 
-        .message {
-            margin-bottom: 20px;
-            animation: fadeIn 0.3s ease-in;
-        }
+/* Mode badge */
+.mode-tag { display:inline-flex; align-items:center; gap:.3rem; font-size:.75rem;
+  background:#e8f5e9; color:#2e7d32; border-radius:10px; padding:.15rem .6rem; margin-bottom:.3rem; }
+.mode-tag.rag { background:#e8eaf6; color:#3949ab; }
 
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
+/* Context bar */
+.context-bar { padding:.4rem 1rem; background:#fff; border-top:1px solid #eee;
+  display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; min-height:0; }
+.ctx-chip { display:inline-flex; align-items:center; gap:.35rem; background:#e8eaf6;
+  color:#3949ab; border-radius:12px; padding:.2rem .65rem; font-size:.8rem; }
+.ctx-chip .rm { border:none; background:none; color:#9fa8da; font-size:.85rem; padding:0 1px; line-height:1; }
+.ctx-chip .rm:hover { color:#e53935; }
 
-        .message-user {
-            display: flex;
-            justify-content: flex-end;
-        }
+/* Typing dots */
+.typing { display:none; }
+.typing.show { display:flex; }
+.dot { width:7px; height:7px; border-radius:50%; background:#ccc; margin:2px 2px;
+  animation:blink 1.4s infinite; }
+.dot:nth-child(2) { animation-delay:.2s; }
+.dot:nth-child(3) { animation-delay:.4s; }
+@keyframes blink { 0%,60%,100%{transform:none} 30%{transform:translateY(-7px)} }
 
-        .message-assistant {
-            display: flex;
-            justify-content: flex-start;
-        }
+/* Input area */
+.input-area { background:#fff; border-top:1px solid #eee; padding:.8rem 1.25rem; flex-shrink:0; }
+.quick-row { display:flex; flex-wrap:wrap; gap:.4rem; margin-bottom:.6rem; }
+.qbtn { border:1.5px solid #dde; background:#fff; color:#555; border-radius:20px;
+  padding:.3rem .85rem; font-size:.82rem; cursor:pointer; transition:all .2s; }
+.qbtn:hover { border-color:var(--accent); color:var(--accent); background:#f0f2ff; }
+.qbtn.active { background:var(--grad); color:#fff; border-color:transparent; }
 
-        .message-bubble {
-            max-width: 70%;
-            padding: 12px 18px;
-            border-radius: 18px;
-            position: relative;
-            word-wrap: break-word;
-        }
+.input-row { display:flex; align-items:flex-end; gap:.5rem; }
+.input-box { flex:1; border:1.5px solid #dde; border-radius:22px; overflow:hidden;
+  display:flex; transition:border-color .2s; }
+.input-box:focus-within { border-color:var(--accent); }
+#userInput { border:none; padding:.65rem 1rem; font-size:.95rem; flex:1; resize:none;
+  max-height:120px; overflow-y:auto; line-height:1.4; }
+#userInput:focus { outline:none; box-shadow:none; }
+.attach-btn, .send-btn { border:none; background:none; cursor:pointer; padding:.4rem .65rem;
+  color:#aaa; font-size:1.15rem; transition:color .2s; }
+.attach-btn:hover { color:var(--accent); }
+.send-btn { background:var(--grad); color:#fff; border-radius:50%; width:38px; height:38px;
+  display:flex; align-items:center; justify-content:center; font-size:1rem; flex-shrink:0; }
+.send-btn:hover { opacity:.9; }
 
-        .message-user .message-bubble {
-            background: var(--user-msg-bg);
-            color: white;
-            border-bottom-right-radius: 4px;
-        }
-
-        .message-assistant .message-bubble {
-            background: var(--assistant-msg-bg);
-            color: #333;
-            border: 1px solid #e0e0e0;
-            border-bottom-left-radius: 4px;
-        }
-
-        .message-time {
-            font-size: 0.75rem;
-            opacity: 0.7;
-            margin-top: 5px;
-        }
-
-        .typing-indicator {
-            display: none;
-            padding: 12px 18px;
-            background: white;
-            border-radius: 18px;
-            border: 1px solid #e0e0e0;
-            max-width: 100px;
-        }
-
-        .typing-indicator.show {
-            display: inline-block;
-        }
-
-        .typing-dot {
-            display: inline-block;
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: #999;
-            margin: 0 2px;
-            animation: typing 1.4s infinite;
-        }
-
-        .typing-dot:nth-child(2) { animation-delay: 0.2s; }
-        .typing-dot:nth-child(3) { animation-delay: 0.4s; }
-
-        @keyframes typing {
-            0%, 60%, 100% { transform: translateY(0); }
-            30% { transform: translateY(-10px); }
-        }
-
-        .chat-input-area {
-            background: white;
-            padding: 20px;
-            border-radius: 15px;
-            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
-        }
-
-        .quick-actions {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 15px;
-            flex-wrap: wrap;
-        }
-
-        .quick-action-btn {
-            background: var(--primary-gradient);
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 20px;
-            font-size: 0.9rem;
-            cursor: pointer;
-            transition: all 0.3s ease;
-        }
-
-        .quick-action-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
-        }
-
-        .input-group {
-            border-radius: 25px;
-            overflow: hidden;
-            border: 2px solid #e0e0e0;
-        }
-
-        .input-group:focus-within {
-            border-color: #667eea;
-        }
-
-        #userInput {
-            border: none;
-            padding: 15px 20px;
-            font-size: 1rem;
-        }
-
-        #userInput:focus {
-            box-shadow: none;
-        }
-
-        #sendBtn {
-            background: var(--primary-gradient);
-            color: white;
-            border: none;
-            padding: 0 30px;
-            font-size: 1.1rem;
-        }
-
-        #sendBtn:hover {
-            opacity: 0.9;
-        }
-
-        .welcome-message {
-            text-align: center;
-            padding: 40px 20px;
-        }
-
-        .welcome-message h2 {
-            background: var(--primary-gradient);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            margin-bottom: 20px;
-        }
-
-        .feature-cards {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 20px;
-            margin-top: 30px;
-        }
-
-        .feature-card {
-            background: white;
-            padding: 20px;
-            border-radius: 10px;
-            border: 2px solid #e0e0e0;
-            transition: all 0.3s ease;
-        }
-
-        .feature-card:hover {
-            border-color: #667eea;
-            transform: translateY(-5px);
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-        }
-
-        .feature-icon {
-            font-size: 2.5rem;
-            margin-bottom: 15px;
-            background: var(--primary-gradient);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-
-        /* Markdown-like styling for assistant messages */
-        .message-assistant .message-bubble strong {
-            font-weight: 600;
-            color: #667eea;
-        }
-
-        .message-assistant .message-bubble code {
-            background: #f0f0f0;
-            padding: 2px 6px;
-            border-radius: 4px;
-            font-family: 'Courier New', monospace;
-            font-size: 0.9em;
-        }
-
-        .message-assistant .message-bubble ul {
-            margin: 10px 0;
-            padding-left: 20px;
-        }
-
-        .message-assistant .message-bubble li {
-            margin: 5px 0;
-        }
-    </style>
+/* Welcome */
+.welcome { text-align:center; padding:3rem 1rem; }
+.welcome h3 { background:var(--grad); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+.feat-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:.8rem; margin-top:1.5rem; }
+.feat-card { background:#fff; border:1.5px solid #eee; border-radius:12px; padding:1rem;
+  cursor:pointer; transition:all .2s; }
+.feat-card:hover { border-color:var(--accent); transform:translateY(-2px); box-shadow:0 6px 20px rgba(102,126,234,.15); }
+.feat-card .icon { font-size:1.8rem; margin-bottom:.5rem; background:var(--grad);
+  -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+</style>
 </head>
 <body>
-    <!-- Navigation -->
-    <nav class="navbar navbar-expand-lg navbar-light">
-        <div class="container-fluid">
-            <a class="navbar-brand" href="/">
-                <i class="bi bi-activity"></i>
-                <strong>SeismicX</strong> AI Assistant
-            </a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav ms-auto">
-                    <li class="nav-item"><a class="nav-link" href="/"><i class="bi bi-house"></i> Home</a></li>
-                    <li class="nav-item"><a class="nav-link" href="/picker"><i class="bi bi-graph-up"></i> Picker</a></li>
-                    <li class="nav-item"><a class="nav-link" href="/associator"><i class="bi bi-diagram-3"></i> Associator</a></li>
-                    <li class="nav-item"><a class="nav-link" href="/polarity"><i class="bi bi-arrows-vertical"></i> Polarity</a></li>
-                    <li class="nav-item"><a class="nav-link active" href="/chat"><i class="bi bi-chat-dots"></i> AI Chat</a></li>
-                    <li class="nav-item"><a class="nav-link" href="/llm-settings"><i class="bi bi-cpu"></i> LLM</a></li>
-                </ul>
-            </div>
+<!-- Nav -->
+<nav class="navbar navbar-expand-lg navbar-light">
+  <div class="container-fluid px-3">
+    <a class="navbar-brand" href="/chat">
+      <i class="bi bi-activity text-primary"></i>
+      <span><strong>SeismicX</strong></span>
+    </a>
+    <div class="collapse navbar-collapse">
+      <ul class="navbar-nav ms-auto gap-1 align-items-center">
+        <li class="nav-item"><a class="nav-link active fw-bold" href="/chat"><i class="bi bi-chat-dots"></i> 对话</a></li>
+        <li class="nav-item"><a class="nav-link" href="/knowledge"><i class="bi bi-journal-bookmark-fill"></i> 知识库</a></li>
+        <li class="nav-item"><a class="nav-link" href="/skills"><i class="bi bi-lightning-charge"></i> 技能</a></li>
+        <li class="nav-item"><a class="nav-link" href="/llm-settings"><i class="bi bi-cpu"></i> LLM</a></li>
+      </ul>
+    </div>
+  </div>
+</nav>
+
+<div class="app-body">
+  <!-- Sidebar: uploaded docs + KB status -->
+  <div class="sidebar">
+    <div class="sb-section">
+      <div class="sb-title"><i class="bi bi-file-earmark-pdf me-1"></i>本次上传</div>
+      <div id="sessionDocList">
+        <div class="kb-info text-muted">暂无上传文档<br>点击 📎 上传 PDF</div>
+      </div>
+    </div>
+    <div class="sb-section">
+      <div class="sb-title"><i class="bi bi-journal-bookmark me-1"></i>知识库</div>
+      <div id="kbInfo" class="kb-info">加载中…</div>
+      <a href="/knowledge" class="btn btn-sm btn-outline-secondary w-100 mt-2" style="font-size:.78rem;">
+        <i class="bi bi-gear"></i> 管理知识库
+      </a>
+    </div>
+    <div class="sb-section">
+      <div class="sb-title">模式</div>
+      <div class="d-flex flex-column gap-1">
+        <button class="qbtn active" id="modeChat" onclick="setMode('chat')">💬 对话</button>
+        <button class="qbtn" id="modePaper" onclick="setMode('paper')">📖 文献解读</button>
+        <button class="qbtn" id="modeRag" onclick="setMode('rag')">🔍 知识检索</button>
+      </div>
+    </div>
+    <!-- Workspace directory -->
+    <div class="sb-section">
+      <div class="sb-title"><i class="bi bi-folder2-open me-1"></i>本地工作目录</div>
+      <div class="d-flex align-items-center gap-1 mb-1">
+        <div class="form-check form-switch mb-0" style="min-width:0">
+          <input class="form-check-input" type="checkbox" id="wsEnabled" onchange="toggleWorkspace()">
+          <label class="form-check-label" for="wsEnabled" style="font-size:.78rem">授权访问</label>
         </div>
-    </nav>
+      </div>
+      <div id="wsDirRow" style="display:none">
+        <input type="text" class="form-control form-control-sm" id="wsPath"
+               placeholder="/data/seismic/waveform" style="font-size:.78rem;margin-bottom:.3rem">
+        <button class="btn btn-sm btn-outline-secondary w-100" style="font-size:.75rem" onclick="saveWorkspace()">
+          <i class="bi bi-check2"></i> 保存路径
+        </button>
+        <div id="wsStatus" class="kb-info mt-1"></div>
+      </div>
+    </div>
+  </div>
 
-    <!-- Chat Container -->
-    <div class="chat-container">
-        <!-- Messages Area -->
-        <div class="chat-messages" id="chatMessages">
-            <!-- Welcome Message -->
-            <div class="welcome-message">
-                <h2><i class="bi bi-robot"></i> SeismicX AI Assistant</h2>
-                <p class="lead">您好！我是您的地震数据分析智能助手。</p>
-                <p>我可以通过对话帮您完成震相检测、震相关联、极性分析等任务。</p>
-
-                <div class="feature-cards">
-                    <div class="feature-card">
-                        <div class="feature-icon"><i class="bi bi-folder2-open"></i></div>
-                        <h5>数据浏览</h5>
-                        <p class="text-muted">查看目录中的地震数据文件</p>
-                    </div>
-                    <div class="feature-card">
-                        <div class="feature-icon"><i class="bi bi-graph-up"></i></div>
-                        <h5>波形绘制</h5>
-                        <p class="text-muted">可视化地震波形数据</p>
-                    </div>
-                    <div class="feature-card">
-                        <div class="feature-icon"><i class="bi bi-graph-up"></i></div>
-                        <h5>震相检测</h5>
-                        <p class="text-muted">自动检测Pg/Sg/Pn/Sn震相</p>
-                    </div>
-                    <div class="feature-card">
-                        <div class="feature-icon"><i class="bi bi-diagram-3"></i></div>
-                        <h5>震相关联</h5>
-                        <p class="text-muted">关联震相为地震事件</p>
-                    </div>
-                    <div class="feature-card">
-                        <div class="feature-icon"><i class="bi bi-arrows-vertical"></i></div>
-                        <h5>极性分析</h5>
-                        <p class="text-muted">分析P波初动方向</p>
-                    </div>
-                </div>
-            </div>
+  <!-- Main chat -->
+  <div class="chat-area">
+    <div class="chat-messages" id="chatMessages">
+      <div class="welcome" id="welcomePanel">
+        <h3><i class="bi bi-robot"></i> SeismicX AI 助手</h3>
+        <p class="text-muted">您好！我是地震学智能助手，可以回答问题、解读文献、分析数据。</p>
+        <div class="feat-grid">
+          <div class="feat-card" onclick="sendQuick('如何获取 IRIS 波形数据？')">
+            <div class="icon"><i class="bi bi-question-circle"></i></div>
+            <div class="fw-semibold" style="font-size:.88rem;">地震学问答</div>
+            <div class="text-muted" style="font-size:.78rem;">方法原理 / ObsPy 用法</div>
+          </div>
+          <div class="feat-card" onclick="triggerUpload()">
+            <div class="icon"><i class="bi bi-file-earmark-pdf"></i></div>
+            <div class="fw-semibold" style="font-size:.88rem;">上传文献</div>
+            <div class="text-muted" style="font-size:.78rem;">解读论文 / RAG 问答</div>
+          </div>
+          <div class="feat-card" onclick="setMode('rag');sendQuick('知识库里有哪些内容？')">
+            <div class="icon"><i class="bi bi-journal-bookmark"></i></div>
+            <div class="fw-semibold" style="font-size:.88rem;">知识库查询</div>
+            <div class="text-muted" style="font-size:.78rem;">基于已索引文献检索</div>
+          </div>
+          <div class="feat-card" onclick="sendQuick('帮我对 /data/wave.mseed 做带通滤波并画图')">
+            <div class="icon"><i class="bi bi-code-slash"></i></div>
+            <div class="fw-semibold" style="font-size:.88rem;">数据处理</div>
+            <div class="text-muted" style="font-size:.78rem;">生成 Python 代码并执行</div>
+          </div>
         </div>
-
-        <!-- Typing Indicator -->
-        <div class="typing-indicator" id="typingIndicator">
-            <span class="typing-dot"></span>
-            <span class="typing-dot"></span>
-            <span class="typing-dot"></span>
-        </div>
-
-        <!-- Input Area -->
-        <div class="chat-input-area">
-            <!-- Quick Actions -->
-            <div class="quick-actions">
-                <button class="quick-action-btn" onclick="sendQuickMessage('帮我查看当前目录下的mseed文件')">
-                    <i class="bi bi-folder2-open"></i> 浏览数据
-                </button>
-                <button class="quick-action-btn" onclick="sendQuickMessage('绘制波形')">
-                    <i class="bi bi-graph-up"></i> 绘制波形
-                </button>
-                <button class="quick-action-btn" onclick="sendQuickMessage('帮我拾取震相')">
-                    <i class="bi bi-play-fill"></i> 拾取震相
-                </button>
-                <button class="quick-action-btn" onclick="sendQuickMessage('关联地震事件')">
-                    <i class="bi bi-link-45deg"></i> 关联事件
-                </button>
-                <button class="quick-action-btn" onclick="sendQuickMessage('分析初动极性')">
-                    <i class="bi bi-arrows-angle-expand"></i> 极性分析
-                </button>
-                <button class="quick-action-btn" onclick="sendQuickMessage('显示帮助')">
-                    <i class="bi bi-question-circle"></i> 帮助
-                </button>
-                <button class="quick-action-btn" onclick="clearChat()">
-                    <i class="bi bi-trash"></i> 清空对话
-                </button>
-            </div>
-
-            <!-- Input -->
-            <div class="input-group">
-                <input type="text" class="form-control" id="userInput"
-                       placeholder="输入消息... (例如: '拾取/data/waveforms目录下的震相')"
-                       onkeypress="handleKeyPress(event)">
-                <button class="btn" type="button" id="sendBtn" onclick="sendMessage()">
-                    <i class="bi bi-send-fill"></i>
-                </button>
-            </div>
-        </div>
+      </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
-    <script>
-        const chatMessages = document.getElementById('chatMessages');
-        const userInput = document.getElementById('userInput');
-        const typingIndicator = document.getElementById('typingIndicator');
+    <!-- Typing indicator (inside chat area) -->
+    <div style="padding:0 1.5rem .25rem">
+      <div class="typing" id="typingIndicator">
+        <div class="bubble" style="background:#fff;border:1px solid #e5e5e5;padding:.5rem .75rem;border-radius:14px;border-bottom-left-radius:4px;">
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+        </div>
+      </div>
+    </div>
 
-        // Phase colour map
-        const PHASE_COLORS = {
-            Pg: '#e74c3c', Sg: '#3498db',
-            Pn: '#c0392b', Sn: '#2980b9',
-            P:  '#e67e22', S:  '#1abc9c',
-        };
+    <!-- Context bar -->
+    <div class="context-bar" id="contextBar" style="display:none">
+      <span style="font-size:.78rem;color:#888;">引用上下文：</span>
+      <div id="contextChips"></div>
+    </div>
 
-        // Render Plotly waveform chart (with optional pick markers)
-        function renderWaveform(container, traces, title, picks = []) {
-            const plotDiv = document.createElement('div');
-            plotDiv.style.cssText = 'width:100%;margin-top:12px;border-radius:8px;overflow:hidden;';
-            container.appendChild(plotDiv);
+    <!-- Input area -->
+    <div class="input-area">
+      <div class="quick-row">
+        <button class="qbtn" onclick="sendQuick('如何做带通滤波？')">💡 滤波方法</button>
+        <button class="qbtn" onclick="sendQuick('请总结这篇文献的核心方法和贡献')">📖 总结文献</button>
+        <button class="qbtn" onclick="sendQuick('文献中的关键公式是什么？请解释')">🔢 解读公式</button>
+        <button class="qbtn" onclick="sendQuick('帮我拾取震相')">🔍 拾取震相</button>
+        <button class="qbtn" onclick="clearChat()" style="margin-left:auto">🗑 清空</button>
+      </div>
+      <div class="input-row">
+        <div class="input-box">
+          <button class="attach-btn" title="上传 PDF" onclick="triggerUpload()">
+            <i class="bi bi-paperclip"></i>
+          </button>
+          <textarea id="userInput" rows="1" placeholder="输入问题或指令…" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+        </div>
+        <button class="send-btn" onclick="sendMessage()"><i class="bi bi-send-fill"></i></button>
+      </div>
+    </div>
+  </div>
+</div>
 
-            const plotHeight = Math.max(200, traces.length * 130);
-            plotDiv.style.height = plotHeight + 'px';
+<!-- Hidden file input -->
+<input type="file" id="fileInput" accept=".pdf" multiple style="display:none" onchange="uploadFiles(this.files)">
 
-            const plotlyTraces = traces.map((tr, i) => ({
-                x: tr.times,
-                y: tr.amplitudes,
-                type: 'scatter',
-                mode: 'lines',
-                name: tr.label,
-                line: { width: 1 },
-                xaxis: i === 0 ? 'x' : `x${i + 1}`,
-                yaxis: i === 0 ? 'y' : `y${i + 1}`,
-            }));
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/highlight.min.js"></script>
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+const SESSION_ID = 'sess_' + Math.random().toString(36).slice(2,10);
+let currentMode = 'chat';           // chat | paper | rag
+let sessionDocs = [];               // [{name, n_chunks}]
+let chatHistory = [];               // [{role,content}] for LLM context
+let kbHasDocs   = false;
 
-            // Build subplot layout
-            const layout = {
-                title: { text: title, font: { size: 13 } },
-                margin: { t: 40, b: 40, l: 70, r: 20 },
-                height: plotHeight,
-                showlegend: false,
-                paper_bgcolor: '#fff',
-                plot_bgcolor: '#fafafa',
-                grid: { rows: traces.length, columns: 1, pattern: 'independent', roworder: 'top to bottom' },
-                shapes: [],
-                annotations: [],
-            };
+const chatMessages    = document.getElementById('chatMessages');
+const typingIndicator = document.getElementById('typingIndicator');
+const contextBar      = document.getElementById('contextBar');
+const contextChips    = document.getElementById('contextChips');
 
-            traces.forEach((tr, i) => {
-                const axisNum = i === 0 ? '' : i + 1;
-                layout[`xaxis${axisNum}`] = {
-                    title: i === traces.length - 1 ? 'Time (s)' : '',
-                    showticklabels: i === traces.length - 1,
-                    gridcolor: '#e0e0e0',
-                };
-                layout[`yaxis${axisNum}`] = {
-                    title: tr.label,
-                    tickvals: [-1, 0, 1],
-                    ticktext: ['-1', '0', '1'],
-                    gridcolor: '#e0e0e0',
-                    zeroline: true,
-                    zerolinecolor: '#aaa',
-                    zerolinewidth: 1,
-                };
-            });
+// ── Mode ───────────────────────────────────────────────────────────────────
+function setMode(mode) {
+  currentMode = mode;
+  ['chat','paper','rag'].forEach(m => {
+    document.getElementById('mode' + m.charAt(0).toUpperCase() + m.slice(1))?.classList.remove('active');
+  });
+  const btnId = {chat:'modeChat', paper:'modePaper', rag:'modeRag'}[mode];
+  document.getElementById(btnId)?.classList.add('active');
+}
 
-            // Add pick markers as vertical lines across ALL subplots
-            if (picks && picks.length > 0) {
-                picks.forEach(pick => {
-                    const color = PHASE_COLORS[pick.phase] || '#999';
-                    const t = pick.time_s;
-                    // One shape per subplot
-                    traces.forEach((tr, i) => {
-                        const xref = i === 0 ? 'x' : `x${i + 1}`;
-                        const yref = i === 0 ? 'y' : `y${i + 1}`;
-                        layout.shapes.push({
-                            type: 'line',
-                            xref, yref,
-                            x0: t, x1: t,
-                            y0: -1.1, y1: 1.1,
-                            line: { color, width: 1.5, dash: 'dot' },
-                        });
-                    });
-                    // Label on the top subplot only
-                    layout.annotations.push({
-                        x: t, y: 1.05,
-                        xref: 'x', yref: 'y',
-                        text: `<b>${pick.phase}</b><br>${pick.confidence.toFixed(2)}`,
-                        showarrow: true,
-                        arrowhead: 2,
-                        arrowsize: 0.8,
-                        ax: 0, ay: -20,
-                        font: { size: 10, color },
-                        arrowcolor: color,
-                        bgcolor: 'rgba(255,255,255,0.8)',
-                        bordercolor: color,
-                        borderwidth: 1,
-                        borderpad: 2,
-                    });
-                });
-            }
+// ── KB status ──────────────────────────────────────────────────────────────
+async function loadKbStatus() {
+  try {
+    const r = await fetch('/api/knowledge/status');
+    const d = await r.json();
+    kbHasDocs = d.n_docs > 0;
+    document.getElementById('kbInfo').innerHTML = d.n_docs > 0
+      ? `<span style="color:#3949ab;font-weight:600">${d.n_docs} 篇</span> 文献 · ${d.n_vectors||d.n_chunks} 个片段`
+      : '知识库为空';
+  } catch { document.getElementById('kbInfo').textContent = '无法连接'; }
+}
 
-            Plotly.newPlot(plotDiv, plotlyTraces, layout, {
-                responsive: true,
-                displayModeBar: true,
-                modeBarButtonsToRemove: ['toImage', 'sendDataToCloud'],
-            });
+// ── Session doc sidebar ────────────────────────────────────────────────────
+function refreshSessionSidebar() {
+  const list = document.getElementById('sessionDocList');
+  if (sessionDocs.length === 0) {
+    list.innerHTML = '<div class="kb-info text-muted">暂无上传文档<br>点击 📎 上传 PDF</div>';
+    return;
+  }
+  list.innerHTML = sessionDocs.map((d, i) => `
+    <div class="sb-doc">
+      <i class="bi bi-file-earmark-pdf text-danger" style="font-size:.9rem;flex-shrink:0"></i>
+      <span class="doc-name" title="${d.name}">${d.name}</span>
+      <button class="rm-btn" onclick="removeSessionDoc(${i})"><i class="bi bi-x"></i></button>
+    </div>`).join('');
+}
 
-            // Scroll after render
-            setTimeout(() => { chatMessages.scrollTop = chatMessages.scrollHeight; }, 300);
-        }
+async function removeSessionDoc(i) {
+  sessionDocs.splice(i, 1);
+  refreshSessionSidebar();
+  // 若全部移除，清空服务器端会话
+  if (sessionDocs.length === 0) {
+    await fetch('/api/chat/clear_session', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({session_id: SESSION_ID})
+    });
+  }
+}
 
-        // Add message to chat
-        function addMessage(role, content, waveformData = null, waveformTitle = '', picksData = null) {
-            const messageDiv = document.createElement('div');
-            messageDiv.className = `message message-${role}`;
+// ── File upload ────────────────────────────────────────────────────────────
+function triggerUpload() { document.getElementById('fileInput').click(); }
 
-            const bubbleDiv = document.createElement('div');
-            bubbleDiv.className = 'message-bubble';
+async function uploadFiles(files) {
+  if (!files || files.length === 0) return;
+  for (const file of files) {
+    if (!file.name.toLowerCase().endsWith('.pdf')) continue;
+    addMsg('assistant', `📎 正在上传「${file.name}」…`);
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('session_id', SESSION_ID);
+    try {
+      const r = await fetch('/api/chat/upload', {method:'POST', body:fd});
+      const d = await r.json();
+      if (d.ok) {
+        sessionDocs.push({name: file.name, n_chunks: d.n_chunks});
+        refreshSessionSidebar();
+        addMsg('assistant',
+          `✅ **${file.name}** 已加载（${d.n_pages} 页，${d.n_chunks} 个片段）\n\n` +
+          `现在可以问我关于这篇文献的任何问题，或切换到「📖 文献解读」模式进行深度分析。`);
+        // Auto switch to paper mode
+        setMode('paper');
+      } else {
+        addMsg('assistant', `✗ 上传失败：${d.error}`);
+      }
+    } catch(e) {
+      addMsg('assistant', `✗ 上传出错：${e.message}`);
+    }
+  }
+  document.getElementById('fileInput').value = '';
+}
 
-            // Simple markdown-like formatting
-            let formattedContent = content
-                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-                .replace(/`(.*?)`/g, '<code>$1</code>')
-                .replace(/\n/g, '<br>');
+// ── Message rendering ──────────────────────────────────────────────────────
+function addMsg(role, content, sources=[]) {
+  const welcome = document.getElementById('welcomePanel');
+  if (welcome) welcome.remove();
 
-            bubbleDiv.innerHTML = formattedContent;
-            messageDiv.appendChild(bubbleDiv);
+  const div = document.createElement('div');
+  div.className = `msg msg-${role}`;
 
-            // If there's waveform data, render Plotly chart directly
-            if (waveformData && waveformData.length > 0) {
-                // Widen the bubble so the chart has room
-                bubbleDiv.style.maxWidth = '100%';
-                messageDiv.style.maxWidth = '95%';
-                renderWaveform(messageDiv, waveformData, waveformTitle, picksData || []);
-            }
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  bubble.innerHTML = formatText(content);
 
-            const timeDiv = document.createElement('div');
-            timeDiv.className = 'message-time';
-            timeDiv.textContent = new Date().toLocaleTimeString('zh-CN', {hour: '2-digit', minute:'2-digit'});
-            messageDiv.appendChild(timeDiv);
+  div.appendChild(bubble);
 
-            // Remove welcome message if exists
-            const welcomeMsg = chatMessages.querySelector('.welcome-message');
-            if (welcomeMsg) {
-                welcomeMsg.remove();
-            }
+  // Source badges (for RAG responses)
+  if (sources && sources.length) {
+    const srcDiv = document.createElement('div');
+    srcDiv.style.cssText = 'margin-top:.3rem;';
+    srcDiv.innerHTML = '<span style="font-size:.72rem;color:#aaa;margin-right:.3rem">来源：</span>' +
+      sources.map(s => `<span class="source-badge">${s}</span>`).join('');
+    div.appendChild(srcDiv);
+  }
 
-            chatMessages.appendChild(messageDiv);
-            chatMessages.scrollTop = chatMessages.scrollHeight;
-            return messageDiv;
-        }
+  const timeEl = document.createElement('div');
+  timeEl.className = 'msg-time';
+  timeEl.textContent = new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});
+  div.appendChild(timeEl);
 
-        // Poll for async pick results and update the chart
-        function pollPickTask(taskId, msgEl, waveformData, title, interval = 3000) {
-            // Show spinner on the bubble
-            const bubble = msgEl.querySelector('.message-bubble');
-            const spinner = document.createElement('div');
-            spinner.id = `spinner-${taskId}`;
-            spinner.style.cssText = 'margin-top:8px;color:#667eea;font-size:0.85rem;';
-            spinner.innerHTML = '<span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span> 拾取中，请稍候...';
-            bubble.appendChild(spinner);
+  chatMessages.appendChild(div);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+  return div;
+}
 
-            const timer = setInterval(async () => {
-                try {
-                    const res = await fetch(`/api/chat_picks/${taskId}`);
-                    const data = await res.json();
-                    if (data.status === 'running') return; // keep polling
+// ── Markdown renderer (marked.js) ─────────────────────────────────────────
+marked.setOptions({
+  breaks: true,   // \n → <br> inside paragraphs
+  gfm: true,
+  highlight: (code, lang) => {
+    if (lang && hljs.getLanguage(lang)) {
+      try { return hljs.highlight(code, {language: lang}).value; } catch {}
+    }
+    return hljs.highlightAuto(code).value;
+  }
+});
 
-                    clearInterval(timer);
-                    spinner.remove();
+// Custom renderer: wrap pre/code in a copy-button wrapper
+const renderer = new marked.Renderer();
+renderer.code = (code, lang) => {
+  const highlighted = (lang && hljs.getLanguage(lang))
+    ? hljs.highlight(code, {language: lang}).value
+    : hljs.highlightAuto(code).value;
+  const langLabel = lang ? `<span style="font-size:.7rem;color:#aaa;margin-right:.5rem">${lang}</span>` : '';
+  return `<div class="code-wrapper">
+    <pre><code class="hljs">${highlighted}</code></pre>
+    ${langLabel}<button class="copy-btn" onclick="copyCode(this)">复制</button>
+  </div>`;
+};
+marked.use({ renderer });
 
-                    if (data.status === 'completed') {
-                        const picks = data.picks || [];
-                        // Re-render the chart with picks overlaid
-                        const oldPlot = msgEl.querySelector('div[id^="plotly-"]') ||
-                                        msgEl.querySelector('.js-plotly-plot');
-                        if (oldPlot) oldPlot.remove();
-                        renderWaveform(msgEl, waveformData,
-                            title.replace('拾取中...', '震相拾取结果'), picks);
+function formatText(text) {
+  try {
+    return marked.parse(text);
+  } catch(e) {
+    // fallback: plain text with line breaks
+    return text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+  }
+}
 
-                        // Append pick summary text
-                        const bubble2 = msgEl.querySelector('.message-bubble');
-                        const summary = document.createElement('div');
-                        summary.style.cssText = 'margin-top:8px;font-size:0.85rem;color:#555;';
-                        summary.innerHTML = picks.length > 0
-                            ? `✓ 检测到 <b>${picks.length}</b> 个震相`
-                            : '⚠️ 未检测到震相';
-                        bubble2.appendChild(summary);
-                    } else {
-                        const bubble2 = msgEl.querySelector('.message-bubble');
-                        const err = document.createElement('div');
-                        err.style.cssText = 'color:#e74c3c;margin-top:8px;font-size:0.85rem;';
-                        err.textContent = `拾取失败: ${data.error || data.status}`;
-                        bubble2.appendChild(err);
-                    }
-                    chatMessages.scrollTop = chatMessages.scrollHeight;
-                } catch(e) {
-                    clearInterval(timer);
-                    spinner.remove();
-                }
-            }, interval);
-        }
+function copyCode(btn) {
+  const code = btn.closest('.code-wrapper').querySelector('code');
+  navigator.clipboard.writeText(code.innerText).then(() => {
+    btn.textContent = '已复制';
+    setTimeout(() => btn.textContent = '复制', 2000);
+  });
+}
 
-        // Poll batch / sage_picker task — shows real-time progress every 3 s
-        function pollBatchTask(taskId, msgEl, picksFile, interval = 3000) {
-            const bubble = msgEl.querySelector('.message-bubble');
+// ── Workspace directory ────────────────────────────────────────────────────
+let wsEnabled = false;
+let wsPath = '';
 
-            // Progress UI
-            const bar = document.createElement('div');
-            bar.id = `bar-wrap-${taskId}`;
-            bar.style.cssText = 'margin-top:12px;';
-            bar.innerHTML = `
-                <div style="background:#f0f0f0;border-radius:4px;height:10px;overflow:hidden;">
-                    <div id="bar-${taskId}" style="height:100%;width:3%;
-                         background:linear-gradient(90deg,#667eea,#764ba2);
-                         border-radius:4px;transition:width 0.6s ease;"></div>
-                </div>
-                <div id="bar-label-${taskId}"
-                     style="font-size:0.82rem;color:#666;margin-top:5px;line-height:1.5;">
-                    ⏳ 正在初始化拾取器...
-                </div>`;
-            bubble.appendChild(bar);
+async function loadWorkspace() {
+  try {
+    const r = await fetch('/api/workspace/config');
+    const d = await r.json();
+    wsEnabled = d.enabled || false;
+    wsPath = d.path || '';
+    document.getElementById('wsEnabled').checked = wsEnabled;
+    document.getElementById('wsPath').value = wsPath;
+    document.getElementById('wsDirRow').style.display = wsEnabled ? 'block' : 'none';
+    if (wsEnabled && wsPath) updateWsStatus(wsPath);
+  } catch {}
+}
 
-            const timer = setInterval(async () => {
-                try {
-                    const res = await fetch(`/api/task/${taskId}`);
-                    const data = await res.json();
+function toggleWorkspace() {
+  wsEnabled = document.getElementById('wsEnabled').checked;
+  document.getElementById('wsDirRow').style.display = wsEnabled ? 'block' : 'none';
+  saveWorkspace();
+}
 
-                    // Update progress bar & label while running
-                    const prog = data.progress || {};
-                    const barEl   = document.getElementById(`bar-${taskId}`);
-                    const labelEl = document.getElementById(`bar-label-${taskId}`);
+async function saveWorkspace() {
+  wsPath = document.getElementById('wsPath').value.trim();
+  wsEnabled = document.getElementById('wsEnabled').checked;
+  await fetch('/api/workspace/config', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ enabled: wsEnabled, path: wsPath })
+  });
+  if (wsEnabled && wsPath) updateWsStatus(wsPath);
+}
 
-                    if (data.status === 'running') {
-                        const total   = prog.total   || 0;
-                        const current = prog.current || 0;
-                        const nPicks  = prog.n_picks  || 0;
-                        const sta     = prog.current_station || '';
-                        const pct = total > 0
-                            ? Math.max(3, Math.round(current / total * 100))
-                            : Math.min(30, 3 + (Date.now() % 30000) / 1000);
-                        if (barEl) barEl.style.width = pct + '%';
-                        if (labelEl) {
-                            labelEl.innerHTML = total > 0
-                                ? `⚙️ <b>${current} / ${total}</b> 台站 &nbsp;|&nbsp; 已检出 <b style="color:#764ba2">${nPicks}</b> 个震相` +
-                                  (sta ? `<br><small style="color:#aaa">当前: ${sta}</small>` : '')
-                                : `⏳ 正在读取数据，请稍候...`;
-                        }
-                        return; // keep polling
-                    }
+async function updateWsStatus(path) {
+  const el = document.getElementById('wsStatus');
+  try {
+    const r = await fetch(`/api/workspace/ls?path=${encodeURIComponent(path)}`);
+    const d = await r.json();
+    if (d.ok) {
+      el.innerHTML = `<span style="color:#3949ab">${d.entries.length} 个文件/目录</span>`;
+    } else {
+      el.innerHTML = `<span style="color:#e53935">${d.error}</span>`;
+    }
+  } catch { el.textContent = '无法访问'; }
+}
 
-                    // Done
-                    clearInterval(timer);
-                    bar.remove();
+// ── Typing indicator ───────────────────────────────────────────────────────
+function showTyping() {
+  typingIndicator.classList.add('show');
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+function hideTyping() { typingIndicator.classList.remove('show'); }
 
-                    const summary = document.createElement('div');
-                    summary.style.cssText = 'margin-top:10px;font-size:0.85rem;line-height:1.8;';
+// ── Send message ───────────────────────────────────────────────────────────
+async function sendMessage() {
+  const input = document.getElementById('userInput');
+  const text  = input.value.trim();
+  if (!text) return;
 
-                    if (data.status === 'completed') {
-                        const r = data.result || {};
-                        const nSta   = r.n_stations ?? (prog.total   || '?');
-                        const nPicks = r.n_picks    ?? (prog.n_picks  || '?');
-                        const skipped = r.skipped != null ? `，跳过 ${r.skipped} 个台站` : '';
-                        summary.innerHTML =
-                            `✅ <b>批量拾取完成！</b><br>` +
-                            `处理台站: <b>${nSta}</b> &nbsp;|&nbsp; 检出震相: <b style="color:#764ba2">${nPicks}</b>${skipped}<br>` +
-                            `输出文件: <code style="font-size:0.78rem">${picksFile}</code>`;
-                    } else {
-                        const errMsg = data.stderr || data.logs?.stderr || '';
-                        summary.innerHTML =
-                            `❌ <b>拾取失败</b> (${data.status})<br>` +
-                            `<small style="color:#e74c3c">${errMsg.slice(-300)}</small>`;
-                    }
-                    bubble.appendChild(summary);
-                    chatMessages.scrollTop = chatMessages.scrollHeight;
-                } catch(e) {
-                    clearInterval(timer);
-                    const barWrap = document.getElementById(`bar-wrap-${taskId}`);
-                    if (barWrap) barWrap.remove();
-                }
-            }, interval);
-        }
+  addMsg('user', text);
+  chatHistory.push({role:'user', content:text});
+  input.value = '';
+  autoResize(input);
+  showTyping();
 
-        // Show/hide typing indicator
-        function showTyping() {
-            typingIndicator.classList.add('show');
-            chatMessages.scrollTop = chatMessages.scrollHeight;
-        }
+  try {
+    // Decide routing:
+    // - paper / rag mode → /api/chat/rag
+    // - chat mode with session docs → /api/chat/rag (with paper context)
+    // - chat mode, no docs, no kb → /api/chat (conversational agent)
+    const hasSessionDocs = sessionDocs.length > 0;
+    const useRag = (currentMode !== 'chat') || hasSessionDocs || kbHasDocs;
 
-        function hideTyping() {
-            typingIndicator.classList.remove('show');
-        }
+    if (useRag) {
+      await sendRag(text);
+    } else {
+      await sendNormal(text);
+    }
+  } catch(e) {
+    hideTyping();
+    addMsg('assistant', `✗ 请求失败：${e.message}`);
+  }
+}
 
-        // Send message
-        async function sendMessage() {
-            const message = userInput.value.trim();
-            if (!message) return;
+async function sendRag(text) {
+  const mode = currentMode === 'chat' ? 'rag' : currentMode === 'paper' ? 'paper_read' : 'rag';
+  const r = await fetch('/api/chat/rag', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      message:    text,
+      session_id: SESSION_ID,
+      mode:       mode,
+      history:    chatHistory.slice(-8),
+      workspace:  wsEnabled ? wsPath : '',
+    }),
+  });
+  const d = await r.json();
+  hideTyping();
 
-            // Add user message
-            addMessage('user', message);
-            userInput.value = '';
+  const answer = d.response || '（无回复）';
+  const sources = d.sources || [];
+  const msgEl = addMsg('assistant', answer, sources);
+  chatHistory.push({role:'assistant', content:answer});
 
-            // Show typing indicator
-            showTyping();
+  // Update context bar
+  if (sources.length) {
+    contextBar.style.display = 'flex';
+    contextChips.innerHTML = sources.map(s =>
+      `<span class="ctx-chip"><i class="bi bi-file-earmark-text"></i> ${s}</span>`
+    ).join('');
+  }
+}
 
-            try {
-                const response = await fetch('/api/chat', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({message: message})
-                });
+async function sendNormal(text) {
+  const r = await fetch('/api/chat', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({message: text, workspace: wsEnabled ? wsPath : ''}),
+  });
+  const d = await r.json();
+  hideTyping();
 
-                const data = await response.json();
-                hideTyping();
+  const answer = d.response || '（无回复）';
+  addMsg('assistant', answer);
+  chatHistory.push({role:'assistant', content:answer});
 
-                // Add assistant response; render waveform + picks inline if available
-                const msgEl = addMessage('assistant', data.response,
-                           data.waveform_data || null,
-                           data.waveform_title || '',
-                           data.picks_data || null);
+  // Waveform rendering (existing functionality)
+  if (d.waveform_data?.length) {
+    renderWaveform(chatMessages.lastElementChild, d.waveform_data,
+      d.waveform_title || '', d.picks_data || []);
+  }
+  if (d.pick_task_id && d.waveform_data) {
+    pollPickTask(d.pick_task_id, chatMessages.lastElementChild, d.waveform_data, d.waveform_title || '');
+  }
+  if (d.pick_task_id && !d.waveform_data) {
+    pollBatchTask(d.pick_task_id, chatMessages.lastElementChild, d.picks_file || '');
+  }
+}
 
-                // Single-station async picking: poll and overlay picks on waveform
-                if (data.pick_task_id && data.waveform_data) {
-                    pollPickTask(data.pick_task_id, msgEl, data.waveform_data, data.waveform_title || '');
-                }
-                // Batch picking: poll run_task status and show completion summary
-                if (data.pick_task_id && !data.waveform_data) {
-                    pollBatchTask(data.pick_task_id, msgEl, data.picks_file || '');
-                }
+function sendQuick(msg) {
+  document.getElementById('userInput').value = msg;
+  sendMessage();
+}
 
-                // If there's an action to execute
-                if (data.action === 'execute_command' && data.data && data.data.command) {
-                    // Could add a button to execute command
-                    addMessage('assistant', '💡 提示：您可以在CLI中执行此命令，或者我可以为您执行。需要我执行吗？(是/否)');
-                }
+// ── Keyboard & resize ──────────────────────────────────────────────────────
+function handleKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+}
+function autoResize(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+}
 
-            } catch (error) {
-                hideTyping();
-                addMessage('assistant', '✗ 抱歉，发生了错误。请重试。');
-                console.error('Error:', error);
-            }
-        }
+// ── Clear chat ─────────────────────────────────────────────────────────────
+function clearChat() {
+  if (!confirm('确定清空对话记录？')) return;
+  chatHistory = [];
+  chatMessages.innerHTML = `<div class="welcome" id="welcomePanel">
+    <h3><i class="bi bi-robot"></i> SeismicX AI 助手</h3>
+    <p class="text-muted">对话已清空，有什么可以帮您？</p>
+  </div>`;
+  contextBar.style.display = 'none';
+}
 
-        // Send quick message
-        function sendQuickMessage(message) {
-            userInput.value = message;
-            sendMessage();
-        }
+// ── Waveform (keep existing Plotly logic) ──────────────────────────────────
+const PHASE_COLORS = {Pg:'#e74c3c',Sg:'#3498db',Pn:'#c0392b',Sn:'#2980b9',P:'#e67e22',S:'#1abc9c'};
 
-        // Handle Enter key
-        function handleKeyPress(event) {
-            if (event.key === 'Enter') {
-                sendMessage();
-            }
-        }
+function renderWaveform(container, traces, title, picks=[]) {
+  const plotDiv = document.createElement('div');
+  plotDiv.style.cssText = 'width:100%;margin-top:10px;border-radius:8px;overflow:hidden;';
+  const h = Math.max(200, traces.length*130);
+  plotDiv.style.height = h + 'px';
+  container.appendChild(plotDiv);
 
-        // Clear chat
-        function clearChat() {
-            if (confirm('确定要清空对话历史吗？')) {
-                chatMessages.innerHTML = `
-                    <div class="welcome-message">
-                        <h2><i class="bi bi-robot"></i> SeismicX AI Assistant</h2>
-                        <p class="lead">对话已清空。有什么可以帮您的？</p>
-                    </div>
-                `;
-            }
-        }
+  const plotlyTraces = traces.map((tr,i) => ({
+    x:tr.times, y:tr.amplitudes, type:'scatter', mode:'lines', name:tr.label,
+    line:{width:1}, xaxis:i===0?'x':`x${i+1}`, yaxis:i===0?'y':`y${i+1}`,
+  }));
+  const layout = {title:{text:title,font:{size:13}}, margin:{t:40,b:40,l:70,r:20},
+    height:h, showlegend:false, paper_bgcolor:'#fff', plot_bgcolor:'#fafafa',
+    grid:{rows:traces.length,columns:1,pattern:'independent',roworder:'top to bottom'},
+    shapes:[], annotations:[]};
+  traces.forEach((tr,i) => {
+    const ax = i===0?'':''+( i+1);
+    layout[`xaxis${ax}`] = {title:i===traces.length-1?'Time (s)':'',showticklabels:i===traces.length-1,gridcolor:'#e0e0e0'};
+    layout[`yaxis${ax}`] = {title:tr.label,tickvals:[-1,0,1],ticktext:['-1','0','1'],gridcolor:'#e0e0e0',zeroline:true,zerolinecolor:'#aaa',zerolinewidth:1};
+  });
+  if (picks?.length) {
+    picks.forEach(pick => {
+      const color = PHASE_COLORS[pick.phase]||'#999';
+      traces.forEach((_,i) => {
+        const xr = i===0?'x':`x${i+1}`, yr = i===0?'y':`y${i+1}`;
+        layout.shapes.push({type:'line',xref:xr,yref:yr,x0:pick.time_s,x1:pick.time_s,y0:-1.1,y1:1.1,line:{color,width:1.5,dash:'dot'}});
+      });
+      layout.annotations.push({x:pick.time_s,y:1.05,xref:'x',yref:'y',
+        text:`<b>${pick.phase}</b><br>${pick.confidence.toFixed(2)}`,showarrow:true,arrowhead:2,
+        arrowsize:.8,ax:0,ay:-20,font:{size:10,color},arrowcolor:color,
+        bgcolor:'rgba(255,255,255,0.8)',bordercolor:color,borderwidth:1,borderpad:2});
+    });
+  }
+  Plotly.newPlot(plotDiv, plotlyTraces, layout, {responsive:true});
+  setTimeout(()=>{chatMessages.scrollTop=chatMessages.scrollHeight;},300);
+}
 
-        // Focus input on load
-        window.addEventListener('load', () => {
-            userInput.focus();
-        });
-    </script>
+function pollPickTask(taskId, msgEl, waveformData, title, interval=3000) {
+  const bubble = msgEl.querySelector('.bubble');
+  const spinner = document.createElement('div');
+  spinner.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span> 拾取中…';
+  spinner.style.cssText='margin-top:8px;color:var(--accent);font-size:.82rem;';
+  bubble.appendChild(spinner);
+  const timer = setInterval(async()=>{
+    const r = await fetch(`/api/chat_picks/${taskId}`);
+    const d = await r.json();
+    if (d.status==='running') return;
+    clearInterval(timer); spinner.remove();
+    if (d.status==='completed') {
+      const old = msgEl.querySelector('.js-plotly-plot');
+      if (old) old.remove();
+      renderWaveform(msgEl, waveformData, title.replace('拾取中…','震相拾取结果'), d.picks||[]);
+      const sum = document.createElement('div');
+      sum.style.cssText='margin-top:6px;font-size:.82rem;color:#555;';
+      sum.innerHTML = d.picks?.length ? `✓ 检测到 <b>${d.picks.length}</b> 个震相` : '⚠️ 未检测到震相';
+      bubble.appendChild(sum);
+    }
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+  }, interval);
+}
+
+function pollBatchTask(taskId, msgEl, picksFile, interval=3000) {
+  const bubble = msgEl.querySelector('.bubble');
+  const bar = document.createElement('div');
+  bar.innerHTML = `
+    <div style="background:#f0f0f0;border-radius:4px;height:8px;overflow:hidden;margin-top:10px">
+      <div id="bar-${taskId}" style="height:100%;width:5%;background:var(--grad);border-radius:4px;transition:width .5s"></div>
+    </div>
+    <div id="lab-${taskId}" style="font-size:.78rem;color:#666;margin-top:4px">初始化中…</div>`;
+  bubble.appendChild(bar);
+  const timer = setInterval(async()=>{
+    const r = await fetch(`/api/task/${taskId}`);
+    const d = await r.json();
+    const prog = d.progress||{};
+    const barEl = document.getElementById(`bar-${taskId}`);
+    const labEl = document.getElementById(`lab-${taskId}`);
+    if (d.status==='running') {
+      const pct = prog.total>0 ? Math.max(5,Math.round(prog.current/prog.total*100)) : 10;
+      if (barEl) barEl.style.width=pct+'%';
+      if (labEl) labEl.textContent=`${prog.current||0}/${prog.total||'?'} 台站 | ${prog.n_picks||0} 震相`;
+      return;
+    }
+    clearInterval(timer); bar.remove();
+    const sum = document.createElement('div');
+    sum.style.cssText='margin-top:8px;font-size:.82rem;';
+    if (d.status==='completed') {
+      const re = d.result||{};
+      sum.innerHTML=`✅ 完成：${re.n_stations||'?'} 台站，${re.n_picks||'?'} 个震相`;
+    } else {
+      sum.innerHTML=`❌ 失败：${d.stderr?.slice(-200)||d.status}`;
+    }
+    bubble.appendChild(sum);
+    chatMessages.scrollTop=chatMessages.scrollHeight;
+  }, interval);
+}
+
+// Init
+loadKbStatus();
+loadWorkspace();
+document.getElementById('userInput').focus();
+</script>
 </body>
 </html>

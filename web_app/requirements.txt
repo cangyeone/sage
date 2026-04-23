@@ -17,3 +17,10 @@ onnxruntime>=1.16.0
 # Utilities
 tqdm>=4.65.0
 matplotlib>=3.7.0
+
+# RAG / Knowledge Base
+FlagEmbedding>=1.2.0
+faiss-cpu>=1.7.4
+sentence-transformers>=2.2.0
+pdfminer.six>=20221105
+PyMuPDF>=1.23.0

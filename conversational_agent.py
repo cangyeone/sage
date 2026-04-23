@@ -13,6 +13,8 @@ Usage:
 import json
 import os
 import re
+import urllib.request
+import urllib.error
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 from pathlib import Path
@@ -196,50 +198,307 @@ class IntentClassifier:
                     r'可视化.*数据',
                     r'画一下.*文件',
                 ]
+            },
+            'seismo_qa': {
+                # 纯问答意图：用户在提问，不是要执行代码
+                'keywords': [
+                    '如何', '怎么', '什么是', '原理', '介绍', '解释',
+                    '是什么', '有哪些', '为什么', '区别', '对比',
+                    'how', 'what is', 'why', 'explain', 'difference',
+                    '怎样', '能否介绍', '告诉我',
+                ],
+                'patterns': [
+                    r'如何.{1,20}[？?]?$',
+                    r'怎么.{1,20}[？?]?$',
+                    r'怎样.{1,20}[？?]?$',
+                    r'什么是',
+                    r'.{1,20}是什么[？?]?$',
+                    r'.{1,20}有哪些[？?]?$',
+                    r'为什么',
+                    r'能否.*介绍',
+                    r'请.*介绍',
+                    r'请.*解释',
+                    r'what is\b',
+                    r'how (to|do|does)\b',
+                ]
+            },
+            'seismo_programming': {
+                # 编程执行意图：用户明确要求生成/运行代码或处理数据
+                # 关键词要求能区分"操作请求"和"知识问答"，避免使用单纯的技术术语
+                'keywords': [
+                    '代码', 'code', '编程', '实现', '写代码', '生成代码',
+                    '去仪器响应', 'hvsr', '功率谱', 'psd', '粒子运动',
+                    '去均值', '去趋势', 'detrend', '重采样', 'resample',
+                ],
+                'patterns': [
+                    # 明确的帮我做XX动作
+                    r'帮我.*画.*(图|谱|波形)',
+                    r'帮我.*实现',
+                    r'帮我.*(写|生成).*代码',
+                    r'帮我.*对.*[做进行]',
+                    r'帮我.*(处理|滤波|分析|计算).*(数据|波形|文件|mseed|sac)',
+                    r'给(我|一个).*代码',
+                    r'写.*代码',
+                    r'生成.*代码',
+                    # 对具体数据对象进行操作（需要有"对/把/将+对象"前缀）
+                    r'对.{1,30}(做|进行|应用).*(滤波|filter|处理|去均值|去趋势|重采样)',
+                    r'对.{1,30}(滤波|去仪器|去均值|去趋势|重采样)',
+                    r'(对|把|将).{1,20}(做|进行|应用).{0,5}(bandpass|lowpass|highpass|带通|低通|高通)',
+                    r'(bandpass|lowpass|highpass|带通|低通|高通).{0,10}(滤波|filter).{0,5}(这|该|此|文件|数据|波形)',
+                    # 画图类（明确有数据文件或具体对象）
+                    r'画出.*(波形|图|谱)',
+                    r'绘制.*频谱',
+                    r'绘制.*走时',
+                    r'画走时.*曲线',
+                    # 计算类（需要具体参数，不是概念问答）
+                    r'计算.*ML|计算.*MW|计算.*震级.*km',
+                    r'计算.*震源.*参数',
+                    r'计算.*频谱',
+                    # 工具函数/专业操作
+                    r'去.*仪器响应',
+                    r'去仪器',
+                    r'plot.*spectrum',
+                    r'compute.*magnitude',
+                    r'走时.*曲线',
+                    r'travel.*time.*curve',
+                    r'taup|taupy',
+                    r'频谱.*分析.*[这该]',
+                    r'功率.*谱.*[这该]',
+                    r'hvsr.*分析',
+                    r'读取.*并.*[画绘]',
+                    r'处理.*并.*[画绘输出]',
+                ]
+            },
+            'tool_documentation': {
+                'keywords': [
+                    '文档', 'readme', 'manual', '说明', '教程',
+                    'hypodd', 'velest', 'nonlinloc', 'hypoinverse', 'focmec',
+                    '定位工具', '反演工具', '调用工具', '外部工具',
+                    '生成输入', '输入文件', '运行工具',
+                ],
+                'patterns': [
+                    r'根据.*文档',
+                    r'读取.*文档',
+                    r'给定.*说明',
+                    r'用.*hypodd',
+                    r'调用.*hypodd',
+                    r'用.*velest',
+                    r'用.*nonlinloc',
+                    r'用.*hypoinverse',
+                    r'用.*focmec',
+                    r'运行.*定位',
+                    r'生成.*输入文件',
+                    r'工具.*文档',
+                    r'文档.*工具',
+                    r'有哪些.*工具',
+                    r'支持.*工具',
+                ]
+            },
+            'seismo_agent': {
+                # 自主Agent意图：阅读文献 + 自主规划 + 编程实现
+                'keywords': [
+                    '阅读', '读取文献', '读论文', '文献', '论文', 'paper', 'pdf',
+                    'arxiv', 'doi', '实现论文', '复现', '按照论文',
+                    'agent', '自主', '规划', '多步',
+                ],
+                'patterns': [
+                    r'(阅读|读取|分析).{0,10}(论文|文献|paper|pdf)',
+                    r'(实现|复现|按照|根据).{0,10}(论文|文献|方法|算法)',
+                    r'arxiv[:/]?\d{4}',
+                    r'doi[:/]10\.',
+                    r'\.pdf',
+                    r'自主.{0,10}(规划|编程|实现)',
+                    r'看完.{0,10}论文',
+                ]
+            },
+            'seismo_statistics': {
+                'keywords': [
+                    'b值', 'b-value', 'bvalue', 'gutenberg', 'richter',
+                    '完整性', 'completeness', 'Mc', '震级', '频率',
+                    '统计', 'statistics', '分析', '频度', '地震目录',
+                    'catalog', '时空分布', '空间分布', '时间分布',
+                ],
+                'patterns': [
+                    r'计算.*b值',
+                    r'b值.*计算',
+                    r'b.*value',
+                    r'gutenberg.*richter',
+                    r'g-r.*关系',
+                    r'gr.*关系',
+                    r'频率.*震级.*关系',
+                    r'计算.*Mc',
+                    r'完整性.*震级',
+                    r'震级.*完整性',
+                    r'频率.*震级',
+                    r'震级.*频率',
+                    r'地震.*统计',
+                    r'统计.*分析',
+                    r'时空.*分布',
+                    r'空间.*分布',
+                    r'时间.*分布',
+                    r'给定.*数据.*计算',
+                    r'analyze.*catalog',
+                    r'seismicity.*analysis',
+                ]
             }
         }
 
-    def classify(self, user_input: str) -> Dict:
-        """
-        Classify user intent
-        Returns: {intent: str, confidence: float, entities: dict}
-        """
+    # ── LLM intent classification ──────────────────────────────────────────
+
+    _INTENT_SYSTEM = """\
+你是一个地震学分析系统的意图分类器。根据用户输入，判断其属于以下哪个意图，并以 JSON 返回。
+
+意图列表（选择其中一个）：
+- batch_picking      : 批量遍历目录对所有台站/文件进行震相拾取
+- confirm_picking    : 确认/跳过/继续当前拾取操作（如"跳过"、"复制补齐"）
+- phase_picking      : 对指定文件或台站进行震相拾取检测
+- phase_association  : 震相关联、地震事件定位
+- polarity_analysis  : 震相极性分析、震源机制
+- status_check       : 查询当前任务状态或进度
+- help               : 询问系统功能帮助
+- configure          : 修改配置、切换模型参数
+- data_browsing      : 查看/浏览/列出数据目录或文件
+- waveform_plotting  : 绘制波形图（不需要生成新代码，直接画图）
+- seismo_statistics  : 地震统计分析（b值、G-R关系、震级-频度分布等）
+- seismo_qa          : 地震学知识问答（用户在提问，不需要执行代码，如"什么是P波"、"如何做带通滤波"）
+- seismo_programming : 用户要求生成并执行 Python 代码处理数据（如"帮我对XX做带通滤波"、"写代码计算PSD"）
+- seismo_agent       : 读取论文/文献，自主规划并编程实现算法（如"阅读这篇论文并实现"）
+- tool_documentation : 解析外部工具文档或生成 HypoDD/VELEST/NonLinLoc 等工具的输入文件
+
+关键区分：
+- seismo_qa vs seismo_programming：用户在"问"如何做（qa）还是"让你去做"（programming）
+  例：「如何做带通滤波？」→ seismo_qa；「帮我对数据做带通滤波」→ seismo_programming
+- seismo_programming vs seismo_agent：单次代码任务（programming）还是需要读论文自主规划（agent）
+
+输出格式（严格 JSON，无其他内容）：
+{"intent": "<意图名>", "confidence": <0.0-1.0>}
+"""
+
+    def _classify_with_llm(self, user_input: str, llm_config: Dict) -> Optional[Dict]:
+        """Call LLM for intent classification. Returns None on failure."""
+        provider = llm_config.get("provider", "ollama")
+        model = llm_config.get("model", "qwen2.5:7b")
+        api_base = llm_config.get("api_base", "http://localhost:11434")
+        api_key = llm_config.get("api_key", "")
+
+        messages = [
+            {"role": "system", "content": self._INTENT_SYSTEM},
+            {"role": "user", "content": user_input},
+        ]
+
+        if provider == "ollama":
+            url = api_base.rstrip("/") + "/api/chat"
+            payload = {
+                "model": model,
+                "messages": messages,
+                "stream": False,
+                "options": {"temperature": 0.0, "num_predict": 64},
+            }
+        else:
+            url = api_base.rstrip("/") + "/chat/completions"
+            payload = {
+                "model": model,
+                "messages": messages,
+                "temperature": 0.0,
+                "max_tokens": 64,
+            }
+
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode(),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}" if api_key else "Bearer none",
+            },
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                body = json.loads(resp.read().decode())
+        except Exception:
+            return None
+
+        if provider == "ollama":
+            raw = body.get("message", {}).get("content", "")
+        else:
+            raw = body.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+        # Parse JSON response
+        raw = re.sub(r"```json\s*|```", "", raw).strip()
+        m = re.search(r'\{.*\}', raw, re.DOTALL)
+        if not m:
+            return None
+        try:
+            result = json.loads(m.group())
+            intent = result.get("intent", "").strip()
+            confidence = float(result.get("confidence", 0.8))
+            if intent in self.intent_patterns or intent == "unknown":
+                return {"intent": intent, "confidence": confidence}
+        except Exception:
+            pass
+        return None
+
+    def _classify_with_rules(self, user_input: str) -> Dict:
+        """Fallback rule-based classification (keyword + regex scoring)."""
         user_input_lower = user_input.lower()
         scores = {}
 
         for intent, config in self.intent_patterns.items():
             score = 0
-
-            # Keyword matching
             for keyword in config['keywords']:
                 if keyword.lower() in user_input_lower:
                     score += 1
-
-            # Pattern matching
             for pattern in config['patterns']:
                 if re.search(pattern, user_input_lower):
                     score += 2
-
             scores[intent] = score
 
-        # Get best intent
         if not scores or max(scores.values()) == 0:
-            return {
-                'intent': 'unknown',
-                'confidence': 0.0,
-                'entities': {}
-            }
+            return {'intent': 'unknown', 'confidence': 0.0}
 
         best_intent = max(scores, key=scores.get)
-        confidence = min(scores[best_intent] / 5.0, 1.0)  # Normalize to 0-1
+        confidence = min(scores[best_intent] / 5.0, 1.0)
+        return {'intent': best_intent, 'confidence': confidence}
 
-        # Extract entities
+    def classify(self, user_input: str, llm_config: Optional[Dict] = None) -> Dict:
+        """
+        Classify user intent — tries LLM first, falls back to rule-based.
+
+        Returns: {intent: str, confidence: float, entities: dict, method: str}
+        """
+        # Load LLM config if not provided
+        if llm_config is None:
+            try:
+                import sys as _sys
+                _proj = str(Path(__file__).parent)
+                if _proj not in _sys.path:
+                    _sys.path.insert(0, _proj)
+                from config_manager import LLMConfigManager
+                llm_config = LLMConfigManager().get_llm_config()
+            except Exception:
+                llm_config = {}
+
+        # 1. Try LLM classification
+        llm_result = self._classify_with_llm(user_input, llm_config) if llm_config else None
+
+        if llm_result:
+            intent = llm_result["intent"]
+            confidence = llm_result["confidence"]
+            method = "llm"
+        else:
+            # 2. Fallback to rule-based
+            rule_result = self._classify_with_rules(user_input)
+            intent = rule_result["intent"]
+            confidence = rule_result["confidence"]
+            method = "rules"
+
         entities = self._extract_entities(user_input)
-
         return {
-            'intent': best_intent,
+            'intent': intent,
             'confidence': confidence,
-            'entities': entities
+            'entities': entities,
+            'method': method,
         }
 
     def _extract_entities(self, text: str) -> Dict:
@@ -317,6 +576,11 @@ class SkillExecutor:
                 'name': 'waveform-visualizer',
                 'description': 'Plot seismic waveform data',
                 'parameters': ['file_path', 'output', 'filter', 'time_window']
+            },
+            'seismo_statistics': {
+                'name': 'seismo-stats',
+                'description': 'Compute b-value, Mc, G-R relation and seismicity distribution plots',
+                'parameters': ['input_path', 'output_prefix', 'mc', 'method', 'plot']
             }
         }
 
@@ -339,6 +603,16 @@ class SkillExecutor:
             return self._execute_data_browsing(entities, context)
         elif intent == 'waveform_plotting':
             return self._execute_waveform_plotting(entities, context)
+        elif intent == 'seismo_statistics':
+            return self._execute_seismo_statistics(entities, context)
+        elif intent == 'seismo_qa':
+            return self._execute_seismo_qa(entities, context)
+        elif intent == 'seismo_programming':
+            return self._execute_seismo_programming(entities, context)
+        elif intent == 'seismo_agent':
+            return self._execute_seismo_agent(entities, context)
+        elif intent == 'tool_documentation':
+            return self._execute_tool_documentation(entities, context)
         else:
             return {
                 'success': False,
@@ -1220,6 +1494,646 @@ class Parameter:
 
         return output_image
 
+    # ------------------------------------------------------------------
+    # Seismological Statistics  (b-value, Mc, G-R, distribution plots)
+    # ------------------------------------------------------------------
+
+    def _execute_seismo_statistics(self, entities: Dict, context: ConversationContext) -> Dict:
+        """
+        Compute b-value, Mc and generate analysis plots from a catalog or picks file.
+
+        Handles three cases:
+        1. User explicitly supplies a file/directory path
+        2. Agent uses the last picks result stored in context
+        3. Agent searches the results/ directory for the newest picks file
+        """
+        import sys
+        from pathlib import Path as _Path
+
+        project_root = str(_Path(__file__).parent)
+        if project_root not in sys.path:
+            sys.path.insert(0, project_root)
+
+        # --- Resolve input path ---
+        input_path = None
+
+        # Priority 1: explicit path from user message
+        if entities.get('file_paths'):
+            input_path = entities['file_paths'][0]
+
+        # Priority 2: last picks file stored in context
+        if not input_path and context.last_results.get('picks_file'):
+            input_path = context.last_results['picks_file']
+
+        # Priority 3: newest sage_picks_*.txt in results/
+        if not input_path:
+            results_dir = _Path(project_root) / 'results'
+            picks_files = sorted(results_dir.glob('sage_picks_*.txt')) if results_dir.exists() else []
+            if picks_files:
+                input_path = str(picks_files[-1])
+
+        if not input_path:
+            return {
+                'success': False,
+                'message': (
+                    '请告诉我震相结果文件或地震目录文件的路径，例如：\n'
+                    '"计算 /path/to/results/ 的b值"\n'
+                    '或者先运行震相检测，再进行统计分析。'
+                ),
+                'needs_info': ['catalog_path'],
+                'results': {}
+            }
+
+        # --- Load catalog / picks ---
+        try:
+            from seismo_stats.catalog_loader import load_picks_txt, load_catalog_file
+            p = _Path(input_path)
+            if p.is_dir() or (p.is_file() and 'sage_picks' in p.name):
+                catalog = load_picks_txt(input_path)
+                data_type = 'picks'
+            else:
+                catalog = load_catalog_file(input_path)
+                data_type = 'catalog'
+        except Exception as e:
+            return {
+                'success': False,
+                'message': f'无法加载数据文件：{e}\n请检查路径是否正确。',
+                'results': {}
+            }
+
+        # --- Determine what to compute ---
+        user_text = ' '.join([
+            m['content'] for m in context.conversation_history[-3:]
+            if m['role'] == 'user'
+        ]) if context.conversation_history else ''
+
+        want_bvalue   = any(k in user_text for k in ['b值', 'b-value', 'bvalue', 'gutenberg', 'richter', '统计'])
+        want_mc       = any(k in user_text for k in ['Mc', 'mc', '完整性', 'completeness']) or want_bvalue
+        want_temporal = any(k in user_text for k in ['时间', '时序', 'temporal', '时空'])
+        want_spatial  = any(k in user_text for k in ['空间', '位置', '分布', 'spatial', 'map', '地图'])
+
+        # Default: compute b-value + all available plots
+        if not any([want_bvalue, want_temporal, want_spatial]):
+            want_bvalue = True
+
+        # --- Output prefix ---
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        results_dir = _Path(project_root) / 'results'
+        results_dir.mkdir(exist_ok=True)
+        output_prefix = str(results_dir / f'stats_{ts}')
+
+        # --- Collect magnitudes (picks file doesn't have magnitudes) ---
+        messages = []
+        result_bv = None
+        plots = {}
+
+        if want_bvalue or want_mc:
+            if not catalog.has_magnitudes:
+                messages.append(
+                    '⚠️  当前数据来自震相拾取文件，不含震级信息，无法计算b值。\n'
+                    '请提供包含震级列（magnitude/mag/ML等）的地震目录文件（CSV/JSON格式）来计算b值。'
+                )
+                want_bvalue = False
+            else:
+                try:
+                    from seismo_stats.bvalue import calc_bvalue_mle
+                    result_bv = calc_bvalue_mle(catalog.magnitudes, mc_method='maxcurvature')
+                    messages.append(result_bv.summary())
+                except Exception as e:
+                    messages.append(f'b值计算失败：{e}')
+
+        # --- Plots ---
+        try:
+            from seismo_stats.plotting import plot_gr, plot_temporal, plot_spatial
+
+            if result_bv is not None:
+                try:
+                    p_gr = plot_gr(result_bv, output_prefix + '_gr.png')
+                    plots['gr'] = p_gr
+                except Exception as e:
+                    messages.append(f'G-R图绘制失败：{e}')
+
+            if (want_temporal or want_bvalue) and catalog.times:
+                try:
+                    p_t = plot_temporal(catalog, output_prefix + '_temporal.png')
+                    plots['temporal'] = p_t
+                except Exception as e:
+                    messages.append(f'时间分布图绘制失败：{e}')
+
+            if want_spatial and catalog.has_locations:
+                try:
+                    p_s = plot_spatial(catalog, output_prefix + '_spatial.png')
+                    plots['spatial'] = p_s
+                except Exception as e:
+                    messages.append(f'空间分布图绘制失败：{e}')
+            elif want_spatial and not catalog.has_locations:
+                messages.append('⚠️  数据中没有经纬度信息，无法绘制空间分布图。')
+
+        except ImportError as e:
+            messages.append(f'绘图模块未安装：{e}（请 pip install matplotlib）')
+
+        # --- Build summary message ---
+        summary_lines = [f'📊 地震统计分析完成  （数据：{_Path(input_path).name}）']
+        summary_lines.append(f'   共 {len(catalog)} 条记录')
+        if catalog.times:
+            summary_lines.append(
+                f'   时间范围：{min(catalog.times).strftime("%Y-%m-%d %H:%M")}  →  '
+                f'{max(catalog.times).strftime("%Y-%m-%d %H:%M")}'
+            )
+        if messages:
+            summary_lines.append('')
+            summary_lines.extend(messages)
+
+        if plots:
+            summary_lines.append('\n已生成图像：')
+            labels = {'gr': 'G-R频率震级关系图', 'temporal': '时间分布图', 'spatial': '空间分布图'}
+            for k, path in plots.items():
+                summary_lines.append(f'  • {labels.get(k, k)}: {path}')
+
+        # Store results in context
+        context.last_results.update({
+            'stats_output_prefix': output_prefix,
+            'stats_plots': plots,
+            'stats_bvalue': result_bv.b_value if result_bv else None,
+            'stats_mc': result_bv.mc if result_bv else None,
+        })
+
+        return {
+            'success': True,
+            'message': '\n'.join(summary_lines),
+            'action': 'display_plot' if plots else 'none',
+            'results': {
+                'stats_plots': plots,
+                'bvalue_result': {
+                    'b': result_bv.b_value,
+                    'b_unc': result_bv.b_uncertainty,
+                    'a': result_bv.a_value,
+                    'mc': result_bv.mc,
+                    'n': result_bv.n_events,
+                } if result_bv else None,
+            }
+        }
+
+    # ------------------------------------------------------------------
+    # Seismo Programming  (LLM 代码生成 + 执行)
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Seismo QA  (纯对话问答，不执行代码)
+    # ------------------------------------------------------------------
+
+    # ── QA 系统提示（专业地震学助手）────────────────────────────────────────
+    _QA_SYSTEM_PROMPT = (
+        "你是 SAGE 系统内置的地震学专家助手，具备深厚的地震学和地震数据处理知识。\n"
+        "回答用户问题时请遵循以下原则：\n"
+        "1. 用准确、简洁的中文回答，专业术语可附英文原文\n"
+        "2. 涉及数据处理时，优先给出基于 ObsPy/Python 的代码示例（```python 包裹）\n"
+        "3. 如果问题涉及 SAGE 内置工具（seismo_code.toolkit），优先展示工具包用法\n"
+        "4. 代码示例后可简短提示：说「帮我对 /data/xxx.mseed 做XXX」可以让我直接执行\n"
+        "5. 不要重复用户的问题，直接给出答案\n"
+        "\n"
+        "SAGE 内置工具包（seismo_code.toolkit）主要函数：\n"
+        "- read_stream(path)           — 读取波形文件或目录\n"
+        "- filter_stream(st, type, freqmin, freqmax)  — 滤波（bandpass/lowpass/highpass）\n"
+        "- plot_stream(st, title, outfile)             — 绘制波形\n"
+        "- remove_response(st, inventory_path)         — 去仪器响应\n"
+        "- taup_arrivals(dist_deg, depth_km)           — 计算理论走时\n"
+        "- compute_hvsr(st, freqmin, freqmax)          — HVSR 谱比\n"
+        "- estimate_magnitude_ml(tr, dist_km)          — ML 震级估算\n"
+    )
+
+    def _call_llm_for_qa(
+        self,
+        messages: list,
+        llm_config: Dict,
+        timeout: int = 30,
+    ) -> Optional[str]:
+        """向 LLM 发送对话请求，返回回复文本，失败返回 None。"""
+        provider = llm_config.get('provider', 'ollama')
+        model    = llm_config.get('model', '')
+        api_base = llm_config.get('api_base', '')
+        api_key  = llm_config.get('api_key', '')
+
+        if not api_base or not model:
+            return None
+
+        if provider == 'ollama':
+            url     = api_base.rstrip('/') + '/api/chat'
+            payload = {'model': model, 'messages': messages, 'stream': False,
+                       'options': {'temperature': 0.6, 'num_predict': 2000}}
+        else:
+            url     = api_base.rstrip('/') + '/chat/completions'
+            payload = {'model': model, 'messages': messages,
+                       'temperature': 0.6, 'max_tokens': 2000}
+
+        try:
+            data = json.dumps(payload).encode()
+            headers = {
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {api_key}' if api_key else 'Bearer none',
+            }
+            req = urllib.request.Request(url, data=data, headers=headers, method='POST')
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                body = json.loads(resp.read().decode())
+
+            if provider == 'ollama':
+                return body.get('message', {}).get('content', '').strip() or None
+            else:
+                return (body.get('choices', [{}])[0]
+                        .get('message', {}).get('content', '').strip()) or None
+        except Exception:
+            return None
+
+    def _execute_seismo_qa(self, entities: Dict, context: ConversationContext) -> Dict:
+        """
+        用 LLM 回答地震学知识问题。
+        LLM 不可用时给出诚实说明并提示配置后端，不再返回硬编码帮助菜单。
+        """
+        import sys as _sys
+        from pathlib import Path as _Path
+        project_root = str(_Path(__file__).parent)
+        if project_root not in _sys.path:
+            _sys.path.insert(0, project_root)
+
+        # 取当前用户问题
+        user_msgs = [m['content'] for m in context.conversation_history if m['role'] == 'user']
+        question = user_msgs[-1] if user_msgs else ''
+
+        # 获取 LLM 配置（直接读磁盘 config.json，与 LLM 设置页保持同步）
+        llm_config: Optional[Dict] = None
+        try:
+            from config_manager import LLMConfigManager
+            llm_config = LLMConfigManager().get_llm_config()
+        except Exception:
+            pass
+
+        if llm_config and llm_config.get('model') and llm_config.get('api_base'):
+            # 构建带历史上下文的消息列表
+            messages: list = [{'role': 'system', 'content': self._QA_SYSTEM_PROMPT}]
+            # 最近 6 条历史（3 轮）
+            for msg in context.conversation_history[-6:]:
+                if msg['role'] in ('user', 'assistant'):
+                    messages.append({'role': msg['role'], 'content': msg['content']})
+
+            answer = self._call_llm_for_qa(messages, llm_config, timeout=30)
+            if answer:
+                return {'success': True, 'message': answer, 'action': 'none', 'results': {}}
+
+        # ---- LLM 真的不可用 ----
+        backend_hint = (
+            "当前没有配置可用的 LLM 模型，无法回答此问题。\n\n"
+            "请前往 **[LLM 设置](/llm-settings)** 页面，选择已安装的 Ollama 模型并保存，"
+            "然后再次提问即可。\n\n"
+            f"> 你的问题：「{question}」"
+        )
+        return {'success': True, 'message': backend_hint, 'action': 'none', 'results': {}}
+
+    @staticmethod
+    def _builtin_seismo_qa(question: str) -> str:
+        """保留接口兼容性，实际已由 _execute_seismo_qa 的 LLM 路径替代。"""
+        return (
+            "当前没有可用的 LLM 后端。请运行 `sage backend setup` 配置后端后重试。"
+        )
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # （原内置知识库已移除，全部交由 LLM 动态回答）
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _execute_seismo_agent(self, entities: Dict, context: ConversationContext) -> Dict:
+        """触发地震学 Agent：阅读文献 → 自主规划 → 逐步编程实现。"""
+        import sys
+        from pathlib import Path as _Path
+        project_root = str(_Path(__file__).parent)
+        if project_root not in sys.path:
+            sys.path.insert(0, project_root)
+
+        user_msgs = [m['content'] for m in context.conversation_history if m['role'] == 'user']
+        user_text = user_msgs[-1] if user_msgs else ''
+
+        try:
+            from seismo_agent.agent_loop import SeismoAgent
+        except ImportError:
+            return {
+                'success': False,
+                'message': (
+                    'seismo_agent 模块尚未完全加载。\n'
+                    '请确认 seismo_agent/ 目录已存在。\n'
+                    '您可以通过命令行使用：\n'
+                    '  python seismic_cli.py agent --paper /path/to/paper.pdf "实现其中的滤波方法"'
+                ),
+                'results': {}
+            }
+
+        # Resolve paper source from entities or text
+        paper_source = None
+        for fp in entities.get('file_paths', []):
+            if fp.endswith('.pdf') or 'arxiv' in fp.lower() or fp.startswith('10.'):
+                paper_source = fp
+                break
+        if not paper_source:
+            # Look for arXiv IDs or DOIs in text
+            import re as _re
+            ax = _re.search(r'\d{4}\.\d{4,}', user_text)
+            doi = _re.search(r'10\.\d{4,}/\S+', user_text)
+            if ax:
+                paper_source = ax.group()
+            elif doi:
+                paper_source = doi.group()
+
+        llm_config = None
+        try:
+            from config_manager import LLMConfigManager
+            llm_config = LLMConfigManager().get_llm_config()
+        except Exception:
+            pass
+
+        agent = SeismoAgent(llm_config=llm_config, project_root=project_root)
+
+        results_dir = _Path(project_root) / 'results'
+        results_dir.mkdir(exist_ok=True)
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        output_dir = str(results_dir / f'agent_{ts}')
+
+        # Run with callback for streaming updates
+        lines = []
+        def _cb(msg: str):
+            lines.append(msg)
+
+        final = agent.run(
+            goal=user_text,
+            paper_source=paper_source,
+            output_dir=output_dir,
+            progress_cb=_cb,
+        )
+
+        context.last_results['agent_output_dir'] = output_dir
+        context.last_results['agent_figures'] = final.get('figures', [])
+
+        return {
+            'success': final.get('success', False),
+            'message': final.get('summary', '\n'.join(lines)),
+            'action': 'display_plot' if final.get('figures') else 'none',
+            'results': final,
+        }
+
+    # ------------------------------------------------------------------
+    # Seismo Programming  (LLM 代码生成 + 执行)
+    # ------------------------------------------------------------------
+
+    def _execute_seismo_programming(self, entities: Dict, context: ConversationContext) -> Dict:
+        """
+        接受自然语言地震学编程需求，LLM 生成并执行 Python 代码。
+        """
+        import sys
+        from pathlib import Path as _Path
+
+        project_root = str(_Path(__file__).parent)
+        if project_root not in sys.path:
+            sys.path.insert(0, project_root)
+
+        # Gather user request from conversation history
+        user_msgs = [m['content'] for m in context.conversation_history
+                     if m['role'] == 'user']
+        user_request = user_msgs[-1] if user_msgs else ''
+
+        # Resolve data hint (most recently mentioned file path)
+        data_hint = None
+        if entities.get('file_paths'):
+            data_hint = entities['file_paths'][0]
+        elif context.last_results.get('last_plotted_file'):
+            data_hint = context.last_results['last_plotted_file']
+        elif context.last_results.get('browse_files'):
+            files = context.last_results['browse_files']
+            if files:
+                data_hint = files[0]
+
+        # Check if LLM is available
+        try:
+            from seismo_code.code_engine import get_code_engine
+        except ImportError as e:
+            return {
+                'success': False,
+                'message': f'seismo_code 模块导入失败: {e}',
+                'results': {}
+            }
+
+        engine = get_code_engine()
+
+        if not engine.is_llm_available():
+            # LLM unavailable — return helpful message with toolkit reference
+            return {
+                'success': False,
+                'message': (
+                    '⚠️  LLM 服务不可用（Ollama 未运行或 API Key 未配置）。\n\n'
+                    '代码生成功能需要 LLM 支持。您可以：\n'
+                    '  1. 启动 Ollama: `ollama serve` 后重试\n'
+                    '  2. 或配置在线 API: `python seismic_cli.py llm setup`\n\n'
+                    '您也可以直接使用内置地震学工具包编写代码：\n'
+                    '  from seismo_code.toolkit import read_stream, filter_stream, plot_stream\n'
+                    '  st = read_stream("/path/to/data.mseed")\n'
+                    '  st = filter_stream(st, "bandpass", freqmin=1, freqmax=10)\n'
+                    '  plot_stream(st)'
+                ),
+                'results': {}
+            }
+
+        # Run code generation + execution
+        try:
+            result = engine.run(user_request, data_hint=data_hint, timeout=90)
+        except Exception as e:
+            return {
+                'success': False,
+                'message': f'代码引擎出错: {e}',
+                'results': {}
+            }
+
+        # Copy generated figures to results/
+        results_dir = _Path(project_root) / 'results'
+        results_dir.mkdir(exist_ok=True)
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        saved_figures = []
+        for i, fig_path in enumerate(result.figures):
+            import shutil
+            src = _Path(fig_path)
+            if src.exists():
+                dst = results_dir / f'prog_{ts}_{i}{src.suffix}'
+                shutil.copy2(str(src), str(dst))
+                saved_figures.append(str(dst))
+
+        # Build response message
+        lines = []
+        if result.success:
+            lines.append('✅ 代码执行成功')
+        else:
+            lines.append('⚠️  代码执行遇到问题')
+
+        if result.stdout.strip():
+            output_text = result.stdout.strip()
+            # Remove [FIGURE] lines from display output
+            display_lines = [l for l in output_text.splitlines() if not l.startswith('[FIGURE]')]
+            if display_lines:
+                lines.append('\n输出结果：')
+                lines.extend(['  ' + l for l in display_lines])
+
+        if saved_figures:
+            lines.append(f'\n生成图像 ({len(saved_figures)} 张)：')
+            for f in saved_figures:
+                lines.append(f'  • {f}')
+
+        if not result.success and result.exec_result:
+            err = result.exec_result.error or result.exec_result.stderr
+            if err:
+                lines.append(f'\n错误信息：{err[:300]}')
+
+        # Store in context
+        context.last_results['prog_figures'] = saved_figures
+        context.last_results['prog_code'] = result.code
+
+        return {
+            'success': result.success,
+            'message': '\n'.join(lines),
+            'action': 'display_plot' if saved_figures else 'none',
+            'results': {
+                'figures': saved_figures,
+                'code': result.code,
+                'stdout': result.stdout,
+            }
+        }
+
+    # ------------------------------------------------------------------
+    # Tool Documentation  (解析文档 + 工具调用)
+    # ------------------------------------------------------------------
+
+    def _execute_tool_documentation(self, entities: Dict, context: ConversationContext) -> Dict:
+        """
+        解析外部工具文档，注册到工具库，并支持调用已知工具。
+        """
+        import sys
+        from pathlib import Path as _Path
+
+        project_root = str(_Path(__file__).parent)
+        if project_root not in sys.path:
+            sys.path.insert(0, project_root)
+
+        user_msgs = [m['content'] for m in context.conversation_history
+                     if m['role'] == 'user']
+        user_text = user_msgs[-1] if user_msgs else ''
+
+        try:
+            from seismo_tools.tool_registry import list_tools, get_tool, run_tool, generate_input_files
+        except ImportError as e:
+            return {'success': False, 'message': f'seismo_tools 模块导入失败: {e}', 'results': {}}
+
+        # --- Subcase 1: list available tools ---
+        if any(k in user_text for k in ['有哪些工具', '支持什么工具', '工具列表', 'list tools']):
+            tools = list_tools()
+            builtin_names = ['HypoDD', 'VELEST', 'NonLinLoc', 'HYPOINVERSE', 'FOCMEC']
+            lines = ['📋 已注册的地震学外部工具：\n']
+            lines.append('内置工具（已有完整接口模板）：')
+            for t in builtin_names:
+                p = get_tool(t.lower())
+                if p:
+                    lines.append(f'  • {t}: {p.get("description", "")[:60]}...')
+            user_tools = [t for t in tools if t not in [b.lower() for b in builtin_names]]
+            if user_tools:
+                lines.append('\n用户注册工具：')
+                for t in user_tools:
+                    lines.append(f'  • {t}')
+            lines.append('\n使用方式：直接告诉我"用HypoDD重定位"或"解析这个工具文档"')
+            return {'success': True, 'message': '\n'.join(lines), 'action': 'none', 'results': {}}
+
+        # --- Subcase 2: query known tool info ---
+        known_tools = ['hypodd', 'velest', 'nonlinloc', 'hypoinverse', 'focmec']
+        for tool_key in known_tools:
+            if tool_key in user_text.lower():
+                profile = get_tool(tool_key)
+                if profile:
+                    lines = [f'🔧 {profile["name"]} 工具说明\n']
+                    lines.append(f'功能: {profile["description"]}')
+                    lines.append(f'可执行程序: {profile["executable"]}')
+                    lines.append(f'输入文件: {", ".join(profile["input_files"])}')
+                    lines.append(f'输出文件: {", ".join(profile["output_files"])}')
+                    lines.append(f'\n输入格式说明:\n{profile["input_format"][:500]}')
+                    if profile.get("run_command"):
+                        lines.append(f'\n调用命令: {profile["run_command"]}')
+                    if profile.get("notes"):
+                        lines.append(f'\n注意: {profile["notes"]}')
+                    lines.append('\n💡 要生成输入文件，请说明您的数据情况，例如：')
+                    lines.append(f'  "用{profile["name"]}重定位，震相文件在 results/sage_picks_xxx.txt，台站文件在 data/stations.txt"')
+                    return {'success': True, 'message': '\n'.join(lines), 'action': 'none', 'results': {}}
+
+        # --- Subcase 3: parse provided documentation (text or file path) ---
+        doc_text = None
+        doc_file = None
+
+        # Check for file path in entities
+        for fpath in entities.get('file_paths', []):
+            p = _Path(fpath)
+            if p.exists() and p.suffix.lower() in ('.txt', '.md', '.rst', '.pdf'):
+                doc_file = str(p)
+                break
+
+        # Check for file path in stored context
+        if not doc_file and context.last_results.get('last_doc_file'):
+            doc_file = context.last_results['last_doc_file']
+
+        # If a long user message looks like documentation (>200 chars), treat as doc
+        if not doc_file and len(user_text) > 200:
+            doc_text = user_text
+
+        if not doc_file and not doc_text:
+            return {
+                'success': False,
+                'message': (
+                    '请告诉我工具文档的路径，或直接粘贴工具的 README / 使用说明，例如：\n'
+                    '  "解析文档 /path/to/tool_readme.txt"\n'
+                    '  "有哪些可用工具？"\n'
+                    '  或直接粘贴工具说明文本'
+                ),
+                'needs_info': ['tool_documentation'],
+                'results': {}
+            }
+
+        try:
+            from seismo_code.doc_parser import DocParser
+        except ImportError as e:
+            return {'success': False, 'message': f'文档解析模块导入失败: {e}', 'results': {}}
+
+        llm_config = None
+        try:
+            from config_manager import LLMConfigManager
+            llm_config = LLMConfigManager().get_llm_config()
+        except Exception:
+            pass
+
+        parser = DocParser(llm_config)
+
+        try:
+            if doc_file:
+                profile = parser.parse_file(doc_file)
+                context.last_results['last_doc_file'] = doc_file
+            else:
+                profile = parser.parse_text(doc_text)
+        except Exception as e:
+            return {'success': False, 'message': f'文档解析失败: {e}', 'results': {}}
+
+        saved_path = profile.save()
+        context.last_results['last_tool_profile'] = profile.name
+
+        lines = [
+            f'✅ 已解析并注册工具：{profile.name}\n',
+            profile.summary(),
+            f'\n已保存到: {saved_path}',
+            '\n现在您可以说：',
+            f'  "用 {profile.name} 处理数据"',
+            '  "生成输入文件"',
+        ]
+        return {
+            'success': True,
+            'message': '\n'.join(lines),
+            'action': 'none',
+            'results': {'tool_name': profile.name, 'profile_path': saved_path}
+        }
 
 
 class ResponseGenerator:
