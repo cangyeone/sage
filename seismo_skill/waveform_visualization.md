@@ -1,69 +1,69 @@
 ---
 name: waveform_visualization
 category: visualization
-keywords: 绘制, 画图, 绘图, 波形图, 可视化, 画波形, 波形绘制, 绘制波形, 粒子运动, 质点运动, plot_stream, plot_spectrogram, plot_psd, plot_particle_motion, savefig
+keywords: plot, draw, visualization, waveform plot, visualize, plot waveform, particle motion, plot_stream, plot_spectrogram, plot_psd, plot_particle_motion, savefig, 绘制, 画图, 波形图, 可视化, 粒子运动, 质点运动
 ---
 
-# 波形可视化
+# Waveform Visualization
 
-## 描述
+## Description
 
-绘制波形时序图、振幅谱图、功率谱密度图和质点运动图，支持震相标注叠加。
+Plot waveform time series, amplitude spectra, power spectral density, and particle motion diagrams, with support for phase pick annotations.
 
 ---
 
-## ⚠️ 关键说明：工具包函数无需 import，禁止 plt.show()
+## ⚠️ Critical Note: Toolkit Functions Require No Import, plt.show() Forbidden
 
-`plot_stream`、`plot_spectrogram`、`plot_psd`、`plot_particle_motion`、`savefig` 等函数
-已通过 `from seismo_code.toolkit import *` **预注入到执行环境**，可以**直接调用**。
+Functions like `plot_stream`, `plot_spectrogram`, `plot_psd`, `plot_particle_motion`, and `savefig`
+have been **pre-injected into the execution environment** via `from seismo_code.toolkit import *` and can be **called directly**.
 
-服务器运行环境**没有显示器**，使用 `plt.show()` 会导致程序挂起，**必须**改用 `savefig()` 或 `plot_*` 函数保存图像。
+The server has **no display**, so `plt.show()` will cause the program to hang. **Must use** `savefig()` or `plot_*` functions to save images.
 
 ```python
-# ✅ 正确流程（无需任何 import）
+# ✅ Correct workflow (no import needed)
 st = read_stream_from_dir("/data/event_001/")
 st = detrend_stream(st)
 st = filter_stream(st, "bandpass", freqmin=1.0, freqmax=10.0)
-plot_stream(st, title="三分量波形")   # 自动保存，自动显示到界面
+plot_stream(st, title="Three-component waveform")   # Auto-save and display to interface
 
-# ❌ 严禁
-# from obspy import plot_stream        # plot_stream 不是 obspy 函数！
-# plt.show()                           # 服务器环境无显示器，会挂起！
+# ❌ Forbidden
+# from obspy import plot_stream        # plot_stream is NOT an obspy function!
+# plt.show()                           # Server has no display, will hang!
 ```
 
 ---
 
-## 方案一：使用内置工具包（推荐）
+## Approach 1: Using Built-in Toolkit (Recommended)
 
 ### `plot_stream(st, title="", outfile=None, picks=None)`
 
-绘制多分量波形图（每道一行，纵向排列）。
+Plot multi-component waveform (one trace per row, vertically arranged).
 
-**参数：**
+**Parameters:**
 - `st` : obspy.Stream
-- `title` : str — 图标题
-- `outfile` : str — 保存路径；为 None 则自动保存到 SAGE_OUTDIR（**推荐不填**）
-- `picks` : list[dict] — 震相标注
+- `title` : str — Figure title
+- `outfile` : str — Save path; if None, auto-saves to SAGE_OUTDIR (**recommended to omit**)
+- `picks` : list[dict] — Phase annotations
 
 ```python
-# ✅ 直接调用（无需 import）
+# ✅ Call directly (no import needed)
 st = read_stream_from_dir("/data/event_001/")
 st = detrend_stream(st)
 st = filter_stream(st, "bandpass", freqmin=1.0, freqmax=10.0)
 
-# 不传 outfile → 系统自动保存并显示到界面（推荐）
-plot_stream(st, title="三分量波形")
+# Omit outfile → system auto-saves and displays to interface (recommended)
+plot_stream(st, title="Three-component waveform")
 ```
 
 ---
 
 ### `plot_spectrogram(tr, outfile=None, wlen=None, per_lap=0.9)`
 
-绘制单道波形的时频谱图。
+Plot time-frequency spectrogram for single trace.
 
 ```python
 st = read_stream_from_dir("/data/event_001/")
-tr = st.select(channel="*Z")[0]   # 取垂直分量
+tr = st.select(channel="*Z")[0]   # Select vertical component
 plot_spectrogram(tr)
 ```
 
@@ -71,7 +71,7 @@ plot_spectrogram(tr)
 
 ### `plot_psd(tr, outfile=None)`
 
-绘制功率谱密度（PSD）曲线。
+Plot power spectral density (PSD) curve.
 
 ```python
 tr = st.select(channel="*Z")[0]
@@ -82,7 +82,7 @@ plot_psd(tr)
 
 ### `plot_particle_motion(st, outfile=None)`
 
-绘制质点运动图（需要三分量数据）。
+Plot particle motion diagram (requires three-component data).
 
 ```python
 st = read_stream_from_dir("/data/event_001/")
@@ -92,20 +92,20 @@ plot_particle_motion(st)
 
 ---
 
-## 方案二：使用原生 obspy + matplotlib（手动绘图）
+## Approach 2: Using Native ObsPy + Matplotlib (Manual Plotting)
 
-当需要完全自定义图形时，可以用原生 obspy 读取数据，然后用 matplotlib 绘图。
-**注意：必须用 `savefig()` 代替 `plt.show()`**
+When complete custom plotting is needed, use native obspy to read data and matplotlib to plot.
+**Note: Must use `savefig()` instead of `plt.show()`**
 
 ```python
-from obspy import read   # obspy.read 是合法的 obspy 内置函数
+from obspy import read   # obspy.read is a legitimate obspy function
 import matplotlib.pyplot as plt
 
-# 读取单个文件
+# Read a single file
 st = read("/data/event_001/YN.YSW03..HHZ.sac")
 tr = st[0]
 
-times = tr.times()   # 相对时间轴（秒）
+times = tr.times()   # Relative time axis (seconds)
 data = tr.data
 
 fig, ax = plt.subplots(figsize=(12, 4))
@@ -116,42 +116,42 @@ ax.set_title(f"{tr.id}")
 ax.grid(True, alpha=0.3)
 plt.tight_layout()
 
-# ✅ 必须用 savefig() 保存，不能用 plt.show()
-savefig("waveform.png")   # savefig 已预注入，自动上报到界面
+# ✅ Must use savefig() to save, cannot use plt.show()
+savefig("waveform.png")   # savefig is pre-injected, auto-reports to interface
 ```
 
 ---
 
-## 完整串联示例：一次性完成读取 + 预处理 + 多图可视化
+## Complete Chained Example: Read + Preprocess + Multi-plot Visualization in One Script
 
 ```python
-# 一段代码串联多个技能步骤（推荐写法）
+# Single script chaining multiple skill steps (recommended approach)
 st = read_stream_from_dir("/data/event_001/")
-stream_info(st)                                          # 打印台站/通道信息
+stream_info(st)                                          # Print station/channel info
 
 st = detrend_stream(st)
 st = taper_stream(st)
 st = filter_stream(st, "bandpass", freqmin=1.0, freqmax=10.0)
 
-# 多分量波形图
-plot_stream(st, title="事件波形（1-10 Hz）")
+# Multi-component waveform plot
+plot_stream(st, title="Event waveform (1-10 Hz)")
 
-# 垂向分量频谱图 + PSD
+# Vertical component spectrogram + PSD
 tr_z = st.select(channel="*Z")[0]
 plot_spectrogram(tr_z)
 freqs, psd, _ = plot_psd(tr_z)
 import numpy as np
-print("主频：" + str(round(float(freqs[np.argmax(psd)]), 2)) + " Hz")
+print("Peak frequency: " + str(round(float(freqs[np.argmax(psd)]), 2)) + " Hz")
 
-# 质点运动
+# Particle motion
 plot_particle_motion(st)
 ```
 
 ---
 
-## 注意事项
+## Notes
 
-- **所有 plot_* 函数和 savefig 均已预注入，无需 import，也不能从 obspy 导入**
-- 服务器环境须设 `show=False` 或省略（默认不弹窗），**禁止调用 plt.show()**
-- 绘制质点运动图需要三分量数据（Z/N/E 或 Z/1/2），缺分量时跳过对应投影
-- `outfile` 不填时自动保存到 `SAGE_OUTDIR` 并输出 `[FIGURE] /path` 供界面捕获
+- **All plot_* functions and savefig are pre-injected, no import needed, and cannot be imported from obspy**
+- Server environment must set `show=False` or omit (default no popup); **forbidden to call plt.show()**
+- Particle motion plotting requires three-component data (Z/N/E or Z/1/2); skip missing projections
+- When outfile is omitted, auto-saves to `SAGE_OUTDIR` and outputs `[FIGURE] /path` for interface capture

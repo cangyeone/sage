@@ -1,111 +1,111 @@
 ---
 name: b_value_analysis
 category: statistics
-keywords: b值, b-value, Gutenberg-Richter, 频度震级分布, FMD, 最小完整性震级, Mc, 地震统计, calc_bvalue_mle, calc_bvalue_lsq, load_catalog_file, plot_gr
+keywords: b value, b-value, Gutenberg-Richter, frequency-magnitude distribution, FMD, minimum magnitude of completeness, Mc, seismic statistics, calc_bvalue_mle, calc_bvalue_lsq, load_catalog_file, plot_gr, b值, Gutenberg-Richter, 频度震级分布, 最小完整性震级, 地震统计
 ---
 
-# b 值分析
+# B-value Analysis
 
-## 描述
+## Description
 
-从地震目录计算 Gutenberg-Richter 关系中的 b 值，估算最小完整性震级 Mc，绘制频度-震级分布图。
+Calculate the b-value from the Gutenberg-Richter relationship using earthquake catalogs, estimate the magnitude of completeness (Mc), and plot frequency-magnitude distribution.
 
 ---
 
-## 主要函数
+## Main Functions
 
 ### `load_catalog_file(path)`
 
-自动识别格式并加载地震目录。
+Auto-detect format and load earthquake catalog.
 
-**参数：**
-- `path` : str — 目录文件路径，支持 `.csv` / `.json` / `.txt`（震相拾取格式）
+**Parameters:**
+- `path` : str — Path to catalog file, supports `.csv` / `.json` / `.txt` (phase pick format)
 
-**返回：** `CatalogData` 对象，含 `.magnitudes`、`.depths`、`.lats`、`.lons`、`.times` 等属性
+**Returns:** `CatalogData` object with attributes `.magnitudes`, `.depths`, `.lats`, `.lons`, `.times`, etc.
 
 ```python
 from seismo_stats.catalog_loader import load_catalog_file
 catalog = load_catalog_file("/data/catalog.csv")
 print(catalog.summary())
-# 输出: CatalogData: 1523 events, mag range [0.2, 5.1], ...
+# Output: CatalogData: 1523 events, mag range [0.2, 5.1], ...
 ```
 
 ---
 
 ### `calc_mc_maxcurvature(magnitudes, bin_width=0.1)`
 
-用最大曲率法估算最小完整性震级 Mc。
+Estimate minimum magnitude of completeness (Mc) using maximum curvature method.
 
-**参数：**
-- `magnitudes` : array-like — 震级列表
-- `bin_width` : float — 震级分箱宽度，默认 0.1
+**Parameters:**
+- `magnitudes` : array-like — List of magnitudes
+- `bin_width` : float — Magnitude bin width, default 0.1
 
-**返回：** float — Mc 估算值
+**Returns:** float — Estimated Mc value
 
 ```python
 from seismo_stats.bvalue import calc_mc_maxcurvature
 import numpy as np
 mags = catalog.magnitudes
 Mc = calc_mc_maxcurvature(mags)
-print(f"最大曲率法 Mc = {Mc:.1f}")
+print(f"Maximum curvature Mc = {Mc:.1f}")
 ```
 
 ---
 
 ### `calc_mc_gof(magnitudes, bin_width=0.1, conf_level=0.9)`
 
-用拟合优度法（Goodness-of-fit）估算 Mc，比最大曲率法更稳健。
+Estimate Mc using goodness-of-fit method, more robust than maximum curvature.
 
-**参数：**
+**Parameters:**
 - `magnitudes` : array-like
-- `bin_width` : float — 默认 0.1
-- `conf_level` : float — 置信水平，默认 0.9（90%）
+- `bin_width` : float — Default 0.1
+- `conf_level` : float — Confidence level, default 0.9 (90%)
 
-**返回：** `(Mc, R_best)` — Mc 值和最优拟合残差
+**Returns:** `(Mc, R_best)` — Mc value and optimal fit residual
 
 ```python
 from seismo_stats.bvalue import calc_mc_gof
 Mc, R = calc_mc_gof(mags, conf_level=0.9)
-print(f"拟合优度法 Mc = {Mc:.1f}  (残差 R = {R:.3f})")
+print(f"Goodness-of-fit Mc = {Mc:.1f}  (residual R = {R:.3f})")
 ```
 
 ---
 
 ### `calc_bvalue_mle(magnitudes, Mc, bin_width=0.1)`
 
-用最大似然估计（MLE / Aki 1965）计算 b 值，精度最高。
+Calculate b-value using maximum likelihood estimation (MLE / Aki 1965), highest precision.
 
-**参数：**
+**Parameters:**
 - `magnitudes` : array-like
-- `Mc` : float — 最小完整性震级
-- `bin_width` : float — 默认 0.1
+- `Mc` : float — Magnitude of completeness
+- `bin_width` : float — Default 0.1
 
-**返回：** `BvalueResult` 对象
+**Returns:** `BvalueResult` object
 
-**BvalueResult 属性：**
-- `.b` — b 值
-- `.sigma_b` — 标准误差
-- `.a` — a 值（G-R 关系截距）
-- `.n_events` — 用于计算的事件数
-- `.Mc` — 使用的 Mc
+**BvalueResult attributes:**
+- `.b` — b-value
+- `.sigma_b` — Standard error
+- `.a` — a-value (G-R relationship intercept)
+- `.n_events` — Number of events used for calculation
+- `.Mc` — Mc value used
 
 ```python
 from seismo_stats.bvalue import calc_bvalue_mle
 result = calc_bvalue_mle(mags, Mc=Mc)
 print(f"b = {result.b:.3f} ± {result.sigma_b:.3f}")
 print(f"a = {result.a:.3f}")
-print(f"使用事件数: {result.n_events}")
+print(f"Events used: {result.n_events}")
 ```
 
 ---
 
 ### `calc_bvalue_lsq(magnitudes, Mc, bin_width=0.1)`
 
-用最小二乘法拟合 G-R 关系，适用于比较不同方法。
+Calculate b-value using least-squares fitting of G-R relationship, suitable for method comparison.
 
-**参数：** 同 `calc_bvalue_mle`
+**Parameters:** Same as `calc_bvalue_mle`
 
-**返回：** `BvalueResult`
+**Returns:** `BvalueResult`
 
 ```python
 from seismo_stats.bvalue import calc_bvalue_lsq
@@ -117,57 +117,57 @@ print(f"LSQ b = {result_lsq.b:.3f}")
 
 ### `plot_gr(catalog_or_mags, Mc=None, outfile=None)`
 
-绘制频度-震级分布图（G-R 图），自动拟合并标注 b 值。
+Plot frequency-magnitude distribution (G-R plot) with automatic fitting and b-value annotation.
 
-**参数：**
-- `catalog_or_mags` : CatalogData 或 array-like（震级列表）
-- `Mc` : float — 若 None 则自动估算
-- `outfile` : str — 保存路径
+**Parameters:**
+- `catalog_or_mags` : CatalogData or array-like (list of magnitudes)
+- `Mc` : float — If None, auto-estimated
+- `outfile` : str — Save path
 
 ```python
 from seismo_stats.plotting import plot_gr
 fig = plot_gr(catalog, Mc=Mc, outfile="fmd.png")
-print("F-M 分布图已保存: fmd.png")
+print("F-M distribution plot saved: fmd.png")
 ```
 
 ---
 
-## 完整示例
+## Complete Example
 
 ```python
 from seismo_stats.catalog_loader import load_catalog_file
 from seismo_stats.bvalue import calc_mc_maxcurvature, calc_mc_gof, calc_bvalue_mle
 from seismo_stats.plotting import plot_gr, plot_temporal, plot_all
 
-# 1. 加载目录
+# 1. Load catalog
 catalog = load_catalog_file("/data/catalog.csv")
 print(catalog.summary())
 mags = catalog.magnitudes
 
-# 2. 估算 Mc（两种方法对比）
+# 2. Estimate Mc (compare two methods)
 Mc_mc = calc_mc_maxcurvature(mags)
 Mc_gof, R = calc_mc_gof(mags)
-print(f"最大曲率法 Mc = {Mc_mc:.1f}")
-print(f"拟合优度法 Mc = {Mc_gof:.1f}  (R = {R:.3f})")
-Mc = Mc_gof  # 使用拟合优度法结果
+print(f"Maximum curvature Mc = {Mc_mc:.1f}")
+print(f"Goodness-of-fit Mc = {Mc_gof:.1f}  (R = {R:.3f})")
+Mc = Mc_gof  # Use goodness-of-fit result
 
-# 3. 计算 b 值
+# 3. Calculate b-value
 result = calc_bvalue_mle(mags, Mc=Mc)
-print(f"\nb 值 (MLE) = {result.b:.3f} ± {result.sigma_b:.3f}")
-print(f"a 值       = {result.a:.3f}")
-print(f"N (M≥Mc)   = {result.n_events}")
+print(f"\nb-value (MLE) = {result.b:.3f} ± {result.sigma_b:.3f}")
+print(f"a-value       = {result.a:.3f}")
+print(f"N (M>=Mc)   = {result.n_events}")
 
-# 4. 绘图
+# 4. Plot
 plot_gr(catalog, Mc=Mc, outfile="fmd.png")
 plot_temporal(catalog, outfile="temporal.png")
 
-print("\n分析完成，图像已保存。")
+print("\nAnalysis complete, plots saved.")
 ```
 
 ---
 
-## 注意事项
+## Notes
 
-- MLE 方法（Aki 1965）比 LSQ 统计上更优，推荐作为主要方法
-- 事件数 < 50 时 b 值不稳定，结果仅供参考
-- 使用 `bin_width=0.1` 时须确保目录震级精度为 0.1
+- MLE method (Aki 1965) is statistically superior to LSQ; recommended as primary method
+- When event count < 50, b-value is unstable; results for reference only
+- When using `bin_width=0.1`, ensure catalog magnitude precision is 0.1

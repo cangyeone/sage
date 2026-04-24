@@ -53,6 +53,9 @@ os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
 # Task status tracking
 tasks = {}
 
+# Ollama pull status: { model_name: {status, progress, detail, error} }
+_pull_status: dict = {}
+
 
 def run_task(task_id, command, task_type, cwd=None):
     """Run a seismic processing task in background"""
@@ -555,25 +558,59 @@ def get_ollama_models():
 
 @app.route('/api/llm/ollama/pull', methods=['POST'])
 def pull_ollama_model():
-    """Pull an Ollama model"""
+    """Pull an Ollama model and track progress."""
+    import urllib.request as _ur
     data = request.json
     model_name = data.get('model')
-    
+
     if not model_name:
         return jsonify({'error': 'Model name required'}), 400
-    
-    config = get_config_manager()
-    
-    # Start pulling in background thread
+
+    _pull_status[model_name] = {'status': 'pulling', 'progress': 0, 'detail': '', 'error': ''}
+
     def pull_in_background():
-        success = config.pull_ollama_model(model_name)
-        # Could add a status tracking mechanism here
-    
-    thread = threading.Thread(target=pull_in_background)
-    thread.daemon = True
+        try:
+            # Use Ollama streaming pull API to track progress
+            url     = 'http://localhost:11434/api/pull'
+            payload = json.dumps({'name': model_name, 'stream': True}).encode()
+            req     = _ur.Request(url, data=payload, method='POST',
+                                  headers={'Content-Type': 'application/json'})
+            with _ur.urlopen(req, timeout=1800) as resp:
+                for raw_line in resp:
+                    line = raw_line.decode().strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except Exception:
+                        continue
+                    status_msg = obj.get('status', '')
+                    total      = obj.get('total', 0)
+                    completed  = obj.get('completed', 0)
+                    pct = int(completed * 100 / total) if total else 0
+                    detail = f"{completed/1e9:.1f} GB / {total/1e9:.1f} GB" if total else status_msg
+                    _pull_status[model_name] = {
+                        'status': 'pulling', 'progress': pct,
+                        'detail': detail, 'error': ''
+                    }
+            _pull_status[model_name] = {'status': 'done', 'progress': 100, 'detail': '', 'error': ''}
+        except Exception as ex:
+            _pull_status[model_name] = {'status': 'error', 'progress': 0,
+                                        'detail': '', 'error': str(ex)}
+
+    thread = threading.Thread(target=pull_in_background, daemon=True)
     thread.start()
-    
     return jsonify({'message': f'Started pulling model: {model_name}'})
+
+
+@app.route('/api/llm/ollama/pull/status', methods=['GET'])
+def pull_ollama_status():
+    """Return current pull progress for a model."""
+    model_name = request.args.get('model', '')
+    if not model_name:
+        return jsonify({'error': 'model param required'}), 400
+    info = _pull_status.get(model_name, {'status': 'unknown', 'progress': 0, 'detail': '', 'error': ''})
+    return jsonify(info)
 
 
 # ==================== Knowledge Base & RAG ====================
@@ -988,7 +1025,12 @@ def chat_code():
 
         # 获取 session 级别 Engine（保留历史）
         engine = _get_code_engine(session_id, llm_cfg)
-        result = engine.run(user_msg, timeout=120)
+        result = engine.run(
+            user_msg,
+            timeout=120,
+            max_debug_rounds=4,   # auto-debug up to 4 rounds
+            run_verify=False,     # lightweight — skip verify by default
+        )
 
         # 图像 base64 编码，同时关联 GMT 脚本
         # 先从 stdout 中提取 [GMT_SCRIPT] 标记
@@ -1023,14 +1065,37 @@ def chat_code():
             except Exception:
                 pass
 
+        # Build compact debug trace for the frontend
+        debug_trace = []
+        for d in result.debug_trace:
+            debug_trace.append({
+                'attempt':   d.attempt,
+                'diagnosis': d.diagnosis,
+                'success':   d.success,
+                'error':     d.error[-400:] if d.error else '',
+            })
+
+        # Encode the saved script for download
+        script_b64 = ''
+        if result.script_path and os.path.isfile(result.script_path):
+            try:
+                with open(result.script_path, 'rb') as _sf:
+                    script_b64 = _b64.b64encode(_sf.read()).decode('utf-8')
+            except Exception:
+                pass
+
         return jsonify({
-            'ok':        True,
-            'success':   result.success,
-            'response':  result.response,
-            'code':      result.code,
-            'stdout':    result.stdout,
-            'figures':   figures,
-            'skill_used': skill_used,
+            'ok':          True,
+            'success':     result.success,
+            'response':    result.response,
+            'code':        result.code,
+            'stdout':      result.stdout,
+            'figures':     figures,
+            'skill_used':  skill_used,
+            'attempts':    result.attempts,
+            'debug_trace': debug_trace,
+            'plan':        result.plan,
+            'script_b64':  script_b64,
         })
 
     except Exception as e:
@@ -1050,43 +1115,87 @@ def chat_code_reset():
 def chat_route():
     """
     用 LLM 判断用户意图，返回路由类型：
-      code  — 需要执行代码/技能（数据处理、绘图、读取文件）
-      qa    — 知识问答（概念解释、文献查询、"what is X"）
-      chat  — 普通对话
+      code  — 需要执行代码/技能（数据处理、绘图、读取文件等具体操作）
+      qa    — 知识问答（概念解释、原理、文献查询、"如何X"询问方法）
+      chat  — 普通对话、打招呼、闲聊
     失败时回退到 'qa'（保证不会静默丢失）。
     """
-    data       = request.json or {}
-    message    = data.get('message', '').strip()
-    kb_has_docs = data.get('kb_has_docs', False)   # 知识库是否有文档
+    import re as _re
+
+    data        = request.json or {}
+    message     = data.get('message', '').strip()
+    kb_has_docs = data.get('kb_has_docs', False)
+    # 最近几轮对话历史，用于多轮意图消歧
+    history     = data.get('history', [])   # [{role, content}, ...]
 
     if not message:
         return jsonify({'ok': True, 'intent': 'chat'})
 
     llm_cfg = _get_llm_config()
 
-    # 快速路径：消息以绝对路径或 ~ 开头，且不是问句 → 直接判 code
-    import re as _re
-    if _re.search(r'(?:^|\s)[/~][\w./\-]{4,}', message) and not message.strip().endswith('?'):
+    msg_stripped = message.strip()
+
+    # ── 快速路径 1：含绝对路径且无问号 → 直接判 code ──────────────────────
+    has_path  = bool(_re.search(r'(?:^|\s)[/~][\w./\-]{4,}', message))
+    ends_q    = bool(_re.search(r'[?？]\s*$', msg_stripped))
+    if has_path and not ends_q:
         return jsonify({'ok': True, 'intent': 'code'})
 
-    # 构建轻量路由提示（低 max_tokens，快速响应）
-    kb_hint = "（知识库中有相关文献可供检索）" if kb_has_docs else "（知识库为空）"
-    routing_prompt = f"""你是一个路由分类器，判断用户消息属于哪种操作类型。
-只返回以下单词之一，不要输出任何其他内容：
-  code  — 需要执行 Python 代码 / 调用地震数据处理技能（绘图、滤波、读文件、计算震源参数等）
-  qa    — 知识问答、概念解释、文献查询（"what is X"、"explain"、"什么是"、"如何理解"等）
-  chat  — 打招呼、闲聊、与地震学无关的普通对话
+    # ── 快速路径 2：明确的问题模式 → 直接判 qa（不用等 LLM）─────────────
+    # 以典型疑问词开头 且 没有明确的"帮我执行"等操作动词 → qa
+    QUESTION_START = r'^(如何|怎么|怎样|什么是|什么叫|为什么|为何|哪种|哪些|请解释|能解释|介绍|介绍一下|讲一下|讲讲|请问|有没有什么|有何区别|原理|原理是|有什么区别|what is|what are|how to|how does|why|explain|introduce|tell me about|what\'s)'
+    ACTION_VERB    = r'(帮我|请帮|帮忙|执行|运行|处理一下|做一下|跑一下|跑下|计算一下|绘制一下|画一下|下载一下)'
+    if _re.search(QUESTION_START, msg_stripped, _re.I) and not _re.search(ACTION_VERB, msg_stripped):
+        return jsonify({'ok': True, 'intent': 'qa'})
 
-知识库状态：{kb_hint}
+    # ── 快速路径 3：纯问句（以问号结尾）且无路径、无操作动词 → qa ─────────
+    if ends_q and not has_path and not _re.search(ACTION_VERB, msg_stripped):
+        return jsonify({'ok': True, 'intent': 'qa'})
+
+    # ── LLM 路由（只处理模糊情况）────────────────────────────────────────
+    kb_hint = "知识库中有相关文献可供检索" if kb_has_docs else "知识库为空"
+
+    # 构建历史摘要（只取最近 3 轮，避免超长）
+    history_text = ""
+    if history:
+        recent = history[-6:]  # 最多 3 轮（user+assistant 各一条）
+        lines = []
+        for h in recent:
+            role_label = "用户" if h.get("role") == "user" else "AI"
+            lines.append(f"{role_label}：{str(h.get('content',''))[:120]}")
+        history_text = "\n".join(lines)
+
+    routing_prompt = f"""你是对话路由分类器。根据用户最新消息判断意图，只输出以下单词之一，不输出任何其他内容：
+
+  code — 用户要求系统执行具体操作：处理/读取/下载数据、绘图、滤波、计算、运行代码、操作文件。
+         标志：含行动动词（帮我、请执行、画图、读取、下载、计算、运行、处理）+ 具体操作对象。
+
+  qa   — 用户在提问或寻求解释：询问概念/原理/方法/算法/步骤，请求解释某技术，查阅文献知识，
+         询问"如何做X"但并非要求系统立即执行X。
+         标志：疑问词（如何、怎么、什么是、为什么、原理）或以问号结尾，且无明确操作指令。
+
+  chat — 打招呼、闲聊、与地震学无关的纯聊天。
+
+【关键区分规则】
+- "如何获取 IRIS 波形数据？"           → qa  （询问方法，不是要求执行）
+- "帮我从 IRIS 下载 BHZ 数据"          → code（要求执行操作）
+- "什么是 b 值？"                       → qa  （概念解释）
+- "计算这个目录的 b 值"                 → code（要求执行）
+- "Q 值滤波的原理是什么？"              → qa  （原理询问）
+- "对 /data/test.sac 做 1-10Hz 滤波"   → code（有路径+操作）
+- "obspy 怎么读取 SAC 文件？"           → qa  （询问用法）
+- "读取 /data/ 下的 SAC 文件并画图"     → code（操作指令）
+
+{f"最近对话上下文：{chr(10)}{history_text}{chr(10)}" if history_text else ""}知识库状态：{kb_hint}
 用户消息：{message}
 
-分类结果（只返回一个词）："""
+分类结果（只返回 code / qa / chat）："""
 
     try:
         result = _llm_call(
             [{"role": "user", "content": routing_prompt}],
             llm_cfg,
-            max_tokens=10,   # 只需一个词
+            max_tokens=10,
         ).lower().strip()
 
         # 提取第一个有效词
@@ -1097,10 +1206,10 @@ def chat_route():
         # 未识别 → 默认 qa
         return jsonify({'ok': True, 'intent': 'qa'})
 
-    except Exception as e:
-        # LLM 不可用时的回退规则
-        fallback = 'code' if _re.search(
-            r'(绘制|画图|滤波|频谱|读取|执行|运行|plot|filter|spectrum|waveform|sac|mseed)',
+    except Exception:
+        # LLM 不可用时的保守回退：有操作动词→code，否则→qa
+        fallback = 'code' if _re.search(ACTION_VERB, message) or _re.search(
+            r'(绘制|画图|画波形|滤波|读取|执行|运行|下载|处理|plot|filter|spectrum|\.sac|\.mseed)',
             message, _re.I
         ) else 'qa'
         return jsonify({'ok': True, 'intent': fallback, 'fallback': True})
@@ -1284,21 +1393,22 @@ def chat_rag():
         from rag_engine import get_knowledge_base
         kb = get_knowledge_base()
         if not kb.is_empty:
-            # 直接用 retrieve() 拿到 (chunk, score) 列表，精确追踪来源
-            kb_hits = kb.retrieve(user_msg, top_k=5, score_threshold=0.05)
+            # Raise threshold so only genuinely relevant chunks are retrieved.
+            # BGE-M3 cosine similarity: 0.05 ≈ unrelated, 0.45 ≈ moderate match, 0.6+ = strong.
+            kb_hits = kb.retrieve(user_msg, top_k=5, score_threshold=0.45)
             if kb_hits:
-                lines = ["以下是从知识库中检索到的相关内容，请参考这些内容回答用户问题：\n"]
+                lines = ["The following passages were retrieved from the knowledge base. "
+                         "Use them only if they are directly relevant to the question:\n"]
                 total = 0
                 for chunk, score in kb_hits:
                     entry = (
-                        f"【来源：{chunk.doc_name}，第 {chunk.page + 1} 页，"
-                        f"相关度 {score:.2f}】\n{chunk.text}\n"
+                        f"[Source: {chunk.doc_name}, page {chunk.page + 1}, "
+                        f"relevance {score:.2f}]\n{chunk.text}\n"
                     )
-                    if total + len(entry) > 2000:
+                    if total + len(entry) > 2500:
                         break
                     lines.append(entry)
                     total += len(entry)
-                    # 只把真正命中的文档列为参考文献
                     if chunk.doc_name not in sources:
                         sources.append(chunk.doc_name)
                 context_parts.append("\n".join(lines))
@@ -1327,14 +1437,25 @@ def chat_rag():
             "4. 指出局限性或未来工作（如有）\n"
         )
     else:
-        system = (
-            "你是 SAGE 系统内置的地震学专家助手，具备深厚的地震学和数据处理知识。\n"
-            "请结合以下参考内容（来自知识库）准确回答用户问题。\n"
-            "如果参考内容与问题无关，依靠自身知识回答即可。\n"
-        )
+        if context_parts:
+            system = (
+                "You are SAGE, an expert seismology assistant with deep knowledge of "
+                "seismology and data processing.\n"
+                "Relevant passages from the knowledge base are provided below. "
+                "Use them to answer the question. "
+                "If a passage is not directly relevant, rely on your own knowledge instead — "
+                "do NOT cite or mention passages that are unrelated to the question.\n"
+            )
+        else:
+            system = (
+                "You are SAGE, an expert seismology assistant with deep knowledge of "
+                "seismology and data processing.\n"
+                "Answer the user's question using your own knowledge. "
+                "Be concise and accurate.\n"
+            )
 
     if context_parts:
-        system += "\n\n===== 参考内容 =====\n" + "\n\n".join(context_parts)
+        system += "\n\n===== Reference passages =====\n" + "\n\n".join(context_parts)
 
     messages = [
         {"role": "system", "content": system},

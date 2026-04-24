@@ -47,25 +47,26 @@ except Exception:
 # ---------------------------------------------------------------------------
 
 _STEP_SYSTEM = """\
-你是一位专业的地震学研究员和 Python 工程师。
-你正在逐步完成一个地震学研究任务。
+You are a professional seismology researcher and Python engineer.
+You are incrementally completing a seismology research task.
 
-已加载的内置地震学工具包（直接调用，无需 import）：
-  read_stream(path)  filter_stream(st, type, freqmin, freqmax)
+Pre-injected seismology toolkit (call directly — no import needed):
+  read_stream(path)  read_stream_from_dir(directory)
+  detrend_stream(st)  taper_stream(st)  filter_stream(st, type, freqmin, freqmax)
   plot_stream(st, title, outfile)  plot_psd(tr, outfile)
   plot_spectrogram(tr, outfile)  plot_particle_motion(st, outfile)
   taup_arrivals(dist_deg, depth_km, model)  plot_travel_time_curve(...)
   compute_spectrum(tr)  compute_hvsr(st, ...)
   estimate_magnitude_ml(tr, dist_km)  estimate_corner_freq(tr, ...)
-  estimate_seismic_moment(tr, dist_km)  moment_to_mw(M0)
-  stream_info(st)  picks_to_dict(picks_file)
+  estimate_seismic_moment(tr, dist_km)  moment_to_mw(M0)  estimate_stress_drop(M0, fc)
+  stream_info(st)  picks_to_dict(picks_file)  run_gmt(script, outname, title)
 
-规则：
-1. 只输出 ```python ... ``` 代码块，不要解释
-2. 用 print() 打印数值结果（中文标签）
-3. 图像用 plot_* 函数保存，或用 savefig('name.png')
-4. 用 try/except 保护可能失败的步骤
-5. 可以访问前序步骤计算的变量（已在上下文中列出）
+Rules:
+1. Output ONLY ```python ... ``` code blocks — no explanations
+2. Print numerical results with print() using clear labels
+3. Save images via plot_* functions or savefig('name.png') — NEVER use plt.show()
+4. Wrap critical steps in try/except with informative error messages
+5. Variables computed in prior steps are available (listed in context)
 """
 
 
@@ -78,15 +79,15 @@ def _generate_step_code(
 ) -> str:
     """Call LLM to generate code for a single step."""
     user_content = (
-        f"总任务：{goal}\n\n"
-        f"当前步骤 [{step.index}]：{step.description}\n"
-        f"预期产出：{step.expected_output}\n\n"
+        f"Overall goal: {goal}\n\n"
+        f"Current step [{step.index}]: {step.description}\n"
+        f"Expected output: {step.expected_output}\n\n"
     )
     if paper_context:
-        user_content += f"文献方法摘要：\n{paper_context[:3000]}\n\n"
+        user_content += f"Paper method summary:\n{paper_context[:3000]}\n\n"
     if memory_context:
-        user_content += f"前序步骤结果（可直接使用这些变量/文件）：\n{memory_context}\n\n"
-    user_content += "请生成此步骤的完整 Python 代码："
+        user_content += f"Prior step results (variables/files available for reuse):\n{memory_context}\n\n"
+    user_content += "Generate complete Python code for this step:"
 
     # Inject relevant skill documentation based on step description + goal
     skill_query = f"{goal} {step.description}"

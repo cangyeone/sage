@@ -1,45 +1,45 @@
 ---
 name: waveform_processing
 category: waveform
-keywords: 滤波, 带通滤波, 低通滤波, 高通滤波, 去趋势, 去均值, detrend, demean, 重采样, resample, taper, 仪器响应, 预处理, filter_stream, detrend_stream, resample_stream, trim_stream
+keywords: filtering, bandpass filter, lowpass filter, highpass filter, detrend, demean, resample, taper, instrument response, preprocessing, filter_stream, detrend_stream, resample_stream, trim_stream, 滤波, 带通滤波, 去趋势, 去均值, 重采样, 仪器响应, 预处理
 ---
 
-# 波形预处理
+# Waveform Preprocessing
 
-## 描述
+## Description
 
-对 ObsPy Stream/Trace 进行去趋势、去均值、taper、滤波、重采样、截窗等标准预处理操作。
+Perform standard preprocessing operations on ObsPy Stream/Trace: detrending, demeaning, tapering, filtering, resampling, and windowing.
 
 ---
 
-## 主要函数
+## Main Functions
 
 ### `detrend_stream(st, type="demean")`
 
-去趋势或去均值。
+Remove trend or mean from waveform.
 
-**参数：**
+**Parameters:**
 - `st` : obspy.Stream
-- `type` : str — `"demean"`（去均值）/ `"linear"`（去线性趋势）/ `"constant"`（同 demean）
+- `type` : str — `"demean"` (remove mean) / `"linear"` (remove linear trend) / `"constant"` (same as demean)
 
-**返回：** obspy.Stream（原地修改并返回）
+**Returns:** obspy.Stream (modified in place and returned)
 
 ```python
 st = read_stream("/data/wave.mseed")
-st = detrend_stream(st, type="demean")     # 去均值
-st = detrend_stream(st, type="linear")    # 去线性趋势
+st = detrend_stream(st, type="demean")     # Remove mean
+st = detrend_stream(st, type="linear")    # Remove linear trend
 ```
 
 ---
 
 ### `taper_stream(st, max_percentage=0.05, type="cosine")`
 
-对波形两端施加余弦锥形窗，减少频谱泄漏。
+Apply cosine taper window to both ends of waveform to reduce spectral leakage.
 
-**参数：**
+**Parameters:**
 - `st` : obspy.Stream
-- `max_percentage` : float — taper 占总长度的比例，默认 0.05（5%）
-- `type` : str — 窗类型，`"cosine"` / `"hann"` / `"hamming"` 等
+- `max_percentage` : float — Taper fraction of total length, default 0.05 (5%)
+- `type` : str — Window type, `"cosine"` / `"hann"` / `"hamming"`, etc.
 
 ```python
 st = taper_stream(st, max_percentage=0.05)
@@ -49,30 +49,30 @@ st = taper_stream(st, max_percentage=0.05)
 
 ### `filter_stream(st, filter_type, freqmin=None, freqmax=None, corners=4, zerophase=True)`
 
-对 Stream 进行频率域滤波。
+Apply frequency domain filtering to Stream.
 
-**参数：**
+**Parameters:**
 - `st` : obspy.Stream
 - `filter_type` : str — `"bandpass"` / `"lowpass"` / `"highpass"` / `"bandstop"`
-- `freqmin` : float — 低截频（Hz），bandpass/highpass 必填
-- `freqmax` : float — 高截频（Hz），bandpass/lowpass 必填
-- `corners` : int — 滤波器阶数，默认 4
-- `zerophase` : bool — 零相位滤波（前向+反向），默认 True
+- `freqmin` : float — Low cut frequency (Hz), required for bandpass/highpass
+- `freqmax` : float — High cut frequency (Hz), required for bandpass/lowpass
+- `corners` : int — Filter order, default 4
+- `zerophase` : bool — Zero-phase filtering (forward + reverse), default True
 
-**返回：** obspy.Stream
+**Returns:** obspy.Stream
 
 ```python
 st = read_stream("/data/wave.mseed")
 st = detrend_stream(st)
 st = taper_stream(st)
 
-# 带通滤波 1~10 Hz
+# Bandpass 1-10 Hz
 st_bp = filter_stream(st, "bandpass", freqmin=1.0, freqmax=10.0)
 
-# 低通滤波 5 Hz
+# Lowpass 5 Hz
 st_lp = filter_stream(st, "lowpass", freqmax=5.0)
 
-# 高通滤波 0.5 Hz
+# Highpass 0.5 Hz
 st_hp = filter_stream(st, "highpass", freqmin=0.5)
 ```
 
@@ -80,16 +80,16 @@ st_hp = filter_stream(st, "highpass", freqmin=0.5)
 
 ### `resample_stream(st, sampling_rate)`
 
-重采样到指定采样率。
+Resample to specified sampling rate.
 
-**参数：**
+**Parameters:**
 - `st` : obspy.Stream
-- `sampling_rate` : float — 目标采样率（Hz）
+- `sampling_rate` : float — Target sampling rate (Hz)
 
-**返回：** obspy.Stream
+**Returns:** obspy.Stream
 
 ```python
-# 降采样到 50 Hz
+# Downsample to 50 Hz
 st = resample_stream(st, sampling_rate=50.0)
 ```
 
@@ -97,27 +97,27 @@ st = resample_stream(st, sampling_rate=50.0)
 
 ### `trim_stream(st, starttime=None, endtime=None, pad=True)`
 
-截取指定时间窗口。
+Extract specified time window.
 
-**参数：**
+**Parameters:**
 - `st` : obspy.Stream
-- `starttime` : obspy.UTCDateTime 或 str，如 `"2024-01-01T00:00:00"`
-- `endtime` : obspy.UTCDateTime 或 str
-- `pad` : bool — 不足时是否补零，默认 True
+- `starttime` : obspy.UTCDateTime or str, e.g. `"2024-01-01T00:00:00"`
+- `endtime` : obspy.UTCDateTime or str
+- `pad` : bool — Pad with zeros if insufficient data, default True
 
 ```python
 from obspy import UTCDateTime
 t0 = UTCDateTime("2024-03-15T08:30:00")
-st = trim_stream(st, starttime=t0, endtime=t0 + 60)  # 截取 60 秒
+st = trim_stream(st, starttime=t0, endtime=t0 + 60)  # Extract 60 seconds
 ```
 
 ---
 
 ### `merge_stream(st)`
 
-合并同一通道的多段 Trace（填充 gap）。
+Merge multiple traces of the same channel (fill gaps).
 
-**返回：** obspy.Stream
+**Returns:** obspy.Stream
 
 ```python
 st = merge_stream(st)
@@ -127,13 +127,13 @@ st = merge_stream(st)
 
 ### `remove_response(st, inventory_or_paz, output="VEL", pre_filt=None)`
 
-去除仪器响应，转换为物理量（位移 / 速度 / 加速度）。
+Remove instrument response and convert to physical quantity (displacement / velocity / acceleration).
 
-**参数：**
+**Parameters:**
 - `st` : obspy.Stream
-- `inventory_or_paz` : obspy.Inventory 或 PAZ dict
-- `output` : str — `"DISP"`（位移）/ `"VEL"`（速度）/ `"ACC"`（加速度）
-- `pre_filt` : tuple — 水波整形前置滤波器，如 `(0.005, 0.01, 45, 50)`
+- `inventory_or_paz` : obspy.Inventory or PAZ dict
+- `output` : str — `"DISP"` (displacement) / `"VEL"` (velocity) / `"ACC"` (acceleration)
+- `pre_filt` : tuple — Water-level pre-filtering, e.g. `(0.005, 0.01, 45, 50)`
 
 ```python
 from obspy import read_inventory
@@ -143,25 +143,25 @@ st = remove_response(st, inv, output="VEL", pre_filt=(0.005, 0.01, 45, 50))
 
 ---
 
-## 标准预处理流程
+## Standard Preprocessing Workflow
 
 ```python
 st = read_stream("/data/wave.mseed")
 
-# 标准四步预处理
+# Standard four-step preprocessing
 st = detrend_stream(st, type="demean")
 st = detrend_stream(st, type="linear")
 st = taper_stream(st, max_percentage=0.05)
 st_filtered = filter_stream(st, "bandpass", freqmin=1.0, freqmax=10.0)
 
-print("预处理完成")
+print("Preprocessing complete")
 stream_info(st_filtered)
 ```
 
 ---
 
-## 注意事项
+## Notes
 
-- 滤波前务必先去趋势和 taper，否则边缘效应会污染频谱
-- `zerophase=True` 不引入相位偏移，地震学中强烈推荐
-- 重采样前建议先做低通滤波（截频 < 新采样率/2），避免混叠
+- Always detrend and taper before filtering, otherwise edge effects will contaminate the spectrum
+- `zerophase=True` introduces no phase shift and is strongly recommended in seismology
+- Apply lowpass filtering (cutoff < new sampling rate / 2) before resampling to avoid aliasing

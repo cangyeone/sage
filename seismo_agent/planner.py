@@ -39,33 +39,33 @@ class PlanStep:
 
 
 _PLANNER_SYSTEM = """\
-你是一位经验丰富的地震学研究员和软件工程师。
-用户给你一个研究目标（可能附带文献内容），请将任务拆解为清晰的执行步骤。
+You are an experienced seismology researcher and software engineer.
+Given a research goal (and optionally paper content), break the task into clear execution steps.
 
-输出格式要求（严格 JSON 数组，不要任何其他内容）：
+Required output format (strict JSON array, nothing else):
 [
   {
     "index": 1,
-    "description": "步骤的简洁描述（中文，20字以内）",
+    "description": "Concise step description (≤ 15 words)",
     "step_type": "code",
-    "expected_output": "预期产出（如'滤波后的波形图'）",
+    "expected_output": "Expected output (e.g., 'filtered waveform plot')",
     "depends_on": []
   },
   ...
 ]
 
-step_type 可选值：
-- "code"   需要生成并执行 Python 代码
-- "tool"   调用外部工具（HypoDD/VELEST 等）
-- "qa"     只需文字解释，不执行代码
-- "search" 在文献中搜索特定信息
+step_type values:
+- "code"   Generate and execute Python code
+- "tool"   Call external tool (HypoDD, VELEST, etc.)
+- "qa"     Text explanation only, no code execution
+- "search" Search literature for specific information
 
-规划原则：
-1. 如有文献，先用 1-2 步提取关键方法/公式
-2. 数据准备步骤（读取、预处理）优先
-3. 每步只做一件事，粒度适中
-4. 最后一步是结果可视化或验证
-5. 步骤总数建议 3-8 步，不要过细
+Planning principles:
+1. If paper is provided, start with 1-2 steps to extract key methods/formulas
+2. Data preparation steps (read, preprocess) come first
+3. Each step does one thing; keep granularity moderate
+4. Final step is result visualization or verification
+5. Aim for 3-8 total steps — avoid over-splitting
 """
 
 
@@ -130,9 +130,9 @@ def _parse_plan(raw: str) -> List[PlanStep]:
 def _fallback_plan() -> List[PlanStep]:
     """Default 3-step plan when LLM parsing fails."""
     return [
-        PlanStep(1, "准备数据并检查格式", "code", "数据加载确认"),
-        PlanStep(2, "实现核心处理步骤", "code", "处理结果"),
-        PlanStep(3, "可视化并输出结果", "code", "结果图像"),
+        PlanStep(1, "Prepare data and verify format", "code", "Data loaded"),
+        PlanStep(2, "Implement core processing", "code", "Processing result"),
+        PlanStep(3, "Visualize and output results", "code", "Result figures"),
     ]
 
 
@@ -182,12 +182,12 @@ class TaskPlanner:
         -------
         List[PlanStep]
         """
-        user_content = f"任务目标：{goal}\n"
+        user_content = f"Goal: {goal}\n"
         if paper_context:
-            user_content += f"\n文献内容摘要：\n{paper_context[:4000]}"
+            user_content += f"\nPaper content summary:\n{paper_context[:4000]}"
         if prev_results_context:
-            user_content += f"\n\n已完成的步骤：\n{prev_results_context}"
-        user_content += "\n\n请生成执行步骤（JSON 数组）："
+            user_content += f"\n\nAlready completed steps:\n{prev_results_context}"
+        user_content += "\n\nGenerate execution steps (JSON array):"
 
         messages = [
             {"role": "system", "content": _PLANNER_SYSTEM},
@@ -218,11 +218,11 @@ class TaskPlanner:
             f"  ✗ [{failed_step.index}] {failed_step.description}" if failed_step else ""
         )
         user_content = (
-            f"任务目标：{goal}\n\n"
-            f"已完成步骤：\n{completed_desc}\n"
-            f"失败步骤：\n{failed_desc}\n\n"
-            f"{'文献摘要：' + paper_context[:2000] if paper_context else ''}\n\n"
-            "请重新规划剩余步骤（JSON 数组，索引从失败步骤继续）："
+            f"Goal: {goal}\n\n"
+            f"Completed steps:\n{completed_desc}\n"
+            f"Failed step:\n{failed_desc}\n\n"
+            f"{'Paper summary: ' + paper_context[:2000] if paper_context else ''}\n\n"
+            "Re-plan remaining steps (JSON array, continue indexing from failed step):"
         )
         messages = [
             {"role": "system", "content": _PLANNER_SYSTEM},
@@ -234,7 +234,7 @@ class TaskPlanner:
         except Exception:
             return [PlanStep(
                 len(completed_steps) + 1,
-                "用替代方法完成剩余任务",
+                "Complete remaining task with alternative approach",
                 "code",
-                "结果"
+                "Result"
             )]

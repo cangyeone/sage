@@ -36,6 +36,17 @@ body { background: #f5f7fa; min-height: 100vh; }
   display: inline-block; background: #e8f5e9; color: #2e7d32;
   border-radius: 20px; padding: .25rem .85rem; font-size: .85rem; font-weight: 600;
 }
+
+/* Download section */
+.download-section { border-top: 1px solid #eee; margin-top: 1.25rem; padding-top: 1.25rem; }
+.recommended-chip {
+  display: inline-block; border: 1px solid #ccd; border-radius: 20px;
+  padding: .2rem .75rem; font-size: .82rem; cursor: pointer;
+  margin: .2rem; background: #f8f9ff; color: #555; transition: all .15s;
+}
+.recommended-chip:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+.pull-progress-row { display: none; }
+.progress-bar-animated { animation: progress-bar-stripes .75s linear infinite; }
 </style>
 </head>
 <body>
@@ -47,10 +58,18 @@ body { background: #f5f7fa; min-height: 100vh; }
       <span><strong>SeismicX</strong></span>
     </a>
     <div class="collapse navbar-collapse">
-      <ul class="navbar-nav ms-auto gap-1">
-        <li class="nav-item"><a class="nav-link" href="/chat"><i class="bi bi-chat-dots"></i> 对话</a></li>
-        <li class="nav-item"><a class="nav-link" href="/knowledge"><i class="bi bi-journal-bookmark-fill"></i> 知识库</a></li>
+      <ul class="navbar-nav ms-auto gap-1 align-items-center">
+        <li class="nav-item"><a class="nav-link" href="/chat"><i class="bi bi-chat-dots"></i> <span data-i18n="nav_chat">对话</span></a></li>
+        <li class="nav-item"><a class="nav-link" href="/knowledge"><i class="bi bi-journal-bookmark-fill"></i> <span data-i18n="nav_knowledge">知识库</span></a></li>
         <li class="nav-item"><a class="nav-link active fw-bold" href="/llm-settings"><i class="bi bi-cpu"></i> LLM</a></li>
+        <li class="nav-item">
+          <button id="langToggle" onclick="toggleLang()"
+            style="border:1.5px solid #dde;background:#f8f9ff;color:#555;border-radius:16px;
+                   padding:.22rem .75rem;font-size:.78rem;cursor:pointer;transition:all .2s;
+                   display:flex;align-items:center;gap:.3rem;">
+            🌐 <span id="langLabel">EN</span>
+          </button>
+        </li>
       </ul>
     </div>
   </div>
@@ -59,8 +78,8 @@ body { background: #f5f7fa; min-height: 100vh; }
 <!-- Header -->
 <div class="page-header">
   <div class="container">
-    <h4 class="mb-1"><i class="bi bi-cpu me-2"></i>LLM 模型设置</h4>
-    <p class="mb-0 opacity-75" style="font-size:.9rem">配置 AI 后端，对话、RAG 问答均使用此设置</p>
+    <h4 class="mb-1"><i class="bi bi-cpu me-2"></i><span data-i18n="page_title">LLM 模型设置</span></h4>
+    <p class="mb-0 opacity-75" style="font-size:.9rem" data-i18n="page_sub">配置 AI 后端，对话、RAG 问答均使用此设置</p>
   </div>
 </div>
 
@@ -70,11 +89,11 @@ body { background: #f5f7fa; min-height: 100vh; }
   <div class="card border-0 shadow-sm mb-3">
     <div class="card-body py-3 d-flex align-items-center justify-content-between">
       <div>
-        <span class="fw-bold text-muted me-2">当前模型：</span>
-        <span id="currentModelBadge" class="current-model-badge">读取中…</span>
+        <span class="fw-bold text-muted me-2" data-i18n="current_model">当前模型：</span>
+        <span id="currentModelBadge" class="current-model-badge" data-i18n="loading">读取中…</span>
       </div>
       <button class="btn btn-sm btn-outline-secondary" onclick="testConnection()">
-        <i class="bi bi-plug"></i> 测试连接
+        <i class="bi bi-plug"></i> <span data-i18n="btn_test">测试连接</span>
       </button>
     </div>
   </div>
@@ -86,13 +105,13 @@ body { background: #f5f7fa; min-height: 100vh; }
 
         <!-- Provider -->
         <div class="mb-4">
-          <label class="form-label fw-bold">选择后端</label>
+          <label class="form-label fw-bold" data-i18n="label_backend">选择后端</label>
           <div class="provider-card selected" data-provider="ollama" onclick="selectProvider(this)">
             <div class="d-flex align-items-center gap-2">
               <i class="bi bi-hdd-network text-primary fs-5"></i>
               <div>
-                <div class="fw-bold">Ollama（本地）</div>
-                <div class="text-muted" style="font-size:.85rem">本地运行，保护隐私，支持离线使用</div>
+                <div class="fw-bold" data-i18n="ollama_title">Ollama（本地）</div>
+                <div class="text-muted" style="font-size:.85rem" data-i18n="ollama_sub">本地运行，保护隐私，支持离线使用</div>
               </div>
               <span id="ollamaStatus" class="ms-auto"></span>
             </div>
@@ -102,7 +121,7 @@ body { background: #f5f7fa; min-height: 100vh; }
               <i class="bi bi-cloud text-info fs-5"></i>
               <div>
                 <div class="fw-bold">OpenAI</div>
-                <div class="text-muted" style="font-size:.85rem">GPT-4o / GPT-4o-mini，需要 API Key</div>
+                <div class="text-muted" style="font-size:.85rem" data-i18n="openai_sub">GPT-4o / GPT-4o-mini，需要 API Key</div>
               </div>
             </div>
           </div>
@@ -110,40 +129,80 @@ body { background: #f5f7fa; min-height: 100vh; }
             <div class="d-flex align-items-center gap-2">
               <i class="bi bi-gear text-secondary fs-5"></i>
               <div>
-                <div class="fw-bold">自定义 API（兼容 OpenAI 格式）</div>
-                <div class="text-muted" style="font-size:.85rem">DeepSeek / SiliconFlow / 本地 vLLM 等</div>
+                <div class="fw-bold" data-i18n="custom_title">自定义 API（兼容 OpenAI 格式）</div>
+                <div class="text-muted" style="font-size:.85rem" data-i18n="custom_sub">DeepSeek / SiliconFlow / 本地 vLLM 等</div>
               </div>
             </div>
           </div>
           <input type="hidden" id="provider" value="ollama">
         </div>
 
-        <!-- Ollama 模型列表 -->
+        <!-- Ollama 已安装模型 -->
         <div id="ollamaSection">
-          <label class="form-label fw-bold">选择 Ollama 模型</label>
+          <label class="form-label fw-bold" data-i18n="label_installed_models">选择 Ollama 模型</label>
           <div id="ollamaModelsLoading" class="text-center py-3">
             <div class="spinner-border spinner-border-sm text-primary"></div>
-            <span class="ms-2 text-muted">正在读取已安装模型…</span>
+            <span class="ms-2 text-muted" data-i18n="models_loading">正在读取已安装模型…</span>
           </div>
           <div id="ollamaModelsList" class="model-list mb-3" style="display:none"></div>
           <input type="text" class="form-control" id="ollamaCustomModel"
+                 data-i18n-placeholder="custom_model_placeholder"
                  placeholder="或手动输入模型名称，如 qwen3:30b">
+
+          <!-- Download section -->
+          <div class="download-section">
+            <div class="fw-bold mb-2" style="font-size:.9rem" data-i18n="label_download">下载新模型</div>
+            <div class="text-muted mb-2" style="font-size:.82rem" data-i18n="download_hint">选择推荐模型或手动输入名称后点击下载</div>
+
+            <!-- Recommended chips -->
+            <div id="recommendedChips" class="mb-3">
+              <span class="recommended-chip" onclick="setDownloadModel('qwen3:8b')">qwen3:8b</span>
+              <span class="recommended-chip" onclick="setDownloadModel('qwen3:14b')">qwen3:14b</span>
+              <span class="recommended-chip" onclick="setDownloadModel('qwen3:30b')">qwen3:30b</span>
+              <span class="recommended-chip" onclick="setDownloadModel('deepseek-r1:8b')">deepseek-r1:8b</span>
+              <span class="recommended-chip" onclick="setDownloadModel('llama3.2:3b')">llama3.2:3b</span>
+              <span class="recommended-chip" onclick="setDownloadModel('gemma3:4b')">gemma3:4b</span>
+              <span class="recommended-chip" onclick="setDownloadModel('mistral:7b')">mistral:7b</span>
+            </div>
+
+            <div class="input-group mb-2">
+              <input type="text" class="form-control" id="downloadModelInput"
+                     data-i18n-placeholder="download_placeholder"
+                     placeholder="输入模型名称，如 qwen3:8b">
+              <button class="btn btn-outline-primary" type="button" onclick="pullModel()" id="btnPull">
+                <i class="bi bi-cloud-download me-1"></i><span data-i18n="btn_pull">下载</span>
+              </button>
+            </div>
+
+            <!-- Pull progress -->
+            <div id="pullProgressRow" class="pull-progress-row">
+              <div class="d-flex align-items-center justify-content-between mb-1">
+                <small id="pullStatusText" class="text-muted"></small>
+                <small id="pullModelName" class="fw-semibold text-primary"></small>
+              </div>
+              <div class="progress mb-1" style="height:8px">
+                <div id="pullProgressBar" class="progress-bar bg-primary progress-bar-striped progress-bar-animated"
+                     role="progressbar" style="width:0%"></div>
+              </div>
+              <small id="pullDetail" class="text-muted" style="font-size:.78rem"></small>
+            </div>
+          </div>
         </div>
 
         <!-- 在线 API 设置 -->
         <div id="onlineSection" style="display:none">
           <div class="mb-3">
-            <label class="form-label fw-bold">API Base URL</label>
+            <label class="form-label fw-bold" data-i18n="label_api_base">API Base URL</label>
             <input type="text" class="form-control" id="apiBase"
                    placeholder="https://api.openai.com/v1">
           </div>
           <div class="mb-3">
-            <label class="form-label fw-bold">API Key</label>
+            <label class="form-label fw-bold" data-i18n="label_api_key">API Key</label>
             <input type="password" class="form-control" id="apiKey"
                    placeholder="sk-…">
           </div>
           <div class="mb-3">
-            <label class="form-label fw-bold">模型名称</label>
+            <label class="form-label fw-bold" data-i18n="label_model_name">模型名称</label>
             <input type="text" class="form-control" id="onlineModel"
                    placeholder="gpt-4o / deepseek-chat / …">
           </div>
@@ -152,10 +211,10 @@ body { background: #f5f7fa; min-height: 100vh; }
         <!-- 保存 -->
         <div class="d-flex gap-2 mt-4">
           <button type="submit" class="btn btn-save">
-            <i class="bi bi-check-circle me-1"></i>保存配置
+            <i class="bi bi-check-circle me-1"></i><span data-i18n="btn_save">保存配置</span>
           </button>
           <button type="button" class="btn btn-outline-secondary" onclick="loadConfig()">
-            <i class="bi bi-arrow-clockwise me-1"></i>刷新
+            <i class="bi bi-arrow-clockwise me-1"></i><span data-i18n="btn_refresh">刷新</span>
           </button>
         </div>
 
@@ -176,21 +235,153 @@ body { background: #f5f7fa; min-height: 100vh; }
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
+// ── i18n ──────────────────────────────────────────────────────────────────────
+const I18N = {
+  zh: {
+    nav_chat: '对话', nav_knowledge: '知识库',
+    page_title: 'LLM 模型设置',
+    page_sub: '配置 AI 后端，对话、RAG 问答均使用此设置',
+    current_model: '当前模型：',
+    loading: '读取中…',
+    btn_test: '测试连接',
+    label_backend: '选择后端',
+    ollama_title: 'Ollama（本地）',
+    ollama_sub: '本地运行，保护隐私，支持离线使用',
+    openai_sub: 'GPT-4o / GPT-4o-mini，需要 API Key',
+    custom_title: '自定义 API（兼容 OpenAI 格式）',
+    custom_sub: 'DeepSeek / SiliconFlow / 本地 vLLM 等',
+    label_installed_models: '选择 Ollama 模型',
+    models_loading: '正在读取已安装模型…',
+    custom_model_placeholder: '或手动输入模型名称，如 qwen3:30b',
+    label_download: '下载新模型',
+    download_hint: '选择推荐模型或手动输入名称后点击下载',
+    download_placeholder: '输入模型名称，如 qwen3:8b',
+    btn_pull: '下载',
+    label_api_base: 'API Base URL',
+    label_api_key: 'API Key',
+    label_model_name: '模型名称',
+    btn_save: '保存配置',
+    btn_refresh: '刷新',
+    // dynamic
+    unconfigured: '未配置',
+    ollama_running: '● 运行中',
+    ollama_stopped: '● 未启动',
+    no_models: '暂无已安装模型，请先用 <code>ollama pull &lt;模型名&gt;</code> 安装',
+    ollama_not_running: 'Ollama 未启动，请运行 <code>ollama serve</code> 后刷新',
+    installed_models_header: '已安装模型',
+    pull_starting: '正在发起下载…',
+    pull_downloading: '下载中',
+    pull_done: '✓ 下载完成',
+    pull_failed: '下载失败',
+    pull_enter_name: '请输入模型名称',
+    save_ok: '✓ 配置已保存',
+    save_fail: '保存失败: ',
+    load_fail: '读取配置失败: ',
+    model_fail: '读取模型失败',
+    test_pending: '正在测试连接…',
+    test_ok: '✓ 连接正常，模型响应成功',
+    test_no_resp: '模型无响应，请检查配置',
+    test_no_cfg: '请先保存配置再测试',
+    test_fail: '连接失败: ',
+    save_validate_model: '请选择或输入一个模型名称',
+    save_validate_online: '请填写 API URL 和模型名称',
+  },
+  en: {
+    nav_chat: 'Chat', nav_knowledge: 'Knowledge',
+    page_title: 'LLM Model Settings',
+    page_sub: 'Configure the AI backend used by chat and RAG Q&A',
+    current_model: 'Active model:',
+    loading: 'Loading…',
+    btn_test: 'Test Connection',
+    label_backend: 'Select Backend',
+    ollama_title: 'Ollama (Local)',
+    ollama_sub: 'Runs locally — private, works offline',
+    openai_sub: 'GPT-4o / GPT-4o-mini — requires an API Key',
+    custom_title: 'Custom API (OpenAI-compatible)',
+    custom_sub: 'DeepSeek / SiliconFlow / local vLLM, etc.',
+    label_installed_models: 'Select Ollama Model',
+    models_loading: 'Loading installed models…',
+    custom_model_placeholder: 'Or type a model name, e.g. qwen3:30b',
+    label_download: 'Download New Model',
+    download_hint: 'Pick a recommended model or type a name, then click Download',
+    download_placeholder: 'Model name, e.g. qwen3:8b',
+    btn_pull: 'Download',
+    label_api_base: 'API Base URL',
+    label_api_key: 'API Key',
+    label_model_name: 'Model Name',
+    btn_save: 'Save',
+    btn_refresh: 'Reload',
+    // dynamic
+    unconfigured: 'Not configured',
+    ollama_running: '● Running',
+    ollama_stopped: '● Stopped',
+    no_models: 'No models installed. Run <code>ollama pull &lt;model&gt;</code> first.',
+    ollama_not_running: 'Ollama is not running. Start it with <code>ollama serve</code> then reload.',
+    installed_models_header: 'Installed models',
+    pull_starting: 'Starting download…',
+    pull_downloading: 'Downloading',
+    pull_done: '✓ Download complete',
+    pull_failed: 'Download failed',
+    pull_enter_name: 'Please enter a model name',
+    save_ok: '✓ Configuration saved',
+    save_fail: 'Save failed: ',
+    load_fail: 'Failed to load config: ',
+    model_fail: 'Failed to load models',
+    test_pending: 'Testing connection…',
+    test_ok: '✓ Connection OK — model responded',
+    test_no_resp: 'No model response, please check configuration',
+    test_no_cfg: 'Please save a configuration before testing',
+    test_fail: 'Connection failed: ',
+    save_validate_model: 'Please select or enter a model name',
+    save_validate_online: 'Please provide API URL and model name',
+  }
+};
+
+let currentLang = localStorage.getItem('sage_lang') || 'zh';
+
+function T(key) { return (I18N[currentLang] || I18N.zh)[key] || key; }
+
+function applyLang() {
+  document.documentElement.lang = currentLang === 'zh' ? 'zh-CN' : 'en';
+  document.getElementById('langLabel').textContent = currentLang === 'zh' ? 'EN' : '中';
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    const k = el.getAttribute('data-i18n');
+    if (I18N[currentLang][k] !== undefined) el.textContent = I18N[currentLang][k];
+  });
+  document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+    const k = el.getAttribute('data-i18n-placeholder');
+    if (I18N[currentLang][k] !== undefined) el.placeholder = I18N[currentLang][k];
+  });
+}
+
+function toggleLang() {
+  currentLang = currentLang === 'zh' ? 'en' : 'zh';
+  localStorage.setItem('sage_lang', currentLang);
+  applyLang();
+  // Re-render dynamic content
+  updateCurrentBadge();
+  if (document.getElementById('provider').value === 'ollama') {
+    loadOllamaModels();
+  }
+}
+
+// ── State ─────────────────────────────────────────────────────────────────────
 let currentConfig = null;
+let _pullTimer    = null;
 
-document.addEventListener('DOMContentLoaded', loadConfig);
+document.addEventListener('DOMContentLoaded', () => { applyLang(); loadConfig(); });
 
-// ── Provider selection ────────────────────────────────────────────────────
+// ── Provider selection ────────────────────────────────────────────────────────
 function selectProvider(el) {
   document.querySelectorAll('.provider-card').forEach(c => c.classList.remove('selected'));
   el.classList.add('selected');
   const p = el.dataset.provider;
   document.getElementById('provider').value = p;
-  document.getElementById('ollamaSection').style.display  = p === 'ollama'  ? 'block' : 'none';
-  document.getElementById('onlineSection').style.display  = p !== 'ollama'  ? 'block' : 'none';
+  document.getElementById('ollamaSection').style.display  = p === 'ollama' ? 'block' : 'none';
+  document.getElementById('onlineSection').style.display  = p !== 'ollama' ? 'block' : 'none';
 }
 
-// ── Load config ───────────────────────────────────────────────────────────
+// ── Load config ───────────────────────────────────────────────────────────────
 async function loadConfig() {
   try {
     const r = await fetch('/api/llm/config');
@@ -200,37 +391,43 @@ async function loadConfig() {
     const provider = currentConfig.provider || 'ollama';
     document.getElementById('provider').value = provider;
     const card = document.querySelector(`.provider-card[data-provider="${provider}"]`);
-    if (card) { document.querySelectorAll('.provider-card').forEach(c=>c.classList.remove('selected')); card.classList.add('selected'); }
+    if (card) {
+      document.querySelectorAll('.provider-card').forEach(c => c.classList.remove('selected'));
+      card.classList.add('selected');
+    }
     selectProvider(card || document.querySelector('.provider-card'));
 
     if (provider === 'ollama') {
       document.getElementById('ollamaCustomModel').value = currentConfig.model || '';
       loadOllamaModels();
     } else {
-      document.getElementById('apiBase').value    = currentConfig.api_base || '';
-      document.getElementById('onlineModel').value = currentConfig.model   || '';
+      document.getElementById('apiBase').value     = currentConfig.api_base || '';
+      document.getElementById('onlineModel').value = currentConfig.model    || '';
     }
 
     updateOllamaStatus(d.ollama_available);
     updateCurrentBadge();
   } catch(e) {
-    showToast('读取配置失败: ' + e.message, 'danger');
+    showToast(T('load_fail') + e.message, 'danger');
   }
 }
 
 function updateCurrentBadge() {
   const badge = document.getElementById('currentModelBadge');
   if (!currentConfig || !currentConfig.model) {
-    badge.textContent = '未配置';
+    badge.textContent = T('unconfigured');
     badge.style.background = '#fce4e4'; badge.style.color = '#c62828';
   } else {
-    badge.textContent = `${currentConfig.provider === 'ollama' ? 'Ollama' : currentConfig.provider} · ${currentConfig.model}`;
+    const provLabel = currentConfig.provider === 'ollama' ? 'Ollama' : currentConfig.provider;
+    badge.textContent = `${provLabel} · ${currentConfig.model}`;
     badge.style.background = '#e8f5e9'; badge.style.color = '#2e7d32';
   }
 }
 
-// ── Load Ollama models ────────────────────────────────────────────────────
+// ── Load Ollama installed models ──────────────────────────────────────────────
 async function loadOllamaModels() {
+  document.getElementById('ollamaModelsLoading').style.display = 'block';
+  document.getElementById('ollamaModelsList').style.display    = 'none';
   try {
     const r = await fetch('/api/llm/ollama/models');
     const d = await r.json();
@@ -241,19 +438,18 @@ async function loadOllamaModels() {
 
     if (!d.ollama_available) {
       list.innerHTML = `<div class="alert alert-warning py-2">
-        <i class="bi bi-exclamation-triangle"></i>
-        Ollama 未启动，请运行 <code>ollama serve</code> 后刷新
+        <i class="bi bi-exclamation-triangle"></i> ${T('ollama_not_running')}
       </div>`;
       return;
     }
 
     if (!d.installed || d.installed.length === 0) {
-      list.innerHTML = `<div class="text-muted">暂无已安装模型，请先用 <code>ollama pull &lt;模型名&gt;</code> 安装</div>`;
+      list.innerHTML = `<div class="text-muted">${T('no_models')}</div>`;
       return;
     }
 
     const savedModel = currentConfig?.model || '';
-    list.innerHTML = '<div class="fw-semibold mb-2" style="font-size:.85rem">已安装模型</div>' +
+    list.innerHTML = `<div class="fw-semibold mb-2" style="font-size:.85rem">${T('installed_models_header')}</div>` +
       d.installed.map(m => `
         <div class="form-check mb-1">
           <input class="form-check-input" type="radio" name="ollamaModel"
@@ -264,18 +460,98 @@ async function loadOllamaModels() {
 
   } catch(e) {
     document.getElementById('ollamaModelsLoading').innerHTML =
-      '<p class="text-danger">读取模型失败</p>';
+      `<p class="text-danger">${T('model_fail')}</p>`;
   }
 }
 
 function updateOllamaStatus(available) {
   const el = document.getElementById('ollamaStatus');
   el.innerHTML = available
-    ? '<span class="badge bg-success">● 运行中</span>'
-    : '<span class="badge bg-secondary">● 未启动</span>';
+    ? `<span class="badge bg-success">${T('ollama_running')}</span>`
+    : `<span class="badge bg-secondary">${T('ollama_stopped')}</span>`;
 }
 
-// ── Save ─────────────────────────────────────────────────────────────────
+// ── Ollama pull / download ────────────────────────────────────────────────────
+function setDownloadModel(name) {
+  document.getElementById('downloadModelInput').value = name;
+}
+
+async function pullModel() {
+  const model = document.getElementById('downloadModelInput').value.trim();
+  if (!model) { showToast(T('pull_enter_name'), 'warning'); return; }
+
+  const btn = document.getElementById('btnPull');
+  btn.disabled = true;
+
+  const row      = document.getElementById('pullProgressRow');
+  const bar      = document.getElementById('pullProgressBar');
+  const statusTx = document.getElementById('pullStatusText');
+  const modelNm  = document.getElementById('pullModelName');
+  const detail   = document.getElementById('pullDetail');
+
+  row.style.display = 'block';
+  bar.style.width   = '5%';
+  statusTx.textContent = T('pull_starting');
+  modelNm.textContent  = model;
+  detail.textContent   = '';
+
+  try {
+    const r = await fetch('/api/llm/ollama/pull', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ model })
+    });
+    if (!r.ok) { throw new Error(await r.text()); }
+
+    // Poll status
+    if (_pullTimer) clearInterval(_pullTimer);
+    let fake = 10;
+    _pullTimer = setInterval(async () => {
+      try {
+        const sr = await fetch(`/api/llm/ollama/pull/status?model=${encodeURIComponent(model)}`);
+        const sd = await sr.json();
+
+        if (sd.status === 'done') {
+          clearInterval(_pullTimer); _pullTimer = null;
+          bar.style.width = '100%';
+          bar.classList.remove('progress-bar-animated');
+          statusTx.textContent = T('pull_done');
+          detail.textContent   = '';
+          btn.disabled = false;
+          showToast(`${T('pull_done')}: ${model}`, 'success');
+          setTimeout(() => { loadOllamaModels(); row.style.display = 'none'; }, 2000);
+        } else if (sd.status === 'error') {
+          clearInterval(_pullTimer); _pullTimer = null;
+          bar.classList.remove('progress-bar-animated');
+          bar.classList.add('bg-danger');
+          statusTx.textContent = T('pull_failed');
+          detail.textContent   = sd.error || '';
+          btn.disabled = false;
+          showToast(T('pull_failed') + ': ' + (sd.error || model), 'danger');
+        } else {
+          // Still downloading — animate fake progress
+          if (sd.progress > 0) {
+            bar.style.width = sd.progress + '%';
+            detail.textContent = sd.detail || '';
+          } else {
+            fake = Math.min(fake + 3, 85);
+            bar.style.width = fake + '%';
+          }
+          statusTx.textContent = T('pull_downloading') + '…';
+        }
+      } catch(_) {}
+    }, 1500);
+
+  } catch(e) {
+    bar.classList.add('bg-danger');
+    statusTx.textContent = T('pull_failed');
+    detail.textContent   = e.message;
+    btn.disabled = false;
+    showToast(T('pull_failed') + ': ' + e.message, 'danger');
+  }
+}
+
+// ── Save ──────────────────────────────────────────────────────────────────────
 document.getElementById('llmForm').addEventListener('submit', async e => {
   e.preventDefault();
   const provider = document.getElementById('provider').value;
@@ -285,7 +561,7 @@ document.getElementById('llmForm').addEventListener('submit', async e => {
     const radio  = document.querySelector('input[name="ollamaModel"]:checked');
     const custom = document.getElementById('ollamaCustomModel').value.trim();
     const model  = custom || (radio ? radio.value : '');
-    if (!model) { showToast('请选择或输入一个模型名称', 'warning'); return; }
+    if (!model) { showToast(T('save_validate_model'), 'warning'); return; }
     payload.model    = model;
     payload.api_base = 'http://localhost:11434';
   } else {
@@ -294,7 +570,7 @@ document.getElementById('llmForm').addEventListener('submit', async e => {
     const key = document.getElementById('apiKey').value.trim();
     if (key) payload.api_key = key;
     if (!payload.api_base || !payload.model) {
-      showToast('请填写 API URL 和模型名称', 'warning'); return;
+      showToast(T('save_validate_online'), 'warning'); return;
     }
   }
 
@@ -308,26 +584,25 @@ document.getElementById('llmForm').addEventListener('submit', async e => {
     if (r.ok) {
       currentConfig = { ...currentConfig, ...payload };
       updateCurrentBadge();
-      showToast('✓ 配置已保存', 'success');
+      showToast(T('save_ok'), 'success');
     } else {
-      showToast('保存失败: ' + d.error, 'danger');
+      showToast(T('save_fail') + d.error, 'danger');
     }
   } catch(e) {
-    showToast('保存失败: ' + e.message, 'danger');
+    showToast(T('save_fail') + e.message, 'danger');
   }
 });
 
-// ── Test connection ───────────────────────────────────────────────────────
+// ── Test connection ───────────────────────────────────────────────────────────
 async function testConnection() {
-  showToast('正在测试连接…', 'info');
+  showToast(T('test_pending'), 'info');
   try {
     const r = await fetch('/api/llm/config');
     const d = await r.json();
     const cfg = d.config || {};
     if (!cfg.model || !cfg.api_base) {
-      showToast('请先保存配置再测试', 'warning'); return;
+      showToast(T('test_no_cfg'), 'warning'); return;
     }
-    // Send a tiny chat message
     const resp = await fetch('/api/chat/rag', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -335,12 +610,12 @@ async function testConnection() {
     });
     const data = await resp.json();
     if (data.ok && data.response) {
-      showToast('✓ 连接正常，模型响应成功', 'success');
+      showToast(T('test_ok'), 'success');
     } else {
-      showToast('模型无响应，请检查配置', 'warning');
+      showToast(T('test_no_resp'), 'warning');
     }
   } catch(e) {
-    showToast('连接失败: ' + e.message, 'danger');
+    showToast(T('test_fail') + e.message, 'danger');
   }
 }
 
@@ -348,7 +623,7 @@ function showToast(msg, type='success') {
   const t = document.getElementById('toast');
   document.getElementById('toastMsg').textContent = msg;
   t.className = `toast align-items-center text-bg-${type} border-0`;
-  new bootstrap.Toast(t, {delay: 3000}).show();
+  new bootstrap.Toast(t, {delay: 3500}).show();
 }
 </script>
 </body>

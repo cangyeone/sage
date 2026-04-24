@@ -110,10 +110,18 @@ body { background:#f5f7fa; min-height:100vh; }
     </a>
     <div class="collapse navbar-collapse">
       <ul class="navbar-nav ms-auto gap-1">
-        <li class="nav-item"><a class="nav-link" href="/chat"><i class="bi bi-chat-dots"></i> 对话</a></li>
-        <li class="nav-item"><a class="nav-link" href="/knowledge"><i class="bi bi-journal-bookmark-fill"></i> 知识库</a></li>
-        <li class="nav-item"><a class="nav-link active fw-bold" href="/skills"><i class="bi bi-lightning-charge"></i> 技能</a></li>
+        <li class="nav-item"><a class="nav-link" href="/chat"><i class="bi bi-chat-dots"></i> <span data-i18n="nav_chat">对话</span></a></li>
+        <li class="nav-item"><a class="nav-link" href="/knowledge"><i class="bi bi-journal-bookmark-fill"></i> <span data-i18n="nav_knowledge">知识库</span></a></li>
+        <li class="nav-item"><a class="nav-link active fw-bold" href="/skills"><i class="bi bi-lightning-charge"></i> <span data-i18n="nav_skills">技能</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/llm-settings"><i class="bi bi-cpu"></i> LLM</a></li>
+        <li class="nav-item">
+          <button id="langToggle" onclick="toggleLang()"
+            style="border:1.5px solid #dde;background:#f8f9ff;color:#555;border-radius:16px;
+                   padding:.22rem .75rem;font-size:.78rem;cursor:pointer;transition:all .2s;
+                   display:flex;align-items:center;gap:.3rem;">
+            🌐 <span id="langLabel">EN</span>
+          </button>
+        </li>
       </ul>
     </div>
   </div>
@@ -122,8 +130,8 @@ body { background:#f5f7fa; min-height:100vh; }
 <!-- Header -->
 <div class="page-header">
   <div class="container-fluid px-4">
-    <h4 class="mb-1"><i class="bi bi-lightning-charge me-2"></i>技能管理</h4>
-    <p class="mb-0">查看内置技能文档，新建或编辑自定义技能，对话时 AI 会自动参考匹配的技能说明</p>
+    <h4 class="mb-1"><i class="bi bi-lightning-charge me-2"></i><span data-i18n="page_title">技能管理</span></h4>
+    <p class="mb-0" data-i18n="page_sub">查看内置技能，创建和编辑自定义技能</p>
   </div>
 </div>
 
@@ -138,8 +146,8 @@ body { background:#f5f7fa; min-height:100vh; }
         <span id="skillCount" class="badge bg-light text-muted" style="font-size:.72rem;">…</span>
       </div>
 
-      <div class="new-btn mb-2" onclick="newSkill()">
-        <i class="bi bi-plus-lg me-1"></i>新建自定义技能
+      <div class="new-btn mb-2" onclick="newSkill()" data-i18n="btn_new">
+        <i class="bi bi-plus-lg me-1"></i>新建技能
       </div>
 
       <div id="skillList"></div>
@@ -155,8 +163,7 @@ body { background:#f5f7fa; min-height:100vh; }
       <!-- Empty state -->
       <div class="empty-state" id="emptyState">
         <i class="bi bi-lightning-charge"></i>
-        <div class="fw-semibold mb-1">点击左侧技能查看详情</div>
-        <div style="font-size:.84rem">或点击「新建自定义技能」创建你自己的技能文档</div>
+        <div class="fw-semibold mb-1" data-i18n="empty_state">选择左侧技能查看详情，或点击「新建技能」创建</div>
       </div>
 
       <!-- Editor panel -->
@@ -168,12 +175,12 @@ body { background:#f5f7fa; min-height:100vh; }
             <span id="editorSrcBadge" class="skill-src"></span>
           </div>
           <div class="d-flex gap-2">
-            <button class="btn btn-sm btn-outline-secondary" id="editBtn" onclick="enableEdit()" title="编辑">
-              <i class="bi bi-pencil"></i> 编辑
+            <button class="btn btn-sm btn-outline-secondary" id="editBtn" onclick="enableEdit()" title="编辑" data-i18n-title="tab_edit">
+              <i class="bi bi-pencil"></i> <span data-i18n="tab_edit">编辑</span>
             </button>
-            <button class="btn btn-sm btn-outline-danger" id="deleteBtn" onclick="deleteSkill()" title="删除（仅自定义）"
-                    style="display:none">
-              <i class="bi bi-trash"></i>
+            <button class="btn btn-sm btn-outline-danger" id="deleteBtn" onclick="deleteSkill()" title="删除"
+                    style="display:none" data-i18n-title="btn_delete">
+              <i class="bi bi-trash"></i> <span data-i18n="btn_delete">删除</span>
             </button>
           </div>
         </div>
@@ -181,10 +188,10 @@ body { background:#f5f7fa; min-height:100vh; }
         <!-- Tabs -->
         <div class="editor-tabs">
           <button class="etab active" id="tabEdit" onclick="switchTab('edit')">
-            <i class="bi bi-code-slash me-1"></i>编辑
+            <i class="bi bi-code-slash me-1"></i><span data-i18n="tab_edit">编辑</span>
           </button>
           <button class="etab" id="tabPreview" onclick="switchTab('preview')">
-            <i class="bi bi-eye me-1"></i>预览
+            <i class="bi bi-eye me-1"></i><span data-i18n="tab_preview">预览</span>
           </button>
         </div>
 
@@ -202,7 +209,7 @@ body { background:#f5f7fa; min-height:100vh; }
           <div style="font-size:.78rem; color:#aaa" id="editorHint">选择技能后可查看详情</div>
           <div class="d-flex gap-2" id="saveRow" style="display:none !important">
             <button class="btn btn-sm btn-outline-secondary" onclick="cancelEdit()">取消</button>
-            <button class="btn-accent btn" onclick="saveSkill()"><i class="bi bi-cloud-check me-1"></i>保存技能</button>
+            <button class="btn-accent btn" onclick="saveSkill()" data-i18n="btn_save"><i class="bi bi-cloud-check me-1"></i>保存</button>
           </div>
         </div>
       </div>
@@ -252,6 +259,58 @@ body { background:#f5f7fa; min-height:100vh; }
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/highlight.min.js"></script>
+
+<!-- ── i18n / Language toggle ─────────────────────────────────────────── -->
+<script>
+const I18N = {
+  zh: {
+    nav_chat: '对话', nav_knowledge: '知识库', nav_skills: '技能',
+    page_title: '技能管理', page_sub: '查看内置技能，创建和编辑自定义技能',
+    builtin_section: '内置技能', custom_section: '自定义技能',
+    btn_new: '新建技能', btn_save: '保存', btn_delete: '删除',
+    tab_edit: '编辑', tab_preview: '预览',
+    empty_state: '选择左侧技能查看详情，或点击「新建技能」创建'
+  },
+  en: {
+    nav_chat: 'Chat', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
+    page_title: 'Skill Manager', page_sub: 'View built-in skills, create and edit custom skills',
+    builtin_section: 'Built-in Skills', custom_section: 'Custom Skills',
+    btn_new: 'New Skill', btn_save: 'Save', btn_delete: 'Delete',
+    tab_edit: 'Edit', tab_preview: 'Preview',
+    empty_state: 'Select a skill on the left, or click "New Skill" to create one'
+  }
+};
+
+let currentLang = localStorage.getItem('sage_lang') || 'zh';
+
+function T(key) { return (I18N[currentLang] || I18N.zh)[key] || key; }
+
+function applyLang() {
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    const k = el.getAttribute('data-i18n');
+    if (T(k) !== k) el.textContent = T(k);
+  });
+  document.querySelectorAll('[data-i18n-html]').forEach(el => {
+    const k = el.getAttribute('data-i18n-html');
+    if (T(k) !== k) el.innerHTML = T(k);
+  });
+  document.querySelectorAll('[data-i18n-title]').forEach(el => {
+    const k = el.getAttribute('data-i18n-title');
+    if (T(k) !== k) el.title = T(k);
+  });
+  const lbl = document.getElementById('langLabel');
+  if (lbl) lbl.textContent = currentLang === 'zh' ? 'EN' : '中';
+}
+
+function toggleLang() {
+  currentLang = currentLang === 'zh' ? 'en' : 'zh';
+  localStorage.setItem('sage_lang', currentLang);
+  applyLang();
+}
+
+document.addEventListener('DOMContentLoaded', applyLang);
+</script>
+
 <script>
 // ── Marked config ──────────────────────────────────────────────────────────
 marked.setOptions({

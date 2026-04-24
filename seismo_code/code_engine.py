@@ -1,18 +1,26 @@
 """
-code_engine.py — LLM 驱动的地震学代码生成与执行引擎
+code_engine.py — Full-Cycle Python Programming Agent
 
-工作流
-------
-1. 用户提出自然语言需求（"对这段波形做 1-10Hz 带通滤波并画图"）
-2. CodeEngine 构建包含地震学上下文的系统提示
-3. 调用本地 LLM（Ollama）或兼容 OpenAI API 的模型生成 Python 代码
-4. 调用 safe_executor 在子进程中执行
-5. 若执行失败，附带错误信息重试（最多 2 次）
-6. 返回执行结果（输出、图像路径、错误信息）
+Loop
+----
+  Plan → Code → Run → [Debug × N] → Verify → Return
 
-对话上下文
-----------
-CodeEngine 维护多轮对话历史，LLM 可以跨轮次引用已生成的变量和文件路径。
+Each phase:
+  1. Plan      (optional): For complex requests, decompose into subtasks.
+  2. Code      : LLM generates a self-contained Python script.
+  3. Run       : Execute in an isolated subprocess (safe_executor).
+  4. Debug     : If execution failed, an LLM debugger analyzes the error,
+                 identifies the root cause, and emits a corrected script.
+                 Repeats up to `max_debug_rounds` (default 4).
+  5. Verify    : After success, the LLM critic checks whether the output
+                 actually answers the user's request (optional, fast).
+
+Progress callbacks
+------------------
+Pass `on_progress=callback` to `engine.run()`.
+The callback receives a dict:
+  { "phase": "generating"|"executing"|"debugging"|"verifying"|"done",
+    "attempt": int, "message": str }
 """
 
 from __future__ import annotations
@@ -23,13 +31,12 @@ import textwrap
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .safe_executor import ExecutionResult, execute_code
 
-# seismo_skill 技能文档检索（可选依赖，不影响主流程）
+# seismo_skill context (optional)
 try:
     import sys as _sys
     _sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -40,393 +47,384 @@ except Exception:
 
 
 # ---------------------------------------------------------------------------
-# Seismology context injected into the LLM system prompt
+# ── Seismology toolkit context (injected into system prompts) ───────────────
 # ---------------------------------------------------------------------------
 
 _TOOLKIT_SUMMARY = """
-## 内置地震学工具包（直接调用，无需 import，禁止 from obspy import 这些函数）
+## Built-in Seismology Toolkit (call directly — no import needed)
 
-> 以下函数已通过 `from seismo_code.toolkit import *` 预注入，直接写函数名调用即可。
-> ❌ 错误: `from obspy import read_stream_from_dir`（这些不是 obspy 的函数！）
-> ✅ 正确: `st = read_stream_from_dir("/path/")` 直接调用
-> ✅ 原生obspy: `from obspy import read; st = read("file.sac")`（这个是合法的）
+> These functions are pre-injected via `from seismo_code.toolkit import *`.
+> ❌ Wrong: `from obspy import read_stream_from_dir`  (NOT an obspy function!)
+> ✅ Right:  `st = read_stream_from_dir("/path/")`     (call directly)
+> ✅ Native obspy: `from obspy import read; st = read("file.sac")`
 
-### 数据读取
-- `read_stream(path)` → obspy.Stream  读取 mseed/sac 等波形文件或目录
-- `read_stream_from_dir(directory)` → Stream  递归读取目录下所有文件
+### Data I/O
+- `read_stream(path)` → obspy.Stream
+- `read_stream_from_dir(directory)` → Stream
 
-### 波形处理
+### Waveform Processing
 - `detrend_stream(st, type='demean')` → Stream
 - `taper_stream(st, max_percentage=0.05)` → Stream
 - `filter_stream(st, filter_type, freqmin, freqmax, corners=4, zerophase=True)` → Stream
-  filter_type: 'bandpass' | 'lowpass' | 'highpass' | 'bandstop'
 - `resample_stream(st, sampling_rate)` → Stream
 - `trim_stream(st, starttime, endtime)` → Stream
 - `merge_stream(st)` → Stream
-- `remove_response(st, inventory_path, output='VEL')` → Stream
+- `remove_response(st, inventory_or_paz, output='VEL')` → Stream
 
-### 可视化
-- `plot_stream(st, title, outfile, picks, normalize=True)` → str(图像路径)
-  picks = [{'time': UTCDateTime, 'phase': 'Pg', 'station': 'YN.YSW03'}]
+### Visualization
+- `plot_stream(st, title, outfile, picks, normalize=True)` → str (image path)
 - `plot_spectrogram(tr, title, outfile, wlen=1.0)` → str
 - `plot_psd(tr, title, outfile)` → (freqs, psd, str)
 - `plot_particle_motion(st, outfile)` → str
 - `plot_travel_time_curve(dist_range, depth_km, model, phases)` → str
 
-### 走时计算
+### Travel Time
 - `taup_arrivals(dist_deg, depth_km, model='iasp91', phases)` → list of dict
-- `p_travel_time(dist_km, depth_km, model)` → float(秒)
-- `s_travel_time(dist_km, depth_km, model)` → float(秒)
+- `p_travel_time(dist_km, depth_km, model)` → float
+- `s_travel_time(dist_km, depth_km, model)` → float
 
-### 频谱分析
+### Spectral Analysis
 - `compute_spectrum(tr, method='fft')` → (freqs, amplitudes)
-- `compute_hvsr(st, freqmin, freqmax)` → (freqs, hvsr, str)
+- `compute_hvsr(st, f_min, f_max, ...)` → (freqs, hvsr_mean, hvsr_std)
 
-### 震源参数
-- `estimate_magnitude_ml(tr, dist_km)` → float(ML)
-- `estimate_corner_freq(tr, t_start, t_end, freqmin, freqmax)` → float(fc, Hz)
-- `estimate_seismic_moment(tr, dist_km)` → float(M₀, N·m)
-- `moment_to_mw(M0)` → float(Mw)
-- `estimate_stress_drop(M0, fc, velocity)` → float(Pa)
+### Source Parameters
+- `estimate_magnitude_ml(tr, dist_km)` → float (ML)
+- `estimate_corner_freq(tr, dist_km, ...)` → (fc Hz, omega0)
+- `estimate_seismic_moment(tr, dist_km)` → float (M₀)
+- `moment_to_mw(M0)` → float (Mw)
+- `estimate_stress_drop(M0, fc, vs=3500)` → float (MPa)
 
-### 工具
-- `stream_info(st)` → str  打印台网/通道/采样率/时间范围
-- `picks_to_dict(picks_file)` → list of dict  读取 SAGE 拾取文件
+### Utilities
+- `stream_info(st)` → str
+- `picks_to_dict(picks_file)` → list of dict
 
-### GMT 地图绘制
-- `run_gmt(script, outname='gmt_map', title='GMT Map')` → str(PNG路径)
-  执行 GMT6 bash 脚本，自动保存图像（PNG）和脚本（.sh）
-  脚本内使用 `gmt begin <name> PNG` ... `gmt end` 语法
-  需要系统安装 GMT >= 6.0
+### GMT Mapping
+- `run_gmt(script, outname='gmt_map', title='GMT Map')` → str (PNG path)
 
-### 图像保存
-- 所有 plot_* 函数会自动将图像保存到当前运行目录并打印路径
-- 手动保存: `savefig('filename.png')`（已在环境中注入）
+### Image Saving
+- All `plot_*` functions auto-save; manual: `savefig('filename.png')`
 """
 
-_SYSTEM_PROMPT = """你是一位地震学数据处理专家和 Python 程序员。
-用户会用自然语言描述地震学数据处理、分析和可视化需求，你的任务是生成可直接执行的 Python 代码。
+# ── Code Generation System Prompt ──────────────────────────────────────────
+_CODEGEN_SYSTEM = """You are an expert seismologist and Python programmer.
+Users describe seismological data processing, analysis, and visualization tasks.
+Generate directly executable Python code.
 
-## ⚠️ 最重要的规则：工具包函数使用方式
-
-执行环境已通过 `from seismo_code.toolkit import *` 预注入以下函数，**直接调用即可，绝对不要 import**：
+## ⚠️ CRITICAL: Toolkit usage
+The execution environment pre-injects these functions — call directly, do NOT import:
   read_stream, read_stream_from_dir, detrend_stream, taper_stream, filter_stream,
   plot_stream, plot_spectrogram, plot_psd, plot_particle_motion, stream_info, picks_to_dict,
   taup_arrivals, p_travel_time, s_travel_time, compute_spectrum, compute_hvsr,
-  estimate_magnitude_ml, estimate_corner_freq, estimate_seismic_moment, savefig,
-  run_gmt
+  estimate_magnitude_ml, estimate_corner_freq, estimate_seismic_moment, savefig, run_gmt
 
-**❌ 严禁写法（会导致 ImportError）：**
-  from obspy import read_stream_from_dir   # read_stream_from_dir 不是 obspy 的函数！
-  from seismo_code.toolkit import ...      # 已预注入，无需再 import
+❌ Forbidden:  from seismo_code.toolkit import ...   # already injected
+❌ Forbidden:  from obspy import read_stream_from_dir  # not an obspy function
+✅ Correct:    st = read_stream_from_dir("/path/")
+✅ Obspy OK:   from obspy import read; st = read("file.sac")
 
-**✅ 正确写法（直接调用）：**
-  st = read_stream_from_dir("/path/to/data/")
-  plot_stream(st, title="波形图")
+## Rules
+1. Output ONLY a ```python ... ``` code block. No explanations.
+2. Code must be self-contained. Reuse paths/variables from conversation history.
+3. NEVER call plt.show() — server has no display. Use savefig() or plot_*() instead.
+4. Use try/except for file I/O and network calls; print clear error messages.
+5. Print all numerical results with print().
+6. For directory listings: print full path of each file with os.path.join().
+7. For plot requests: read data → process → call plot_stream() / savefig().
+8. Combine related steps in ONE code block (read + filter + plot + stats).
 
-**✅ 若需要使用原生 obspy：**
-  from obspy import read                   # obspy.read 是合法的
-  st = read("/path/to/file.sac")           # 读取单个文件
-  tr = st[0]
-  # 绘图需手动保存（不能用 plt.show()）：
-  import matplotlib.pyplot as plt
-  fig, ax = plt.subplots()
-  ax.plot(tr.times(), tr.data)
-  savefig("waveform.png")                  # savefig 已预注入，自动保存并上报
+## Available libraries
+obspy, numpy, scipy, matplotlib (Agg backend), pandas, sklearn (if installed)
 
-## 规则
-1. 只输出 Python 代码块（```python ... ```），不要输出任何解释
-2. 代码必须能独立执行，不要假设有全局变量（除非之前对话中已明确定义）
-3. 如果需要读取文件，使用用户提供的路径或对话历史中的路径
-4. 优先使用内置工具包（无需 import），也可以使用 obspy / numpy / scipy / matplotlib
-5. 生成的图像**必须**使用 plot_* 函数（不传 outfile 参数，系统自动保存）或 savefig('name.png')，**绝对不要调用 plt.show()**
-6. 有错误时打印友好的中文提示，用 try/except 保护关键步骤
-7. 数值结果用 print() 输出，格式清晰
-8. 【绘图请求】当用户要求绘制/画图/可视化波形时，必须：① 用 read_stream/read_stream_from_dir 读取数据；② 调用 plot_stream(st, title) 生成图像；③ 绝对不要只列文件列表
-9. 【跨轮引用】如对话历史中已有文件路径，直接使用那些路径，不必重新列目录
-10. 【目录问题】用户的数据目录是用户提供的路径，不要使用临时执行目录（/tmp/sage_exec_xxx）作为数据源
-11. 【目录查看】当用户要求"看目录/列文件/查看文件"时，必须用 print() 输出：① 目录的完整路径；② 每个文件的完整路径（用 os.path.join）；③ 文件总数。示例：
-    import os
-    d = '/path/to/data'
-    files = [f for f in os.listdir(d) if not f.startswith('.')]
-    print("目录：" + d + "，共 " + str(len(files)) + " 个文件")
-    for f in sorted(files): print(os.path.join(d, f))
+{toolkit}
+""".format(toolkit=_TOOLKIT_SUMMARY)
 
-## 技能串联（核心能力）
+# ── Debugger System Prompt ──────────────────────────────────────────────────
+_DEBUG_SYSTEM = """You are an expert Python debugger specializing in scientific computing.
 
-**一段代码可以同时完成多个步骤**，不要把每个功能拆成孤立调用。典型串联模式：
+You will receive:
+- A failing Python script
+- The full traceback / error message
+- Any partial stdout before the crash
 
-```
-读取数据 → 预处理 → 分析/计算 → 可视化 → 输出数值结论
-```
+Your job:
+1. Identify the root cause in ONE sentence.
+2. Output the COMPLETE corrected Python script (not a patch — the full file).
 
-示例（完整串联）：
+Response format (strict):
+[DIAGNOSIS]
+<one-sentence root cause>
+
 ```python
-st = read_stream_from_dir("/data/event/")
-print("加载完成：")
-stream_info(st)                                    # 打印台站信息
-st = detrend_stream(st)
-st = filter_stream(st, "bandpass", freqmin=1.0, freqmax=10.0)
-plot_stream(st, title="滤波后波形（1-10 Hz）")     # 绘制波形
-tr_z = st.select(channel="*Z")[0]
-plot_spectrogram(tr_z)                             # 绘制时频图
-freqs, psd, _ = plot_psd(tr_z)                     # 绘制 PSD
-peak_f = freqs[psd.argmax()]
-print("主频：" + str(round(float(peak_f), 2)) + " Hz")
+<complete corrected code>
 ```
 
-每次回答时，**主动判断用户意图，把相关步骤合并到一段代码**，而不是等用户逐步追问。
-例如：用户说"分析一下波形"→ 应同时完成：读取 + stream_info + 波形图 + 频谱图。
+Rules:
+- Fix ONLY what is broken; preserve the user's intent.
+- If the error is a missing library, add a try/except fallback or use an alternative.
+- If a file path is wrong, add code to search for the correct path.
+- If the error is a logic bug, fix the logic.
+- NEVER use plt.show(). NEVER re-import toolkit functions.
+- The output code block must be complete and self-contained.
+"""
 
-## 可用库（已安装）
-- obspy（地震数据读取、处理、仪器响应去除）
-- numpy, scipy（数值计算、信号处理）
-- matplotlib（绘图，Agg 后端，不用 show()）
+# ── Verifier System Prompt ──────────────────────────────────────────────────
+_VERIFY_SYSTEM = """You are a code output verifier for seismological Python scripts.
 
-{toolkit_summary}
+Given the user's original request and the program's stdout + list of generated files,
+decide whether the output actually fulfills the request.
 
-## 关于外部工具（HypoDD、VELEST 等）
-如果用户要求调用外部程序，生成相应的输入文件并用 subprocess.run() 调用，
-或者生成格式说明文档，由用户手动运行。
-""".format(toolkit_summary=_TOOLKIT_SUMMARY)
+Respond with ONE of:
+  PASS
+  FAIL: <brief reason (≤ 20 words)>
+
+Be lenient — if the key result was produced (figure, numerical answer, file),
+output PASS even if minor details differ.
+"""
+
+# ── Planner System Prompt ───────────────────────────────────────────────────
+_PLAN_SYSTEM = """You are a scientific Python programming assistant.
+
+Given a user's data analysis request and (optionally) a summary of the data file,
+produce a concise execution plan — what the code will do step by step.
+
+Output format (strict):
+[PLAN]
+1. <step>
+2. <step>
+...
+
+Rules:
+- 3–7 steps maximum.
+- Each step ≤ 12 words.
+- Cover: data loading, structure inspection, computation, visualization.
+- Do NOT output any code.
+"""
 
 
 # ---------------------------------------------------------------------------
-# LLM client (Ollama / OpenAI-compatible)
+# ── LLM client ──────────────────────────────────────────────────────────────
 # ---------------------------------------------------------------------------
 
-def _call_llm(messages: List[Dict], llm_config: Dict) -> str:
-    """Call LLM and return the assistant message content."""
+def _call_llm(messages: List[Dict], llm_config: Dict, max_tokens: int = 4096) -> str:
     provider = llm_config.get("provider", "ollama")
-    model = llm_config.get("model", "qwen2.5:7b")
+    model    = llm_config.get("model", "qwen2.5:7b")
     api_base = llm_config.get("api_base", "http://localhost:11434")
-    api_key = llm_config.get("api_key", "")
+    api_key  = llm_config.get("api_key", "")
     temperature = llm_config.get("temperature", 0.2)
-    max_tokens = llm_config.get("max_tokens", 4096)
 
     if provider == "ollama":
-        url = api_base.rstrip("/") + "/api/chat"
-        payload = {
-            "model": model,
-            "messages": messages,
-            "stream": False,
-            "options": {"temperature": temperature, "num_predict": max_tokens},
-        }
+        url     = api_base.rstrip("/") + "/api/chat"
+        payload = {"model": model, "messages": messages, "stream": False,
+                   "options": {"temperature": temperature, "num_predict": max_tokens}}
     else:
-        # OpenAI-compatible
-        url = api_base.rstrip("/") + "/chat/completions"
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
+        url     = api_base.rstrip("/") + "/chat/completions"
+        payload = {"model": model, "messages": messages,
+                   "temperature": temperature, "max_tokens": max_tokens}
 
-    data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,
-        data=data,
+        data=json.dumps(payload).encode("utf-8"),
         method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}" if api_key else "Bearer none",
-        },
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {api_key}" if api_key else "Bearer none"},
     )
-
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             body = json.loads(resp.read().decode("utf-8"))
     except urllib.error.URLError as e:
-        raise ConnectionError(f"LLM 服务连接失败（{url}）: {e}")
+        raise ConnectionError(f"LLM connection failed ({url}): {e}")
 
-    # Extract content from response
     if provider == "ollama":
         return body.get("message", {}).get("content", "")
-    else:
-        choices = body.get("choices", [{}])
-        return choices[0].get("message", {}).get("content", "")
+    return body.get("choices", [{}])[0].get("message", {}).get("content", "")
 
 
 def _extract_code(text: str) -> str:
-    """Extract Python code from LLM response (```python ... ``` block)."""
-    # Try fenced code block
-    match = re.search(r"```python\s*(.*?)```", text, re.DOTALL)
-    if match:
-        return match.group(1).strip()
-    # Try any code block
-    match = re.search(r"```\s*(.*?)```", text, re.DOTALL)
-    if match:
-        return match.group(1).strip()
-    # Assume the whole response is code
+    """Extract Python source from LLM response."""
+    m = re.search(r"```python\s*(.*?)```", text, re.DOTALL)
+    if m: return m.group(1).strip()
+    m = re.search(r"```\s*(.*?)```", text, re.DOTALL)
+    if m: return m.group(1).strip()
     return text.strip()
 
 
+def _extract_diagnosis(text: str) -> str:
+    """Extract [DIAGNOSIS] line from debugger response."""
+    m = re.search(r"\[DIAGNOSIS\]\s*(.+?)(?:\n|$)", text)
+    if m: return m.group(1).strip()
+    # fallback: first non-empty line before the code block
+    for line in text.splitlines():
+        line = line.strip()
+        if line and not line.startswith("```"):
+            return line[:200]
+    return "Unknown error"
+
+
 # ---------------------------------------------------------------------------
-# Code Engine
+# ── File-path detector & data profiler ──────────────────────────────────────
 # ---------------------------------------------------------------------------
 
-class CodeEngine:
+_FILE_PATH_RE = re.compile(
+    r'(?:^|[\s"\'])(/(?:[^\s"\']+/)*)([^\s"\']+\.(csv|tsv|txt|json|xlsx|xls|npy|npz|h5|hdf5|sac|mseed|seed))',
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _find_file_paths(text: str) -> List[str]:
+    """Return absolute file paths mentioned in *text* that actually exist."""
+    found = []
+    for m in _FILE_PATH_RE.finditer(text):
+        p = (m.group(1) + m.group(2)).strip()
+        if Path(p).is_file() and p not in found:
+            found.append(p)
+    return found
+
+
+_PROFILE_SCRIPT = """
+import sys, os, json, traceback
+
+path = {path!r}
+result = {{"path": path, "exists": os.path.isfile(path)}}
+
+if not result["exists"]:
+    print(json.dumps(result))
+    sys.exit(0)
+
+ext = os.path.splitext(path)[1].lower()
+result["size_mb"] = round(os.path.getsize(path) / 1e6, 2)
+
+try:
+    import pandas as pd
+    if ext in (".csv", ".tsv", ".txt"):
+        sep = "\\t" if ext == ".tsv" else ","
+        df = pd.read_csv(path, sep=sep, nrows=5000)
+    elif ext in (".xlsx", ".xls"):
+        df = pd.read_excel(path, nrows=5000)
+    else:
+        df = None
+
+    if df is not None:
+        result["type"] = "tabular"
+        result["shape"] = list(df.shape)
+        result["columns"] = list(df.columns)
+        result["dtypes"] = {{c: str(t) for c, t in df.dtypes.items()}}
+        result["sample"] = df.head(3).to_dict(orient="records")
+        stats = {{}}
+        for col in df.select_dtypes("number").columns:
+            s = df[col]
+            stats[col] = {{"min": round(float(s.min()),4),
+                           "max": round(float(s.max()),4),
+                           "mean": round(float(s.mean()),4),
+                           "nunique": int(s.nunique())}}
+        result["stats"] = stats
+except Exception:
+    result["profile_error"] = traceback.format_exc(limit=2)
+
+print(json.dumps(result, default=str))
+"""
+
+
+def _profile_file(path: str, project_root: str) -> dict:
     """
-    LLM-driven seismological code generation and execution engine.
-
-    Usage
-    -----
-    engine = CodeEngine(llm_config)
-    result = engine.run("对 /data/wave.mseed 做 1-10Hz 带通滤波并绘图")
-    print(result.response)
-    for fig in result.figures:
-        print(fig)
+    Run a quick pandas profile of *path* in the sandbox.
+    Returns a dict with shape, columns, stats, sample rows.
     """
-
-    def __init__(self, llm_config: Optional[Dict] = None, project_root: Optional[str] = None):
-        if llm_config is None:
-            llm_config = self._load_llm_config()
-        self.llm_config = llm_config
-        self.project_root = project_root or str(Path(__file__).parent.parent)
-        # Conversation history for multi-turn code generation
-        self._history: List[Dict] = [
-            {"role": "system", "content": _SYSTEM_PROMPT}
-        ]
-        self._last_exec_dir: Optional[str] = None
-
-    @staticmethod
-    def _load_llm_config() -> Dict:
-        try:
-            import sys
-            from pathlib import Path as _P
-            sys.path.insert(0, str(_P(__file__).parent.parent))
-            from config_manager import LLMConfigManager
-            return LLMConfigManager().get_llm_config()
-        except Exception:
-            return {"provider": "ollama", "model": "",
-                    "api_base": "http://localhost:11434"}
-
-    def is_llm_available(self) -> bool:
-        """Quick check whether the configured LLM endpoint is reachable."""
-        try:
-            provider = self.llm_config.get("provider", "ollama")
-            api_base = self.llm_config.get("api_base", "http://localhost:11434")
-            url = api_base.rstrip("/") + ("/api/tags" if provider == "ollama" else "/models")
-            urllib.request.urlopen(url, timeout=3)
-            return True
-        except Exception:
-            return False
-
-    def run(
-        self,
-        user_request: str,
-        data_hint: Optional[str] = None,
-        max_retries: int = 2,
-        timeout: int = 90,
-    ) -> "CodeRunResult":
-        """
-        Generate code for *user_request* and execute it.
-
-        Parameters
-        ----------
-        user_request : str
-            Natural-language description of what to do.
-        data_hint : str, optional
-            File or directory path to include in the prompt context.
-        max_retries : int
-            How many times to retry on execution failure (with error feedback).
-        timeout : int
-            Execution timeout in seconds.
-
-        Returns
-        -------
-        CodeRunResult
-        """
-        # Build user message
-        msg_content = user_request
-        if data_hint:
-            msg_content += f"\n\n数据路径: {data_hint}"
-        # NOTE: 不注入 _last_exec_dir — 那是临时执行目录，注入后会导致 LLM 把它当数据源
-        # 对话历史中已包含用户提供的数据路径，LLM 可直接引用（见规则9）
-
-        self._history.append({"role": "user", "content": msg_content})
-
-        # Inject relevant skill docs into system prompt for this turn
-        skill_ctx = _build_skill_context(user_request, max_chars=5000, top_k=2)
-        if skill_ctx:
-            # Prepend skill context as a system-role injection at the front
-            messages_base = [
-                {"role": "system", "content": _SYSTEM_PROMPT + "\n\n" + skill_ctx}
-            ] + [m for m in self._history if m["role"] != "system"]
-        else:
-            messages_base = list(self._history)
-
-        last_error = ""
-        exec_result: Optional[ExecutionResult] = None
-        code = ""
-
-        for attempt in range(max_retries + 1):
-            # Build messages for this attempt
-            messages = list(messages_base)
-            if attempt > 0 and last_error:
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        f"上面生成的代码执行出错，错误信息如下，请修正代码：\n\n"
-                        f"```\n{last_error}\n```\n\n"
-                        "请只输出修正后的完整 Python 代码块，不要输出其他内容。"
-                    )
-                })
-
-            # Call LLM
+    script = _PROFILE_SCRIPT.format(path=path)
+    res = execute_code(script, project_root=project_root, timeout=30, keep_dir=False)
+    for line in res.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("{"):
             try:
-                raw_response = _call_llm(messages, self.llm_config)
-            except ConnectionError as e:
-                return CodeRunResult(
-                    success=False,
-                    response=str(e),
-                    code="",
-                    exec_result=None,
+                return json.loads(line)
+            except Exception:
+                pass
+    return {"path": path, "profile_error": res.stderr or "no JSON output"}
+
+
+def _format_file_context(profile: dict) -> str:
+    """Turn a profile dict into a concise text block for the LLM prompt."""
+    if not profile.get("exists"):
+        return f"[FILE NOT FOUND] {profile.get('path','?')}"
+
+    lines = [f"[FILE CONTEXT: {profile['path']}]"]
+    lines.append(f"  Size: {profile.get('size_mb','?')} MB")
+
+    if profile.get("type") == "tabular":
+        shape = profile.get("shape", [])
+        lines.append(f"  Shape: {shape[0]} rows × {shape[1]} columns")
+        lines.append(f"  Columns: {', '.join(profile.get('columns', []))}")
+
+        stats = profile.get("stats", {})
+        if stats:
+            lines.append("  Numeric column ranges:")
+            for col, s in list(stats.items())[:12]:
+                lines.append(
+                    f"    {col}: min={s['min']}, max={s['max']}, "
+                    f"mean={s['mean']}, nunique={s['nunique']}"
                 )
 
-            code = _extract_code(raw_response)
+        sample = profile.get("sample", [])
+        if sample:
+            lines.append(f"  Sample row: {json.dumps(sample[0], default=str)}")
 
-            # Execute
-            exec_result = execute_code(
-                code,
-                project_root=self.project_root,
-                timeout=timeout,
-                keep_dir=True,  # Keep for figure collection
-            )
+    if profile.get("profile_error"):
+        lines.append(f"  [profile error: {profile['profile_error'][:200]}]")
 
-            if exec_result.success:
-                break
+    return "\n".join(lines)
 
-            last_error = f"{exec_result.stderr}\n{exec_result.error}".strip()
 
-        # Add assistant turn to history (with the code)
-        self._history.append({
-            "role": "assistant",
-            "content": f"```python\n{code}\n```"
-        })
+def _extract_plan(text: str) -> List[str]:
+    """Extract numbered steps from a [PLAN] block."""
+    m = re.search(r"\[PLAN\](.*?)(?:\Z|\[)", text, re.DOTALL)
+    block = m.group(1).strip() if m else text
+    steps = []
+    for line in block.splitlines():
+        line = line.strip()
+        mm = re.match(r"^\d+[\.\)]\s+(.+)", line)
+        if mm:
+            steps.append(mm.group(1).strip())
+    return steps
 
-        if exec_result:
-            self._last_exec_dir = exec_result.exec_dir
 
-        return CodeRunResult(
-            success=exec_result.success if exec_result else False,
-            response=exec_result.short_summary() if exec_result else "执行失败",
-            code=code,
-            exec_result=exec_result,
-        )
+def _pre_sanitize(code: str) -> str:
+    """Fix obvious LLM mistakes before execution (fast, no LLM call)."""
+    # Neutralise plt.show() calls (server has no display)
+    code = re.sub(r"\bplt\.show\(\s*\)", "pass  # display suppressed", code)
+    # Remove re-imports of the pre-injected toolkit (causes ImportError)
+    code = re.sub(
+        r"^\s*from\s+seismo_code\.toolkit\s+import\s+.*$",
+        "pass  # toolkit pre-injected",
+        code, flags=re.MULTILINE,
+    )
+    return code
 
-    def reset(self):
-        """Reset conversation history."""
-        self._history = [{"role": "system", "content": _SYSTEM_PROMPT}]
-        self._last_exec_dir = None
+
+# ---------------------------------------------------------------------------
+# ── Data classes ─────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+
+@dataclass
+class DebugAttempt:
+    attempt:   int
+    diagnosis: str
+    code:      str
+    error:     str
+    stdout:    str
+    success:   bool
 
 
 @dataclass
 class CodeRunResult:
-    success: bool
-    response: str         # Human-readable summary
-    code: str             # Generated Python code
-    exec_result: Optional[ExecutionResult]
+    success:      bool
+    response:     str            # Human-readable summary shown to user
+    code:         str            # Final code (successful or last attempt)
+    exec_result:  Optional[ExecutionResult]
+    attempts:     int = 1        # Total execution attempts (1 = no retries needed)
+    debug_trace:  List[DebugAttempt] = field(default_factory=list)
+    verify_pass:  Optional[bool]  = None   # None = not run
+    verify_note:  str = ""
+    plan:         List[str] = field(default_factory=list)   # planned steps
+    script_path:  str = ""        # path to saved .py script (for download)
 
     @property
     def figures(self) -> List[str]:
@@ -442,14 +440,423 @@ class CodeRunResult:
 
 
 # ---------------------------------------------------------------------------
-# Singleton / factory
+# ── Code Engine ──────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+
+class CodeEngine:
+    """
+    Full-cycle Python programming agent.
+
+    Loop: Code → Run → [Debug × N] → Verify
+
+    Usage
+    -----
+    engine = CodeEngine(llm_config)
+    result = engine.run(
+        "Filter /data/event/ waveforms 1-10 Hz and plot",
+        max_debug_rounds=4,
+        run_verify=True,
+        on_progress=lambda p: print(p["message"]),
+    )
+    """
+
+    def __init__(
+        self,
+        llm_config: Optional[Dict] = None,
+        project_root: Optional[str] = None,
+    ):
+        if llm_config is None:
+            llm_config = self._load_llm_config()
+        self.llm_config   = llm_config
+        self.project_root = project_root or str(Path(__file__).parent.parent)
+        # Multi-turn conversation history for the code generator
+        self._history: List[Dict] = [{"role": "system", "content": _CODEGEN_SYSTEM}]
+        self._last_exec_dir: Optional[str] = None
+
+    # ── Config helpers ────────────────────────────────────────────────────────
+    @staticmethod
+    def _load_llm_config() -> Dict:
+        try:
+            import sys
+            sys.path.insert(0, str(Path(__file__).parent.parent))
+            from config_manager import LLMConfigManager
+            return LLMConfigManager().get_llm_config()
+        except Exception:
+            return {"provider": "ollama", "model": "",
+                    "api_base": "http://localhost:11434"}
+
+    def is_llm_available(self) -> bool:
+        try:
+            provider = self.llm_config.get("provider", "ollama")
+            api_base = self.llm_config.get("api_base", "http://localhost:11434")
+            url = api_base.rstrip("/") + ("/api/tags" if provider == "ollama" else "/models")
+            urllib.request.urlopen(url, timeout=3)
+            return True
+        except Exception:
+            return False
+
+    # ── Internal helpers ──────────────────────────────────────────────────────
+    def _emit(
+        self,
+        on_progress: Optional[Callable],
+        phase: str,
+        attempt: int,
+        message: str,
+    ):
+        if on_progress:
+            try:
+                on_progress({"phase": phase, "attempt": attempt, "message": message})
+            except Exception:
+                pass
+
+    def _run_code(self, code: str, timeout: int) -> ExecutionResult:
+        """Execute code and return result."""
+        clean = _pre_sanitize(code)
+        return execute_code(
+            clean,
+            project_root=self.project_root,
+            timeout=timeout,
+            keep_dir=True,
+        )
+
+    def _build_error_context(self, code: str, exec_res: ExecutionResult) -> str:
+        """Build a compact error context string for the debugger."""
+        parts = []
+        if exec_res.stdout.strip():
+            # Only last 1500 chars of stdout (partial output is useful)
+            parts.append("=== Partial stdout (last 1500 chars) ===\n" +
+                         exec_res.stdout.strip()[-1500:])
+        stderr = (exec_res.stderr or "").strip()
+        if stderr:
+            parts.append("=== Traceback ===\n" + stderr[-3000:])
+        if exec_res.error:
+            parts.append("=== Error summary ===\n" + exec_res.error)
+        return "\n\n".join(parts) if parts else "No error details captured."
+
+    # ── Debug + Fix ───────────────────────────────────────────────────────────
+    def _debug_and_fix(
+        self,
+        original_request: str,
+        failed_code: str,
+        exec_res: ExecutionResult,
+        attempt: int,
+        timeout: int,
+        on_progress: Optional[Callable],
+    ) -> tuple[str, ExecutionResult, str]:
+        """
+        Ask the LLM debugger to fix the failing code.
+
+        Returns (fixed_code, new_exec_result, diagnosis)
+        """
+        error_ctx = self._build_error_context(failed_code, exec_res)
+
+        debug_messages = [
+            {"role": "system", "content": _DEBUG_SYSTEM},
+            {"role": "user", "content": (
+                f"## Original user request\n{original_request}\n\n"
+                f"## Failing code\n```python\n{failed_code}\n```\n\n"
+                f"## Error output\n{error_ctx}\n\n"
+                "Fix the code. Output [DIAGNOSIS] then the corrected ```python``` block."
+            )},
+        ]
+
+        self._emit(on_progress, "debugging", attempt,
+                   f"Analyzing error (attempt {attempt})…")
+
+        try:
+            raw = _call_llm(debug_messages, self.llm_config, max_tokens=4096)
+        except ConnectionError as e:
+            return failed_code, exec_res, str(e)
+
+        diagnosis  = _extract_diagnosis(raw)
+        fixed_code = _extract_code(raw)
+
+        self._emit(on_progress, "executing", attempt,
+                   f"Running fixed code (attempt {attempt})…")
+        new_exec = self._run_code(fixed_code, timeout)
+        return fixed_code, new_exec, diagnosis
+
+    # ── Verify output ─────────────────────────────────────────────────────────
+    def _verify_output(
+        self,
+        original_request: str,
+        exec_res: ExecutionResult,
+    ) -> tuple[bool, str]:
+        """
+        Quick LLM sanity-check: did the output fulfil the request?
+        Returns (passed, note).
+        """
+        files_list = "\n".join(
+            [f"  [figure] {p}" for p in exec_res.figures] +
+            [f"  [file]   {p}" for p in exec_res.output_files]
+        ) or "  (none)"
+
+        verify_messages = [
+            {"role": "system", "content": _VERIFY_SYSTEM},
+            {"role": "user", "content": (
+                f"## User request\n{original_request}\n\n"
+                f"## Stdout\n{exec_res.stdout.strip()[-2000:] or '(empty)'}\n\n"
+                f"## Generated files\n{files_list}\n\n"
+                "Does the output fulfil the request? Reply PASS or FAIL: <reason>."
+            )},
+        ]
+        try:
+            verdict = _call_llm(verify_messages, self.llm_config, max_tokens=80).strip()
+        except Exception:
+            return True, ""   # don't block on verify failure
+
+        if verdict.upper().startswith("PASS"):
+            return True, ""
+        m = re.match(r"FAIL[:\s]+(.*)", verdict, re.IGNORECASE)
+        note = m.group(1).strip() if m else verdict[:120]
+        return False, note
+
+    # ── Main entry point ──────────────────────────────────────────────────────
+    def run(
+        self,
+        user_request: str,
+        data_hint: Optional[str] = None,
+        max_debug_rounds: int = 4,
+        timeout: int = 120,
+        run_verify: bool = False,
+        on_progress: Optional[Callable[[Dict], None]] = None,
+    ) -> CodeRunResult:
+        """
+        Generate, execute, debug and (optionally) verify Python code.
+
+        Parameters
+        ----------
+        user_request : str
+            Natural-language task description.
+        data_hint : str, optional
+            File or directory path to prepend to the prompt.
+        max_debug_rounds : int
+            Maximum automatic fix attempts after first failure (default 4).
+        timeout : int
+            Execution timeout per attempt in seconds (default 120).
+        run_verify : bool
+            Run LLM self-check after a successful execution (default False).
+        on_progress : callable, optional
+            Called with progress dicts during the run.
+
+        Returns
+        -------
+        CodeRunResult
+        """
+        # ── 1. Detect & profile files mentioned in the request ───────────────
+        file_contexts: List[str] = []
+        all_text = user_request + (f"\n{data_hint}" if data_hint else "")
+        found_paths = _find_file_paths(all_text)
+        if found_paths:
+            self._emit(on_progress, "analyzing", 0,
+                       f"Analyzing {len(found_paths)} file(s)…")
+            for fp in found_paths[:3]:   # profile up to 3 files
+                profile = _profile_file(fp, self.project_root)
+                file_contexts.append(_format_file_context(profile))
+
+        # ── 2. Build user message ─────────────────────────────────────────────
+        msg_content = user_request
+        if data_hint:
+            msg_content += f"\n\nData path: {data_hint}"
+        if file_contexts:
+            msg_content += "\n\n" + "\n\n".join(file_contexts)
+
+        self._history.append({"role": "user", "content": msg_content})
+
+        # Inject relevant skill docs into the system prompt for this turn
+        skill_ctx = _build_skill_context(user_request, max_chars=5000, top_k=2)
+        system_content = _CODEGEN_SYSTEM
+        if skill_ctx:
+            system_content += "\n\n## Relevant skill docs\n" + skill_ctx
+        messages = [{"role": "system", "content": system_content}] + \
+                   [m for m in self._history if m["role"] != "system"]
+
+        # ── 3. Generate plan (fast, optional) ────────────────────────────────
+        plan: List[str] = []
+        self._emit(on_progress, "planning", 0, "Planning…")
+        try:
+            plan_msgs = [
+                {"role": "system", "content": _PLAN_SYSTEM},
+                {"role": "user", "content":
+                    f"Request: {user_request}\n\n" +
+                    ("\n".join(file_contexts) if file_contexts else "") +
+                    "\n\nList the execution steps."},
+            ]
+            raw_plan = _call_llm(plan_msgs, self.llm_config, max_tokens=400)
+            plan = _extract_plan(raw_plan)
+        except Exception:
+            pass   # planning failure is non-fatal
+
+        if plan:
+            self._emit(on_progress, "planning", 0,
+                       "Plan: " + " → ".join(plan))
+
+        # ── 4. Generate initial code ──────────────────────────────────────────
+        self._emit(on_progress, "generating", 0, "Generating code…")
+
+        try:
+            raw_response = _call_llm(messages, self.llm_config)
+        except ConnectionError as e:
+            return CodeRunResult(success=False, response=str(e),
+                                 code="", exec_result=None)
+
+        code = _extract_code(raw_response)
+
+        # ── 3. First execution ────────────────────────────────────────────────
+        self._emit(on_progress, "executing", 0, "Executing code…")
+        exec_res = self._run_code(code, timeout)
+
+        debug_trace: List[DebugAttempt] = []
+        attempt = 0
+
+        # ── 4. Debug loop ─────────────────────────────────────────────────────
+        while not exec_res.success and attempt < max_debug_rounds:
+            attempt += 1
+            error_summary = f"{exec_res.stderr}\n{exec_res.error}".strip()
+
+            debug_trace.append(DebugAttempt(
+                attempt=attempt,
+                diagnosis="",         # filled below
+                code=code,
+                error=error_summary,
+                stdout=exec_res.stdout,
+                success=False,
+            ))
+
+            fixed_code, new_exec, diagnosis = self._debug_and_fix(
+                original_request=user_request,
+                failed_code=code,
+                exec_res=exec_res,
+                attempt=attempt,
+                timeout=timeout,
+                on_progress=on_progress,
+            )
+
+            # Record diagnosis in the trace
+            debug_trace[-1].diagnosis = diagnosis
+
+            code     = fixed_code
+            exec_res = new_exec
+
+            if exec_res.success:
+                debug_trace.append(DebugAttempt(
+                    attempt=attempt,
+                    diagnosis=f"Fixed: {diagnosis}",
+                    code=code,
+                    error="",
+                    stdout=exec_res.stdout,
+                    success=True,
+                ))
+                self._emit(on_progress, "executing", attempt,
+                           f"✓ Fixed after {attempt} debug round(s)")
+                break
+            else:
+                self._emit(on_progress, "debugging", attempt,
+                           f"Attempt {attempt} still failing, retrying…")
+
+        # ── 5. Update conversation history (add final code) ───────────────────
+        self._history.append({
+            "role": "assistant",
+            "content": f"```python\n{code}\n```"
+        })
+        if exec_res:
+            self._last_exec_dir = exec_res.exec_dir
+
+        # ── 6. Verify (optional) ──────────────────────────────────────────────
+        verify_pass, verify_note = None, ""
+        if run_verify and exec_res and exec_res.success:
+            self._emit(on_progress, "verifying", attempt, "Verifying output…")
+            verify_pass, verify_note = self._verify_output(user_request, exec_res)
+
+        # ── 7. Save final script to a .py file (always — for download) ───────
+        script_path = ""
+        if code:
+            try:
+                import tempfile, os as _os
+                script_dir = exec_res.exec_dir if (exec_res and exec_res.exec_dir) \
+                             else tempfile.mkdtemp(prefix="sage_script_")
+                script_path = _os.path.join(script_dir, "analysis.py")
+                header = (
+                    f"# Generated by SeismicX — {user_request[:80]}\n"
+                    f"# Attempts: {attempt + 1}\n\n"
+                )
+                with open(script_path, "w", encoding="utf-8") as _f:
+                    _f.write(header + code)
+            except Exception:
+                pass
+
+        # ── 8. Build human-readable response ─────────────────────────────────
+        total_attempts = attempt + 1
+        response = self._build_response(exec_res, total_attempts, verify_pass, verify_note)
+
+        self._emit(on_progress, "done", attempt, response)
+
+        return CodeRunResult(
+            success=exec_res.success if exec_res else False,
+            response=response,
+            code=code,
+            exec_result=exec_res,
+            attempts=total_attempts,
+            debug_trace=debug_trace,
+            verify_pass=verify_pass,
+            verify_note=verify_note,
+            plan=plan,
+            script_path=script_path,
+        )
+
+    def _build_response(
+        self,
+        exec_res: Optional[ExecutionResult],
+        attempts: int,
+        verify_pass: Optional[bool],
+        verify_note: str,
+    ) -> str:
+        if not exec_res:
+            return "Execution failed — no result."
+
+        lines = []
+        if exec_res.success:
+            if attempts == 1:
+                lines.append("✓ Code ran successfully")
+            else:
+                lines.append(f"✓ Code succeeded after {attempts} attempts (auto-debugged)")
+        else:
+            lines.append(f"✗ Execution failed after {attempts} attempt(s)")
+
+        if exec_res.stdout.strip():
+            lines.append("Output:\n" + textwrap.indent(exec_res.stdout.strip(), "  "))
+
+        if exec_res.figures:
+            lines.append(f"Generated {len(exec_res.figures)} figure(s)")
+
+        if exec_res.output_files:
+            lines.append(f"Generated {len(exec_res.output_files)} file(s)")
+
+        if not exec_res.success:
+            err = (exec_res.stderr or exec_res.error or "").strip()
+            if err:
+                lines.append("Last error:\n" + textwrap.indent(err[-800:], "  "))
+
+        if verify_pass is False:
+            lines.append(f"⚠ Output check: {verify_note}")
+
+        return "\n".join(lines)
+
+    # ── Session management ────────────────────────────────────────────────────
+    def reset(self):
+        """Reset conversation history."""
+        self._history     = [{"role": "system", "content": _CODEGEN_SYSTEM}]
+        self._last_exec_dir = None
+
+
+# ---------------------------------------------------------------------------
+# ── Singleton / factory ──────────────────────────────────────────────────────
 # ---------------------------------------------------------------------------
 
 _engine_instance: Optional[CodeEngine] = None
 
 
 def get_code_engine(llm_config: Optional[Dict] = None) -> CodeEngine:
-    """Get or create the global CodeEngine singleton."""
     global _engine_instance
     if _engine_instance is None:
         _engine_instance = CodeEngine(llm_config)
@@ -457,7 +864,6 @@ def get_code_engine(llm_config: Optional[Dict] = None) -> CodeEngine:
 
 
 def reset_code_engine():
-    """Reset conversation context of the global engine."""
     global _engine_instance
     if _engine_instance:
         _engine_instance.reset()
