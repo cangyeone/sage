@@ -757,6 +757,7 @@ sage/
 │   ├── spectral_analysis.md      # Spectrum analysis & HVSR
 │   ├── b_value_analysis.md       # b-value statistical analysis
 │   ├── source_parameters.md      # Source parameter estimation
+│   ├── tabular_io.md             # CSV / TXT data reading
 │   └── gmt_plotting.md           # GMT map drawing
 │
 ├── seismo_code/                  # Code generation and execution engine
@@ -897,6 +898,20 @@ pip install FlagEmbedding sentence-transformers
 ```
 
 If none of the above methods can solve, the project's built-in lightweight TF-IDF vector database will automatically serve as fallback solution, basic RAG functionality still available.
+
+---
+
+## Contact
+
+- **Yuqi Cai** - caiyuqiming@foxmail.com
+- **Xin Liu** - xinliu_geo@outlook.com
+- **Ziye Yu** - yuziye@cea-igp.ac.cn
+
+---
+
+## License
+
+This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
 
 **Q: How to add AI support for external tools like HypoDD?**
 

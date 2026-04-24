@@ -908,3 +908,14 @@ pip install FlagEmbedding sentence-transformers
 <p align="center">
   <sub>Built with ❤️ for the seismology community</sub>
 </p>
+
+## 联系方式
+
+如有问题或建议，请通过以下方式联系我们：
+
+- **蔡育埼** - caiyuqiming@foxmail.com
+- **刘鑫** - xinliu_geo@outlook.com
+- **于子叶** - yuziye@cea-igp.ac.cn
+## 许可证
+
+本项目采用 [GNU General Public License v3.0](LICENSE) 许可证。有关详细信息，请参阅 [LICENSE](LICENSE) 文件。
