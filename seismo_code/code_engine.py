@@ -132,6 +132,15 @@ The execution environment pre-injects these functions — call directly, do NOT 
 7. For plot requests: read data → process → call plot_stream() / savefig().
 8. Combine related steps in ONE code block (read + filter + plot + stats).
 
+## CSV/TXT data files
+- Use `pandas.read_csv(path, sep=None, engine='python')` for unknown delimiters.
+- For tab-delimited `.txt`, use `pd.read_table(path)` or `pd.read_csv(path, sep='\t')`.
+- If the file has no header, use `header=None` and assign `names=[...]`.
+- If parsing fails, inspect the first few lines with `open(path).read().splitlines()[:20]`.
+- Always print `df.columns.tolist()` and `df.head(10)` when you first read a table.
+- If `latitude`/`longitude` are absent, look for common alternatives like `lat1`, `lon1`, `lat2`, `lon2`, `x`, `y`, `lon`, `lat`.
+- If the file contains multiple station pairs, infer the correct coordinate columns and document your choice with printed output.
+
 ## Available libraries
 obspy, numpy, scipy, matplotlib (Agg backend), pandas, sklearn (if installed)
 
@@ -163,6 +172,8 @@ Rules:
 - If the error is a missing library, add a try/except fallback or use an alternative.
 - If a file path is wrong, add code to search for the correct path.
 - If the error is a logic bug, fix the logic.
+- If the failure is due to CSV/TXT parsing, inspect the file header and delimiter and use pandas with fallback parsing.
+- If the failure is due to unknown data structure, print the first rows and inferred column mapping, then retry with guessed columns.
 - NEVER use plt.show(). NEVER re-import toolkit functions.
 - The output code block must be complete and self-contained.
 """
@@ -324,13 +335,13 @@ print(json.dumps(result, default=str))
 """
 
 
-def _profile_file(path: str, project_root: str) -> dict:
+def _profile_file(path: str, project_root: str, python_executable: Optional[str] = None) -> dict:
     """
     Run a quick pandas profile of *path* in the sandbox.
     Returns a dict with shape, columns, stats, sample rows.
     """
     script = _PROFILE_SCRIPT.format(path=path)
-    res = execute_code(script, project_root=project_root, timeout=30, keep_dir=False)
+    res = execute_code(script, project_root=project_root, timeout=30, keep_dir=False, python_executable=python_executable)
     for line in res.stdout.splitlines():
         line = line.strip()
         if line.startswith("{"):
@@ -464,11 +475,13 @@ class CodeEngine:
         self,
         llm_config: Optional[Dict] = None,
         project_root: Optional[str] = None,
+        python_executable: Optional[str] = None,
     ):
         if llm_config is None:
             llm_config = self._load_llm_config()
         self.llm_config   = llm_config
         self.project_root = project_root or str(Path(__file__).parent.parent)
+        self.python_executable = python_executable or llm_config.get('python_executable')
         # Multi-turn conversation history for the code generator
         self._history: List[Dict] = [{"role": "system", "content": _CODEGEN_SYSTEM}]
         self._last_exec_dir: Optional[str] = None
@@ -480,7 +493,19 @@ class CodeEngine:
             import sys
             sys.path.insert(0, str(Path(__file__).parent.parent))
             from config_manager import LLMConfigManager
-            return LLMConfigManager().get_llm_config()
+            config = LLMConfigManager().get_llm_config()
+            # Auto-detect Python executable with pandas
+            if 'python_executable' not in config:
+                import subprocess
+                try:
+                    # Try conda python first
+                    result = subprocess.run(['/Users/anaconda3/bin/python3', '-c', 'import pandas; print("ok")'], 
+                                          capture_output=True, text=True, timeout=5)
+                    if result.returncode == 0:
+                        config['python_executable'] = '/Users/anaconda3/bin/python3'
+                except:
+                    pass
+            return config
         except Exception:
             return {"provider": "ollama", "model": "",
                     "api_base": "http://localhost:11434"}
@@ -517,7 +542,25 @@ class CodeEngine:
             project_root=self.project_root,
             timeout=timeout,
             keep_dir=True,
+            python_executable=self.python_executable,
         )
+
+    def _execution_success(self, exec_res: ExecutionResult) -> bool:
+        """Detect whether the execution truly succeeded, including silent failures."""
+        if not exec_res or not exec_res.success:
+            return False
+
+        combined = "\n".join([exec_res.stdout or "", exec_res.stderr or ""])
+        combined = combined.strip()
+        if not combined:
+            return True
+
+        # Detect Python traceback or explicit error messages in output
+        if re.search(r"Traceback \(most recent call last\):", combined, re.I):
+            return False
+        if re.search(r"^\s*(Error|Exception|AssertionError|ValueError|TypeError|NameError|ImportError|ModuleNotFoundError|FileNotFoundError|OSError)[:\s]", combined, re.M):
+            return False
+        return True
 
     def _build_error_context(self, code: str, exec_res: ExecutionResult) -> str:
         """Build a compact error context string for the debugger."""
@@ -651,7 +694,7 @@ class CodeEngine:
             self._emit(on_progress, "analyzing", 0,
                        f"Analyzing {len(found_paths)} file(s)…")
             for fp in found_paths[:3]:   # profile up to 3 files
-                profile = _profile_file(fp, self.project_root)
+                profile = _profile_file(fp, self.project_root, self.python_executable)
                 file_contexts.append(_format_file_context(profile))
 
         # ── 2. Build user message ─────────────────────────────────────────────
@@ -710,9 +753,9 @@ class CodeEngine:
         attempt = 0
 
         # ── 4. Debug loop ─────────────────────────────────────────────────────
-        while not exec_res.success and attempt < max_debug_rounds:
+        while not self._execution_success(exec_res) and attempt < max_debug_rounds:
             attempt += 1
-            error_summary = f"{exec_res.stderr}\n{exec_res.error}".strip()
+            error_summary = f"{exec_res.stdout}\n{exec_res.stderr}\n{exec_res.error}".strip()
 
             debug_trace.append(DebugAttempt(
                 attempt=attempt,
@@ -787,12 +830,13 @@ class CodeEngine:
 
         # ── 8. Build human-readable response ─────────────────────────────────
         total_attempts = attempt + 1
-        response = self._build_response(exec_res, total_attempts, verify_pass, verify_note)
+        final_success = self._execution_success(exec_res)
+        response = self._build_response(exec_res, total_attempts, verify_pass, verify_note, final_success)
 
         self._emit(on_progress, "done", attempt, response)
 
         return CodeRunResult(
-            success=exec_res.success if exec_res else False,
+            success=final_success,
             response=response,
             code=code,
             exec_result=exec_res,
@@ -810,12 +854,16 @@ class CodeEngine:
         attempts: int,
         verify_pass: Optional[bool],
         verify_note: str,
+        success: Optional[bool] = None,
     ) -> str:
         if not exec_res:
             return "Execution failed — no result."
 
+        if success is None:
+            success = exec_res.success
+
         lines = []
-        if exec_res.success:
+        if success:
             if attempts == 1:
                 lines.append("✓ Code ran successfully")
             else:

@@ -1076,6 +1076,37 @@ def chat_code():
             })
 
         # Encode the saved script for download
+        downloads = []
+        seen_paths = set()
+        if result.script_path and os.path.isfile(result.script_path):
+            try:
+                with open(result.script_path, 'rb') as _sf:
+                    downloads.append({
+                        'name': Path(result.script_path).name,
+                        'data': _b64.b64encode(_sf.read()).decode('utf-8'),
+                        'mimetype': 'text/x-python',
+                    })
+                    seen_paths.add(os.path.realpath(result.script_path))
+            except Exception:
+                pass
+
+        # Include other generated files from execution results
+        for out_path in result.output_files:
+            try:
+                real_path = os.path.realpath(out_path)
+                if real_path in seen_paths:
+                    continue
+                if os.path.isfile(real_path):
+                    with open(real_path, 'rb') as _f:
+                        downloads.append({
+                            'name': Path(real_path).name,
+                            'data': _b64.b64encode(_f.read()).decode('utf-8'),
+                            'mimetype': 'text/plain',
+                        })
+                        seen_paths.add(real_path)
+            except Exception:
+                pass
+
         script_b64 = ''
         if result.script_path and os.path.isfile(result.script_path):
             try:
@@ -1096,6 +1127,7 @@ def chat_code():
             'debug_trace': debug_trace,
             'plan':        result.plan,
             'script_b64':  script_b64,
+            'downloads':   downloads,
         })
 
     except Exception as e:

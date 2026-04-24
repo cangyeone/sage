@@ -230,7 +230,12 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
     <div style="padding:0 1.5rem .25rem">
       <div class="typing" id="typingIndicator">
         <div class="bubble" style="background:#fff;border:1px solid #e5e5e5;padding:.5rem .75rem;border-radius:14px;border-bottom-left-radius:4px;">
-          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <div style="display:flex;align-items:center;gap:.5rem;">
+            <div style="display:flex;gap:2px;">
+              <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+            </div>
+            <span id="typingText" style="font-size:.85rem;color:#666;" data-i18n="typing_thinking">正在思考中...</span>
+          </div>
         </div>
       </div>
     </div>
@@ -300,6 +305,9 @@ const I18N = {
     skill_label: '技能', exec_ok: '✅ 代码执行成功', exec_fail: '❌ 执行失败',
     gen_code_label: '生成的代码：', dl_image: '⬇ 图像', dl_script: '⬇ GMT脚本',
     ctx_ref: '引用上下文：',
+    // Typing indicators
+    typing_thinking: '正在思考中...', typing_routing: '正在分析意图...', 
+    typing_code: '正在生成代码...', typing_rag: '正在检索知识...', typing_chat: '正在对话中...',
   },
   en: {
     nav_chat: 'Chat', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
@@ -327,6 +335,9 @@ const I18N = {
     skill_label: 'Skill', exec_ok: '✅ Executed successfully', exec_fail: '❌ Execution failed',
     gen_code_label: 'Generated code:', dl_image: '⬇ Image', dl_script: '⬇ GMT Script',
     ctx_ref: 'Context:',
+    // Typing indicators
+    typing_thinking: 'Thinking...', typing_routing: 'Analyzing intent...', 
+    typing_code: 'Generating code...', typing_rag: 'Searching knowledge...', typing_chat: 'Chatting...',
   }
 };
 
@@ -603,7 +614,13 @@ async function updateWsStatus(path) {
 }
 
 // ── Typing indicator ───────────────────────────────────────────────────────
-function showTyping() {
+function showTyping(text = null) {
+  const typingText = document.getElementById('typingText');
+  if (text) {
+    typingText.textContent = text;
+  } else {
+    typingText.textContent = T('typing_thinking');
+  }
   typingIndicator.classList.add('show');
   chatMessages.scrollTop = chatMessages.scrollHeight;
 }
@@ -656,17 +673,20 @@ async function sendMessage() {
   chatHistory.push({role:'user', content:text});
   input.value = '';
   autoResize(input);
-  showTyping();
+  showTyping(T('typing_routing'));  // 正在分析意图...
 
   try {
     // 用 LLM 判断意图（code / qa / chat）
     const intent = await classifyIntent(text);
 
     if (intent === 'code') {
+      showTyping(T('typing_code'));  // 正在生成代码...
       await sendCode(text);                              // 生成并执行技能代码
     } else if (intent === 'qa' || sessionDocs.length > 0 || kbHasDocs) {
+      showTyping(T('typing_rag'));  // 正在检索知识...
       await sendRag(text);                               // 知识问答 + RAG 检索
     } else {
+      showTyping(T('typing_chat'));  // 正在对话中...
       await sendNormal(text);                            // 普通对话
     }
   } catch(e) {
@@ -846,7 +866,7 @@ async function sendCode(text) {
 
       // GMT script download button (GMT figures only)
       if (fig.gmt_script) {
-        const scriptBlob = new Blob([fig.gmt_script.content], {type: 'text/plain'});
+        const scriptBlob = new Blob([fig.gmt_script.content], {type: 'text/plain;charset=utf-8'});
         const scriptUrl  = URL.createObjectURL(scriptBlob);
         const dlScript   = document.createElement('a');
         dlScript.href     = scriptUrl;
@@ -862,24 +882,28 @@ async function sendCode(text) {
   }
 
   // 6. Download script button (always shown when code was generated)
-  if (d.script_b64 || d.code) {
-    const scriptContent = d.script_b64
-      ? atob(d.script_b64)
-      : `# SeismicX generated script\n\n${d.code}`;
-    const scriptBlob = new Blob([scriptContent], {type: 'text/x-python'});
-    const scriptUrl  = URL.createObjectURL(scriptBlob);
-
+  if ((d.downloads && d.downloads.length) || d.code) {
     const dlBar = document.createElement('div');
     dlBar.style.cssText = 'display:flex;align-items:center;gap:.5rem;margin-top:.6rem;flex-wrap:wrap;';
 
-    const dlPy = document.createElement('a');
-    dlPy.href     = scriptUrl;
-    dlPy.download = 'analysis.py';
-    dlPy.style.cssText = 'font-size:.78rem;padding:.22rem .7rem;border-radius:6px;background:#e8f5e9;color:#2e7d32;border:1px solid #a5d6a7;text-decoration:none;display:inline-flex;align-items:center;gap:.3rem;';
-    dlPy.innerHTML = '⬇ Download Script (.py)';
-    dlBar.appendChild(dlPy);
+    if (d.downloads && d.downloads.length) {
+      d.downloads.forEach(file => {
+        const bin = atob(file.data);
+        const buf = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) {
+          buf[i] = bin.charCodeAt(i);
+        }
+        const blob = new Blob([buf], {type: file.mimetype || 'application/octet-stream'});
+        const url = URL.createObjectURL(blob);
+        const dl = document.createElement('a');
+        dl.href = url;
+        dl.download = file.name;
+        dl.style.cssText = 'font-size:.78rem;padding:.22rem .7rem;border-radius:6px;background:#e8f5e9;color:#2e7d32;border:1px solid #a5d6a7;text-decoration:none;display:inline-flex;align-items:center;gap:.3rem;';
+        dl.textContent = `⬇ ${file.name}`;
+        dlBar.appendChild(dl);
+      });
+    }
 
-    // also show/hide raw code toggle
     if (d.code) {
       const toggleBtn = document.createElement('button');
       toggleBtn.style.cssText = 'font-size:.78rem;padding:.22rem .7rem;border-radius:6px;background:#f5f5f5;color:#555;border:1px solid #ddd;cursor:pointer;';

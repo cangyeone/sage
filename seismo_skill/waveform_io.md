@@ -1,7 +1,7 @@
 ---
 name: waveform_io
 category: waveform
-keywords: read waveform, load waveform, mseed, sac, miniseed, seed, waveform file, read_stream, stream_info, picks_to_dict, 读取波形, 加载波形, 波形文件
+keywords: read waveform, load waveform, mseed, sac, miniseed, seed, waveform file, read_stream, stream_info, picks_to_dict, csv, txt, 读取波形, 加载波形, 波形文件
 ---
 
 # Waveform Reading and Information Query

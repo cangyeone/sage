@@ -114,6 +114,7 @@ def execute_code(
     timeout: int = 60,
     keep_dir: bool = False,
     extra_env: Optional[Dict[str, str]] = None,
+    python_executable: Optional[str] = None,
 ) -> ExecutionResult:
     """
     Execute Python code in an isolated subprocess.
@@ -160,8 +161,9 @@ def execute_code(
 
     # Execute
     try:
+        python_cmd = python_executable or sys.executable
         proc = subprocess.run(
-            [sys.executable, script_path],
+            [python_cmd, script_path],
             capture_output=True,
             text=True,
             timeout=timeout,

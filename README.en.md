@@ -1,0 +1,910 @@
+<p align="center">
+  <img src="logo.png" alt="SeismicX logo" width="180"/>
+</p>
+
+<h1 align="center">SAGE — Seismology AI-Guided Engine</h1>
+
+<p align="center">
+  Conversational AI Platform for Seismology Research
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.9%2B-blue" alt="Python"/>
+  <img src="https://img.shields.io/badge/Framework-Flask-lightgrey" alt="Flask"/>
+  <img src="https://img.shields.io/badge/LLM-Ollama%20%7C%20OpenAI%20Compatible-green" alt="LLM"/>
+  <img src="https://img.shields.io/badge/RAG-BGE--M3%20%2B%20FAISS-orange" alt="RAG"/>
+  <img src="https://img.shields.io/badge/License-MIT-yellow" alt="License"/>
+</p>
+
+---
+
+SAGE is an earthquake science AI platform integrating **natural language interaction**, **intelligent phase picking**, **statistical analysis**, **code generation and execution**, **GMT map drawing**, and **literature interpretation**. Users can drive complete analysis workflows through bilingual conversations without memorizing command-line parameters or writing boilerplate code.
+
+---
+
+## Table of Contents
+
+- [Features Overview](#features-overview)
+- [System Architecture](#system-architecture)
+- [Quick Start](#quick-start)
+- [Installation](#installation)
+  - [System Requirements](#system-requirements)
+  - [Basic Installation](#basic-installation)
+  - [pnsn Phase Picking Module](#pnsn-phase-picking-module-installation)
+  - [RAG Dependencies](#rag-dependencies)
+- [Configuring LLM Backend](#configuring-llm-backend)
+- [Web Interface](#web-interface)
+- [Command Line Tools](#command-line-tools)
+- [Conversation Routing Mechanism](#conversation-routing-mechanism)
+- [seismo_skill Skill System](#seismo_skill-skill-system)
+- [GMT Map Drawing](#gmt-map-drawing)
+- [Core Modules Details](#core-modules-details)
+- [Directory Structure](#directory-structure)
+- [Configuration Files](#configuration-files)
+- [FAQ](#faq)
+
+---
+
+## Features Overview
+
+| Module | Function Description |
+|------|---------|
+| 💬 **Intelligent Conversation Routing** | LLM automatically identifies intent (knowledge Q&A / code execution / chatting), no manual mode switching required |
+| 🔍 **Phase Picking** | Single station online picking / batch directory picking, supporting various deep learning models in JIT and ONNX formats |
+| 🔗 **Event Association** | Multiple methods including FastLink / REAL / Gamma, automatically associating station picking results into earthquake events |
+| 🧭 **Polarity Analysis** | Automatic determination of P-wave first motion polarity |
+| 📊 **Seismic Statistics** | b-value estimation (MLE/LSQ), F-M distribution plots, temporal and spatial distribution analysis |
+| 🧑‍💻 **Code Generation and Execution** | LLM generates Python code + sandbox secure execution + built-in seismology toolkit, connecting multiple skill steps |
+| 🗺️ **GMT Map Drawing** | Calls GMT6 to draw epicenter maps, station maps, topographic maps, focal mechanism diagrams, with downloadable images and scripts |
+| 🤖 **Autonomous Agent** | Reads papers → understands methods → autonomous planning → progressive programming implementation, with automatic retries at each step |
+| 📚 **Knowledge Base RAG** | BGE-M3 vectorization + FAISS retrieval, persistent storage, batch PDF ingestion and literature Q&A |
+| 📖 **Literature Interpretation** | Temporary PDF upload → deep interpretation of methods/formulas/conclusions, multi-round questioning |
+| 🗂 **Local File Access** | After authorizing specified directory, LLM can directly read file lists to assist analysis |
+| ⚡ **Skill System** | Markdown format skill documents (7 built-in + unlimited custom), automatically retrieved and injected during conversation and code generation |
+| 📈 **Waveform Visualization** | Waveform diagrams embedded in conversation window (with phase annotation overlay), images can be clicked to enlarge or download |
+
+---
+
+## System Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     Web UI (Flask + JS)                          │
+│        /chat  ·  /knowledge  ·  /skills  ·  /llm-settings       │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │ HTTP REST API
+┌──────────────────────────▼──────────────────────────────────────┐
+│                      /api/chat/route                             │
+│                   LLM Intent Classification Router               │
+│         code ──────────┬────────── qa ──────── chat             │
+└─────────┬──────────────┼──────────────┬────────────────────────┘
+          │              │              │
+  ┌───────▼──────┐  ┌────▼─────┐  ┌────▼──────┐
+  │ CodeEngine   │  │ RAG Q&A   │  │ General Chat │
+  │ + Toolkit    │  │ BGE-M3   │  │           │
+  │ + GMT        │  │ + FAISS  │  │           │
+  └───────┬──────┘  └──────────┘  └───────────┘
+          │
+  ┌───────▼──────────────────────────────────────┐
+  │            seismo_skill Skill Retrieval      │
+  │    7 Built-in Skills  +  User Custom Skills  │
+  │    (~/.seismicx/skills/)                     │
+  └───────┬──────────────────────────────────────┘
+          │ Automatic injection of function descriptions + code examples
+  ┌───────▼──────────────────────────────────────┐
+  │            LLM Backend                       │
+  │   Ollama (local)  ·  vLLM  ·  OpenAI Compatible     │
+  └──────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────┐
+  │           pnsn/ Phase Picking Engine        │
+  │    PhaseNet / EQTransformer / JIT / ONNX    │
+  │    FastLink / Gamma Event Association       │
+  └─────────────────────────────────────────────┘
+```
+
+---
+
+## Quick Start
+
+```bash
+# 1. Clone the main repository
+git clone https://github.com/yourname/sage.git
+cd sage
+
+# 2. Clone the pnsn phase picking module (must be placed under sage/ directory)
+git clone https://github.com/cangyeone/pnsn.git
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Start Ollama and pull model (choose one)
+ollama serve &
+ollama pull qwen3:8b          # Lightweight, ~6 GB
+
+# 5. Start Web service
+python web_app/app.py --port 5010
+
+# 6. Access via browser
+open http://localhost:5010
+```
+
+On first access, select and save the pulled model on the **LLM Settings page** to start using all features.
+
+---
+
+## Installation
+
+### System Requirements
+
+| Resource | Minimum Requirements | Recommended Configuration |
+|------|---------|---------|
+| **Operating System** | macOS / Linux / Windows | macOS 13+ / Ubuntu 22.04+ |
+| **Python** | 3.9 | 3.10 / 3.11 |
+| **Memory (RAM)** | 8 GB | 16 GB+ (for running local LLM) |
+| **Storage Space** | 5 GB | 30 GB+ (models + knowledge base) |
+| **GPU** | Optional | CUDA 11.8+ or Apple Metal (for accelerated inference) |
+
+### Basic Installation
+
+```bash
+git clone https://github.com/yourname/sage.git
+cd sage
+
+# Complete installation (recommended)
+pip install -r requirements.txt
+
+# Or install parts on demand
+pip install flask flask-cors                          # Web services
+pip install obspy torch scipy numpy pandas            # Seismic data processing
+pip install matplotlib plotly                         # Visualization
+pip install FlagEmbedding faiss-cpu pdfminer.six PyMuPDF  # RAG Knowledge Base
+```
+
+### pnsn Phase Picking Module Installation
+
+pnsn is a deep learning model library specifically for phase picking, developed by [cangyeone](https://github.com/cangyeone). **Must clone it to the `sage/` main directory**, SAGE calls it through relative paths.
+
+```bash
+# Execute in sage/ directory
+git clone https://github.com/cangyeone/pnsn.git
+
+# Install pnsn dependencies
+cd pnsn
+pip install -r requirements.txt
+cd ..
+```
+
+**Directory Structure Confirmation:**
+
+```
+sage/
+├── pnsn/               ← Must be in this location
+│   ├── sage_picker.py
+│   ├── fastlinker.py
+│   ├── gammalink.py
+│   ├── pickers/        ← JIT / ONNX model files
+│   └── config/
+├── web_app/
+└── ...
+```
+
+Main models provided by pnsn:
+
+| Model | Purpose | Format |
+|------|------|------|
+| **PhaseNet** | P/S wave arrival picking | JIT / ONNX |
+| **EQTransformer** | Event detection + phase picking integration | JIT / ONNX |
+| **JMA Picker** | Picker based on JMA algorithm | JIT |
+
+### RAG Dependencies
+
+Knowledge base RAG functionality requires the `tokenizers` library, which on some systems requires Rust compilation environment:
+
+```bash
+# Install Rust (only needed when pip install reports compilation errors)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
+
+# Reinstall embedding models library
+pip install FlagEmbedding sentence-transformers
+
+# On first use, BGE-M3 model (~2 GB) will automatically download from HuggingFace
+# Domestic network can set mirror:
+export HF_ENDPOINT=https://hf-mirror.com
+```
+
+---
+
+## Configuring LLM Backend
+
+All AI functions require an LLM backend. Configuration is done through **Web Interface → LLM Settings Page**, or via command line, uniformly stored in `~/.seismicx/config.json`. Changes **take effect immediately without restart**.
+
+### Method 1: Ollama (Recommended, local, no internet required)
+
+```bash
+# 1. Install Ollama
+# macOS / Linux:
+curl -fsSL https://ollama.ai/install.sh | sh
+# Or visit https://ollama.ai/download
+
+# 2. Start service
+ollama serve
+
+# 3. Pull model (select based on VRAM / Memory)
+ollama pull qwen3:8b         # ~6 GB, suitable for daily use
+ollama pull qwen3:30b        # ~20 GB, comprehensive capabilities
+ollama pull deepseek-r1:8b   # ~9 GB, strong reasoning capability
+ollama pull llama3.3:latest  # ~40 GB, strong English capability
+```
+
+Select model on LLM settings page and click "Save Configuration" to complete setup.
+
+### Method 2: Online API (OpenAI Compatible Format)
+
+On LLM settings page → Select "Custom API" and fill in:
+
+| Field | Example (DeepSeek) | Example (SiliconFlow) |
+|------|----------------|-------------------|
+| **API Base URL** | `https://api.deepseek.com/v1` | `https://api.siliconflow.cn/v1` |
+| **API Key** | `sk-xxxxxxxx` | `sk-xxxxxxxx` |
+| **Model Name** | `deepseek-chat` | `Qwen/Qwen2.5-72B-Instruct` |
+
+Supports any OpenAI compatible interface, including DeepSeek, SiliconFlow, Moonshot (Moonshot), Alibaba Tongyi (DashScope), Zhipu GLM, Anthropic, etc.
+
+### Method 3: Command Line Configuration
+
+```bash
+# Ollama local model
+python seismic_cli.py backend use ollama --model qwen3:30b
+
+# Online API
+python seismic_cli.py backend use online \
+    --provider deepseek \
+    --api-key sk-xxx \
+    --model deepseek-chat
+
+# View all backend status
+python seismic_cli.py backend status
+
+# Auto-detect available backends
+python seismic_cli.py backend auto
+```
+
+---
+
+## Web Interface
+
+After startup, visit `http://localhost:5010`, containing four main pages.
+
+### 🗨 Conversation Page (/chat)
+
+Main interaction interface. **No mode switching required** — system automatically determines intent of each message through LLM and routes to the most appropriate processor:
+
+| Content Sent | Automatically Routes To |
+|-----------|----------|
+| "What is the Q-filter algorithm?" | Knowledge Q&A (RAG retrieval) |
+| "Help me do 1-10 Hz bandpass filtering on /data/wave.mseed and plot" | Code generation and execution |
+| "Help me draw a Chinese topographic map with GMT" | GMT skill execution |
+| "Hello" | General conversation |
+
+**Sidebar:**
+- 📎 Upload PDF (temporary session use)
+- 🗂 Authorize local working directory (LLM can read file lists from specified path)
+- Knowledge base document count / snippet count status display
+
+**Image Display and Download:**
+- Images generated by code execution are directly embedded in conversation bubbles
+- Toolbar displayed below each image: **⬇ Image** downloads PNG, **⬇ GMT Script** downloads reproducible `.sh` script (for GMT images only)
+- Click image to view full screen in new window
+
+**Typical conversation examples:**
+
+```
+# Knowledge Q&A (automatic knowledge base retrieval)
+> What is the Q-filter algorithm?
+> Explain the principle of HVSR spectrum ratio method
+
+# Data processing (automatic code execution)
+> Check files in directory /data/seismic/waveform
+> Draw the waveforms
+> Filter the waveforms with 1-10 Hz bandpass and plot
+> Calculate power spectral density of vertical component
+
+# GMT maps
+> Help me draw a Chinese topographic map with GMT
+> Draw epicenter distribution map for 90-120°E, 20-45°N
+
+# Literature interpretation
+> What are the core methods of this paper? (ask after uploading PDF)
+```
+
+### 📚 Knowledge Base Page (/knowledge)
+
+- Drag-and-drop upload multiple PDFs, automatically vectorized with **BGE-M3** and ingested
+- Real-time indexing progress display (text extraction → chunking → embedding → FAISS write)
+- Document management: view page count/snippet count/file size, support single deletion or bulk clearing
+- **Persistent storage**: Knowledge base automatically loads after service restart, no re-upload required
+
+> Storage path: `~/.seismicx/knowledge/`
+
+### ⚡ Skill Management Page (/skills)
+
+Expand AI capabilities without restart.
+
+- Left: Group display of built-in skills (read-only) and user custom skills (editable/deletable)
+- Right: Markdown editor + real-time preview, with syntax highlighting
+- Support creating, editing, deleting custom skills
+- Takes effect immediately for next conversation or code generation after saving
+
+> Custom skill storage path: `~/.seismicx/skills/`
+
+### ⚙️ LLM Settings Page (/llm-settings)
+
+- Online detection of installed Ollama models, one-click selection
+- Supports configuring any OpenAI compatible API
+- Takes effect immediately on all functions after saving
+- Top badge displays currently used model in real-time
+
+---
+
+## Command Line Tools
+
+`seismic_cli.py` provides complete command line interface, suitable for scripted and batch processing scenarios.
+
+### Conversation Mode
+
+```bash
+python seismic_cli.py chat
+```
+
+### Phase Picking
+
+```bash
+# Single station picking
+python seismic_cli.py pick \
+    -i /data/station/ \
+    -m pnsn/pickers/pnsn.v3.jit
+
+# Batch picking (all waveform files in directory)
+python seismic_cli.py pick \
+    -i /data/seismic/2024/ \
+    --batch \
+    -o results/picks.csv
+
+# Specify compute device
+python seismic_cli.py pick -i /data/ --device cuda
+```
+
+### Event Association
+
+```bash
+python seismic_cli.py associate \
+    -i results/picks.csv \
+    -s station_list.csv \
+    --method fastlink \
+    -o results/events.txt
+```
+
+### Seismic Statistics
+
+```bash
+# Calculate b-value
+python seismic_cli.py stats bvalue -i catalog.csv --mc auto
+
+# Draw F-M distribution plot
+python seismic_cli.py stats plot-gr -i catalog.csv -o fmd.png
+
+# Generate complete statistical report (b-value + temporal + spatial distribution)
+python seismic_cli.py stats report -i catalog.csv
+```
+
+### LLM Code Generation and Execution
+
+```bash
+python seismic_cli.py run "do 1-10Hz bandpass filtering on /data/wave.mseed and plot"
+python seismic_cli.py run "calculate source parameters, epicentral distance 50km" -d /data/waves/
+python seismic_cli.py run "draw travel time curve, distance 0-30°, depth 10km" --show-code
+```
+
+### Autonomous Agent
+
+```bash
+# Implement algorithm from local PDF
+python seismic_cli.py agent \
+    "implement the travel time residual correction method in the paper" \
+    --paper /papers/velest_method.pdf \
+    --data /data/picks.csv \
+    --output results/agent_run/
+
+# Implement from arXiv paper ID
+python seismic_cli.py agent \
+    "reproduce the b-value temporal analysis method in the paper" \
+    --arxiv 2309.12345
+
+# Implement from DOI
+python seismic_cli.py agent \
+    "implement HVSR spectrum ratio method" \
+    --doi 10.1785/0220230045 \
+    --max-steps 6
+```
+
+### Skill Management
+
+```bash
+python seismic_cli.py skill list                     # List all skills
+python seismic_cli.py skill search "bandpass filter"        # Keyword search
+python seismic_cli.py skill show waveform_processing # View complete documentation
+python seismic_cli.py skill new my_tool              # Create custom skill
+python seismic_cli.py skill edit my_tool             # Edit existing skill
+python seismic_cli.py skill delete my_tool           # Delete skill
+python seismic_cli.py skill dir                      # View skill directory path
+```
+
+### LLM Backend Management
+
+```bash
+python seismic_cli.py backend status          # View current status
+python seismic_cli.py backend setup           # Interactive configuration wizard
+python seismic_cli.py backend auto            # Auto-detect and select
+python seismic_cli.py backend models          # List locally downloaded models
+python seismic_cli.py backend pull qwen3:8b   # Pull Ollama model
+```
+
+---
+
+## Conversation Routing Mechanism
+
+SAGE automatically determines intent of each message through dedicated LLM routing calls, avoiding keyword mis-matching (for example, "Q-filter **algorithm**" will not be incorrectly routed to code execution).
+
+### Routing Flow
+
+```
+User message
+   │
+   ├─ Fast path: message contains absolute path (/data/...) and is not a question
+   │              └─→ code (execute directly)
+   │
+   └─ LLM routing call (max_tokens=10, approximately <1s)
+          │
+          ├─ code  → CodeEngine generates and executes Python / GMT code
+          ├─ qa    → RAG retrieves knowledge base + LLM response
+          └─ chat  → General conversation
+```
+
+### Three Types of Routing
+
+| Route | Trigger Condition | Example |
+|------|---------|------|
+| `code` | Data processing, plotting, file operations, GMT maps | "Filter waveform with bandpass and plot", "Help me draw a Chinese topographic map with GMT" |
+| `qa` | Concept explanation, method introduction, literature retrieval | "What is Q-filter?", "Explain the principle of HVSR" |
+| `chat` | Greetings, chatting, non-seismological content | "Hello", "How is the weather today" |
+
+**Fallback rules when LLM is unavailable:**
+
+- Message contains `drawing/plotting/filtering/spectrum/waveform/.sac/.mseed` → `code`
+- Others → `qa`
+
+---
+
+## seismo_skill Skill System
+
+The skill system is SAGE's core extension mechanism. Each skill is a Markdown document describing function usage and code examples. **Skills documents are automatically retrieved and injected during AI conversation and code generation**, significantly improving the accuracy and standardization of generated code.
+
+### Working Principle
+
+```
+User message (natural language)
+       │
+       ▼
+  seismo_skill keyword retrieval
+  (Chinese-English mixed TF-IDF scoring)
+       │
+       ├─ Matched skill → inject function signature + example code into LLM system prompt
+       │
+       ▼
+  LLM generates code / responds
+  (prioritizes standardized writing in skill documents)
+```
+
+Retrieval points integrated into:
+- `/api/chat/rag` (Web knowledge Q&A)
+- `seismo_code/code_engine.py` (code generation engine)
+- `seismo_agent/agent_loop.py` (autonomous agent code generation at each step)
+
+### Built-in Skills (7)
+
+| Skill File | Category | Main Functions |
+|----------|------|---------|
+| `waveform_io.md` | waveform | `read_stream`, `read_stream_from_dir`, `stream_info`, `picks_to_dict` |
+| `waveform_processing.md` | waveform | `detrend_stream`, `taper_stream`, `filter_stream`, `resample_stream`, `trim_stream`, `remove_response` |
+| `waveform_visualization.md` | visualization | `plot_stream`, `plot_spectrogram`, `plot_psd`, `plot_particle_motion` |
+| `spectral_analysis.md` | analysis | `compute_spectrum`, `compute_hvsr` |
+| `b_value_analysis.md` | statistics | `load_catalog_file`, `calc_mc_*`, `calc_bvalue_mle`, `plot_gr` |
+| `source_parameters.md` | analysis | `estimate_magnitude_ml`, `estimate_corner_freq`, `estimate_seismic_moment`, `moment_to_mw`, `estimate_stress_drop` |
+| `gmt_plotting.md` | visualization | `run_gmt` (epicenter maps, station maps, topographic maps, focal mechanisms, cross-sections) |
+
+### Creating Custom Skills
+
+**Method 1: Web Interface** (Recommended)
+
+Visit `/skills` → Click "Create Custom Skill" → Fill in basic information → Complete documentation in editor.
+
+**Method 2: Command Line**
+
+```bash
+python seismic_cli.py skill new my_hypodd_tool \
+    --title "HypoDD Double Difference Location Tool" \
+    --keywords "double difference location, HypoDD, precise location, relocation" \
+    --desc "Package HypoDD input file generation and result parsing"
+```
+
+**Method 3: Directly Write Markdown File**
+
+Create `.md` file under `~/.seismicx/skills/`:
+
+```markdown
+---
+name: my_skill_name
+category: custom
+keywords: keyword1, keyword2, english_keyword
+---
+
+# Skill Title
+
+## Description
+
+Tool function description (one or two sentences).
+
+---
+
+## Main Functions
+
+### `function_name(param1, param2=default)`
+
+**Parameters:**
+- `param1` : type — description
+- `param2` : type — description, default default
+
+**Returns:** type — description
+
+```python
+# Minimal runnable example
+result = function_name("input", param2=42)
+print(result)
+```
+
+---
+
+## Notes
+
+- Note 1
+```
+
+> **Override Rules:** When custom skill has same name as built-in skill, custom version takes priority automatically.
+
+---
+
+## GMT Map Drawing
+
+SAGE directly calls GMT6 through the `run_gmt()` utility function to generate professional-grade seismological maps.
+
+### Installing GMT
+
+```bash
+# macOS
+brew install gmt
+
+# Linux (Conda environment)
+conda install -c conda-forge gmt
+
+# Linux (apt)
+sudo apt install gmt
+```
+
+### Usage
+
+Directly describe requirements in conversation, SAGE automatically generates and executes GMT script:
+
+```
+> Help me draw a Chinese topographic map with GMT
+> Draw epicenter distribution map for 90-120°E, 20-45°N
+> Draw station distribution map with GMT, data in /data/stations.txt
+```
+
+Or call in code (`run_gmt` is pre-injected, no import needed):
+
+```python
+gmt_script = """
+gmt begin china_topo PNG
+  gmt grdcut @earth_relief_01m -R70/140/15/55 -Gtopo.grd
+  gmt grdimage topo.grd -JM16c -Cetopo1 -I+d
+  gmt coast -W0.5p,gray40 -N1/0.8p -Baf -BWSne+t"China Topographic Map"
+  gmt colorbar -DJBC+w8c/0.4c -Baf+l"Elevation (m)"
+gmt end
+"""
+
+run_gmt(gmt_script, outname="china_topo", title="China Topographic Map")
+```
+
+### Automatic Chinese Title Processing
+
+GMT's PostScript engine does not support CJK characters. SAGE automatically handles this issue:
+1. Extract Chinese titles/labels from script before execution
+2. Replace with empty placeholders, allowing GMT to render map content without garbled characters
+3. After execution, overlay Chinese titles back onto PNG with matplotlib
+
+> **User does not need to care about this detail**, just write Chinese titles directly in the script.
+
+### Image and Script Download
+
+Toolbar below each GMT image provides:
+- **⬇ Image**: Download PNG file
+- **⬇ GMT Script**: Download `.sh` script file, can independently run in terminal to completely reproduce the map
+
+---
+
+## Core Modules Details
+
+### `seismo_code/` — Code Generation and Execution Engine
+
+```
+seismo_code/
+├── code_engine.py      # LLM code generation (with skill injection, multi-round history, error retry)
+├── safe_executor.py    # Sandbox execution (independent subprocess, 120s timeout, automatic image collection)
+├── toolkit.py          # Built-in seismological utility functions (no import needed, direct call)
+└── doc_parser.py       # Extract context snippets related to code tasks from PDF
+```
+
+**Built-in Toolkit (`toolkit.py`, automatically injected during code execution):**
+
+| Category | Functions |
+|------|------|
+| Data Reading | `read_stream`, `read_stream_from_dir` |
+| Waveform Processing | `detrend_stream`, `taper_stream`, `filter_stream`, `resample_stream`, `trim_stream`, `remove_response` |
+| Visualization | `plot_stream`, `plot_spectrogram`, `plot_psd`, `plot_particle_motion`, `plot_travel_time_curve` |
+| Travel Time Calculation | `taup_arrivals`, `p_travel_time`, `s_travel_time` |
+| Spectrum Analysis | `compute_spectrum`, `compute_hvsr` |
+| Source Parameters | `estimate_magnitude_ml`, `estimate_corner_freq`, `estimate_seismic_moment`, `moment_to_mw`, `estimate_stress_drop` |
+| GMT Plotting | `run_gmt` |
+| Utility Functions | `stream_info`, `picks_to_dict`, `savefig` |
+
+**Sandbox Execution Mechanism:**
+- Code runs in independent subprocess, main process unaffected by crashes
+- Timeout protection (default 120 seconds)
+- Generated images automatically collected via `[FIGURE] /path` marker and sent to frontend
+- GMT scripts separately collected via `[GMT_SCRIPT] /path` marker, for frontend download provision
+
+### `seismo_agent/` — Autonomous Agent
+
+Complete automatic implementation flow from literature to code:
+
+```
+seismo_agent/
+├── paper_reader.py   # Literature loading (PDF / arXiv ID / DOI / plain text)
+├── memory.py         # Cross-step work memory (literature content, step results, generated variables)
+├── planner.py        # LLM task planning (goal + literature summary → JSON step list)
+└── agent_loop.py     # Main loop (planning → code → execution → failure retry → summary)
+```
+
+Execution flow:
+
+```
+User goal + literature source (PDF / arXiv / DOI)
+       │
+  Load and extract core literature content
+       │
+  LLM plans execution steps (3–8 steps, JSON format)
+       │
+  ┌─── Each Step ───────────────────────────┐
+  │  Retrieve relevant skill documents (seismo_skill)     │
+  │  LLM generates code (skill context injection)      │  ← Retry up to 2 times on failure
+  │  Sandbox secure execution                        │
+  │  Record results and generated images                   │
+  └──────────────────────────────────────┘
+       │ Loop through all steps
+  Summary report + output directory
+```
+
+### `web_app/rag_engine.py` — Knowledge Base RAG Engine
+
+| Stage | Implementation |
+|------|------|
+| PDF Parsing | pdfminer.six (priority) / PyMuPDF (fallback) |
+| Text Chunking | 500 chars/chunk, 50 char sliding overlap |
+| Vectorization | BGE-M3 (1024 dimensions, L2 normalized, Chinese-English bilingual) |
+| Indexing | FAISS `IndexFlatIP` (inner product = cosine similarity) |
+| Retrieval | Top-K recall + similarity threshold filtering, only showing truly matched literature |
+| Persistence | `~/.seismicx/knowledge/`, automatic load on startup; automatic cleanup of orphaned vectors from deleted files on startup |
+| Fallback | Automatic downgrade to TF-IDF cosine similarity retrieval when BGE-M3 unavailable |
+
+### `seismo_stats/` — Seismic Statistical Analysis
+
+```
+seismo_stats/
+├── bvalue.py         # Mc (maximum curvature / goodness-of-fit) + b-value (MLE / LSQ) + σ_b uncertainty
+├── catalog_loader.py # Directory loading: CSV / JSON / picks.txt, automatic column name recognition
+└── plotting.py       # F-M distribution plots, temporal activity plots, epicenter distribution plots
+```
+
+### `seismo_tools/` — External Tool Registry
+
+Unified management of third-party seismological tools such as HypoDD, VELEST, HASH. Supports automatic control file generation, calling external executables, parsing output results, and can be triggered via conversation commands.
+
+---
+
+## Directory Structure
+
+```
+sage/
+├── web_app/                      # Web service
+│   ├── app.py                    # Flask main application (40+ API routes)
+│   ├── rag_engine.py             # BGE-M3 + FAISS knowledge base engine
+│   ├── simple_rag.py             # TF-IDF fallback RAG
+│   ├── simple_vector_db.py       # Lightweight vector database (pickle persistence)
+│   └── templates/
+│       ├── chat.html             # Conversation page (main interface)
+│       ├── knowledge.html        # Knowledge base management
+│       ├── skills.html           # Skill management
+│       └── llm_settings.html     # LLM configuration
+│
+├── seismo_skill/                 # Skill documentation system
+│   ├── skill_loader.py           # Parse, retrieve, inject (Chinese-English mixed retrieval)
+│   ├── __init__.py
+│   ├── waveform_io.md            # Waveform reading
+│   ├── waveform_processing.md    # Waveform preprocessing
+│   ├── waveform_visualization.md # Waveform visualization
+│   ├── spectral_analysis.md      # Spectrum analysis & HVSR
+│   ├── b_value_analysis.md       # b-value statistical analysis
+│   ├── source_parameters.md      # Source parameter estimation
+│   ├── tabular_io.md             # CSV / TXT data reading
+│   └── gmt_plotting.md           # GMT map drawing
+│
+├── seismo_code/                  # Code generation and execution engine
+│   ├── code_engine.py            # LLM code generation (multi-round history + error retry)
+│   ├── safe_executor.py          # Sandbox execution (subprocess + timeout protection)
+│   ├── toolkit.py                # Built-in seismological utility functions
+│   └── doc_parser.py             # PDF content extraction
+│
+├── seismo_agent/                 # Autonomous Agent
+│   ├── agent_loop.py             # Main loop (SeismoAgent class)
+│   ├── planner.py                # Task planning (TaskPlanner)
+│   ├── memory.py                 # Work memory (AgentMemory)
+│   └── paper_reader.py           # Literature loading (load_paper)
+│
+├── seismo_stats/                 # Seismic statistical analysis
+│   ├── bvalue.py                 # b-value / Mc calculation
+│   ├── catalog_loader.py         # Earthquake catalog loading
+│   └── plotting.py               # Statistical chart plotting
+│
+├── seismo_tools/                 # External tool registry
+│   └── tool_registry.py          # HypoDD / VELEST / HASH etc.
+│
+├── pnsn/                         # ← Needs separate clone (see installation instructions)
+│   ├── sage_picker.py            # Batch picking main class (SagePicker)
+│   ├── fastlinker.py             # FastLink event association
+│   ├── gammalink.py              # Gamma event association
+│   ├── pickers/                  # JIT / ONNX model files
+│   └── config/                   # Picker parameter configuration
+│
+├── conversational_agent.py       # Conversation Agent core (intent classification + skill execution)
+├── config_manager.py             # LLM configuration management
+├── backend_manager.py            # Multi-backend support (Ollama / vLLM / online API)
+├── seismic_cli.py                # Command line entry point
+├── requirements.txt              # Python dependencies
+└── logo.png
+
+~/.seismicx/                      # User data directory (automatically created on first run)
+├── config.json                   # LLM and workspace configuration
+├── knowledge/                    # Knowledge base vector index (FAISS + metadata)
+│   ├── faiss_index.bin
+│   ├── metadata.json
+│   └── pdfs/                     # PDF copies
+└── skills/                       # User custom skill documents
+    └── my_custom_skill.md
+```
+
+---
+
+## Configuration Files
+
+Configuration is unified in `~/.seismicx/config.json`, maintained automatically via Web interface or CLI, no manual editing required.
+
+```json
+{
+  "llm": {
+    "provider": "ollama",
+    "model": "qwen3:30b",
+    "api_base": "http://localhost:11434",
+    "api_key": ""
+  },
+  "workspace": {
+    "enabled": true,
+    "path": "/data/seismic"
+  }
+}
+```
+
+| Field | Description | Optional Values |
+|------|------|--------|
+| `llm.provider` | LLM provider | `ollama` / `openai` / `custom` |
+| `llm.model` | Model name | Ollama tag or API model name |
+| `llm.api_base` | API endpoint address | `http://localhost:11434` (Ollama default) |
+| `llm.api_key` | API key | Not required for Ollama |
+| `workspace.enabled` | Whether to allow LLM to access local file lists | `true` / `false` |
+| `workspace.path` | Authorized root directory (LLM cannot access content outside this path) | Absolute path string |
+
+---
+
+## FAQ
+
+**Q: Conversation returns "No available LLM model configured"**
+
+Go to `/llm-settings` to select an installed Ollama model, or configure an online API and click "Save Configuration".
+
+**Q: English questions like "what is filter algorithm?" are incorrectly routed to code execution**
+
+Fixed. SAGE uses LLM rather than keyword regex to determine intent, conceptual questions (containing technical terms like filter, spectrum) will be correctly routed to knowledge Q&A, not code execution.
+
+**Q: Knowledge base PDF vectorization is slow after upload**
+
+First run will download BGE-M3 model (~2 GB) from HuggingFace. Speed will be normal after completion. Domestic network can set mirror acceleration:
+
+```bash
+export HF_ENDPOINT=https://hf-mirror.com
+```
+
+**Q: Chinese titles in GMT images show as garbled characters**
+
+No special handling required. SAGE has built-in CJK automatic processing: GMT execution stage replaces Chinese with empty placeholders, after execution matplotlib overlays Chinese titles back to PNG, ensuring correct Chinese display.
+
+**Q: GMT plotting fails, prompting "GMT not installed"**
+
+Install GMT >= 6.0:
+
+```bash
+# macOS
+brew install gmt
+
+# Linux (conda environment)
+conda install -c conda-forge gmt
+```
+
+**Q: Batch picking is slow**
+
+Default uses CPU. Add `--device cuda` to enable GPU acceleration (requires CUDA environment and corresponding PyTorch version).
+
+**Q: Agent step execution fails**
+
+Agent by default retries up to 2 times per step, failed steps will be skipped and subsequent steps continued. Can increase `--max-steps` limit, or check logs in output directory for details.
+
+**Q: How to make AI use my own function library?**
+
+Create a `.md` skill file under `~/.seismicx/skills/`, according to [skill file format](#creating-custom-skills) write function signatures, parameter explanations and minimal examples. No restart required after saving, takes effect immediately for next conversation.
+
+**Q: RAG function reports error "embedding model library not found"**
+
+```bash
+# 1. Confirm installation
+pip list | grep -E "(FlagEmbedding|sentence-transformers)"
+
+# 2. Try upgrade
+pip install --upgrade FlagEmbedding sentence-transformers
+
+# 3. If Rust compiler needed
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
+pip install FlagEmbedding sentence-transformers
+```
+
+If none of the above methods can solve, the project's built-in lightweight TF-IDF vector database will automatically serve as fallback solution, basic RAG functionality still available.
+
+**Q: How to add AI support for external tools like HypoDD?**
+
+Call `register_tool()` in `seismo_tools/tool_registry.py` to register tool parameter templates and calling commands; simultaneously create corresponding skill document in `seismo_skill/`, describing input file format, allowing AI to automatically reference during code generation.
+
+---
+
+<p align="center">
+  <sub>Built with ❤️ for the seismology community</sub>
+</p>

@@ -757,6 +757,7 @@ sage/
 │   ├── spectral_analysis.md      # 频谱分析与 HVSR
 │   ├── b_value_analysis.md       # b 值统计分析
 │   ├── source_parameters.md      # 震源参数估算
+│   ├── tabular_io.md             # CSV / TXT 数据读取
 │   └── gmt_plotting.md           # GMT 地图绘制
 │
 ├── seismo_code/                  # 代码生成与执行引擎
