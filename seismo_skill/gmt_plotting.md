@@ -594,6 +594,70 @@ os.remove(temp_file)
 
 ---
 
+## Projection Rule: Rectangular Map vs Orthographic Projection
+
+If the user asks for a normal rectangular geographic map, DO NOT use orthographic or oblique projections.
+
+Use:
+
+```bash
+-JM15c
+````
+
+or, for regional maps:
+
+```bash
+-JL${lon0}/${lat0}/${lat1}/${lat2}/15c
+```
+
+Avoid these projections unless the user explicitly requests a globe-style or oblique map:
+
+```bash
+-JG    # Orthographic globe projection
+-JO    # Oblique Mercator projection
+-JA    # Azimuthal projection
+```
+
+Important:
+
+* A normal longitude-latitude regional map should look rectangular.
+* If the plotted map appears as a tilted parallelogram or curved globe view, the projection is probably wrong.
+* For most seismic station maps, use `-JM` by default.
+
+````
+
+再把你的绘图模板改成这种更稳的：
+
+```python
+gmt_script = f"""
+gmt begin station_map PNG
+
+  gmt set MAP_FRAME_TYPE plain
+  gmt set FORMAT_GEO_MAP ddd.x
+
+  # Define region and projection explicitly
+  REGION="-R{lon_min}/{lon_max}/{lat_min}/{lat_max}"
+  PROJ="-JM15c"
+
+  # Topography first
+  gmt grdcut @earth_relief_01m $REGION -Gtopo.grd
+  gmt grdimage topo.grd $REGION $PROJ -Cetopo1 -I+d
+
+  # Coastline and frame
+  gmt coast $REGION $PROJ -W0.5p,gray40 -N1/0.5p,gray60 -A500 \
+      -Bxa2f1+l"Longitude" \
+      -Bya2f1+l"Latitude" \
+      -BWSne+t"Station Map"
+
+  # Plot stations
+  gmt plot stations.txt $REGION $PROJ -St0.25c -Gred -W0.4p,black
+
+gmt end
+"""
+````
+
+---
+
 ## Common GMT6 Command Reference
 
 | Command | Purpose |

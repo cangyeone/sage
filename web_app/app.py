@@ -1050,7 +1050,13 @@ def chat_code():
                         pass
 
         figures = []
-        for fig_path in result.figures:
+        figure_paths = list(result.figures) if result.figures else []
+        # Also treat any image output files as figures when safe_executor did not label them
+        for out_path in result.output_files:
+            if os.path.splitext(out_path)[1].lower() in ('.png', '.svg', '.pdf') and out_path not in figure_paths:
+                figure_paths.append(out_path)
+
+        for fig_path in figure_paths:
             try:
                 with open(fig_path, 'rb') as f:
                     fig_base = Path(fig_path).stem
@@ -1097,11 +1103,54 @@ def chat_code():
                 if real_path in seen_paths:
                     continue
                 if os.path.isfile(real_path):
+                    ext = Path(real_path).suffix.lower()
+                    mimetype = 'text/plain'
+                    if ext == '.py':
+                        mimetype = 'text/x-python'
+                    elif ext == '.sh':
+                        mimetype = 'text/x-shellscript'
+                    elif ext == '.txt':
+                        mimetype = 'text/plain'
+                    elif ext == '.png':
+                        mimetype = 'image/png'
+                    elif ext == '.svg':
+                        mimetype = 'image/svg+xml'
+                    elif ext in ('.jpg', '.jpeg'):
+                        mimetype = 'image/jpeg'
+                    elif ext == '.pdf':
+                        mimetype = 'application/pdf'
+
                     with open(real_path, 'rb') as _f:
                         downloads.append({
                             'name': Path(real_path).name,
                             'data': _b64.b64encode(_f.read()).decode('utf-8'),
-                            'mimetype': 'text/plain',
+                            'mimetype': mimetype,
+                        })
+                        seen_paths.add(real_path)
+            except Exception:
+                pass
+
+        # Also ensure figure output files are available for download when they are not already included.
+        for fig_path in figure_paths:
+            try:
+                real_path = os.path.realpath(fig_path)
+                if real_path in seen_paths:
+                    continue
+                if os.path.isfile(real_path):
+                    ext = Path(real_path).suffix.lower()
+                    mimetype = 'image/png' if ext == '.png' else 'application/octet-stream'
+                    if ext == '.svg':
+                        mimetype = 'image/svg+xml'
+                    elif ext == '.pdf':
+                        mimetype = 'application/pdf'
+                    elif ext in ('.jpg', '.jpeg'):
+                        mimetype = 'image/jpeg'
+
+                    with open(real_path, 'rb') as _f:
+                        downloads.append({
+                            'name': Path(real_path).name,
+                            'data': _b64.b64encode(_f.read()).decode('utf-8'),
+                            'mimetype': mimetype,
                         })
                         seen_paths.add(real_path)
             except Exception:
