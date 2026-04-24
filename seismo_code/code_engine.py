@@ -137,15 +137,149 @@ The execution environment pre-injects these functions — call directly, do NOT 
 - For tab-delimited `.txt`, use `pd.read_table(path)` or `pd.read_csv(path, sep='\t')`.
 - If the file has no header, use `header=None` and assign `names=[...]`.
 - If parsing fails, inspect the first few lines with `open(path).read().splitlines()[:20]`.
-- Always print `df.columns.tolist()` and `df.head(10)` when you first read a table.
-- If `latitude`/`longitude` are absent, look for common alternatives like `lat1`, `lon1`, `lat2`, `lon2`, `x`, `y`, `lon`, `lat`.
-- If the file contains multiple station pairs, infer the correct coordinate columns and document your choice with printed output.
+- Always print `df.columns.tolist()` and `df.head(3)` when you first read a table.
+
+## ⚠️ CRITICAL — CSV column names
+When a [FILE CONTEXT] block is provided, it shows the EXACT column names.
+USE those exact names — do NOT write detection loops that scan columns.
+
+REQUIRED pattern (copy exactly, substitute real column names from FILE CONTEXT):
+```python
+df = pd.read_csv(path)
+print("DataFrame columns:", df.columns.tolist())
+print("First 3 rows:\n", df.head(3))
+
+# Use EXACT names from FILE CONTEXT — do NOT auto-detect
+lon_col = 'lon1'   # ← set to exact name from FILE CONTEXT
+lat_col = 'lat1'   # ← set to exact name from FILE CONTEXT
+lon = df[lon_col].values
+lat = df[lat_col].values
+
+# ⚠️ MANDATORY validation — catches wrong column selection immediately
+assert lon.min() >= -180 and lon.max() <= 180, \
+    f"Longitude out of range [{lon.min():.2f}, {lon.max():.2f}] — wrong column '{lon_col}'?"
+assert lat.min() >= -90  and lat.max() <= 90, \
+    f"Latitude out of range [{lat.min():.2f}, {lat.max():.2f}] — wrong column '{lat_col}'? Try 'lat1' or 'lat2'."
+print(f"Using lon={lon_col} ({lon.min():.4f}~{lon.max():.4f}), lat={lat_col} ({lat.min():.4f}~{lat.max():.4f})")
+```
+
+Column selection rules:
+- If FILE CONTEXT says "longitude → df['lon1']" → use lon_col = 'lon1'
+- If there are lon1/lon2 and lat1/lat2 pairs, prefer lon1/lat1 (source station)
+- NEVER use id columns (ray_id, id, index) as coordinates — they are not geographic
+- 'y' alone is NOT a reliable latitude indicator when 'lat1'/'lat2' exist
+
+## ⚠️ Map / Geographic Plotting
+
+### DEFAULT: matplotlib + cartopy  (always use this unless user says "GMT")
+
+```python
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+
+# lon, lat, depth — numpy arrays already available
+pad  = max((lon.max()-lon.min())*0.12, (lat.max()-lat.min())*0.12, 0.5)
+extent = [lon.min()-pad, lon.max()+pad, lat.min()-pad, lat.max()+pad]
+
+fig, ax = plt.subplots(figsize=(10, 8),
+                        subplot_kw={'projection': ccrs.PlateCarree()})
+ax.set_extent(extent, crs=ccrs.PlateCarree())
+
+ax.add_feature(cfeature.LAND,      facecolor='#f0ede5', zorder=0)
+ax.add_feature(cfeature.OCEAN,     facecolor='#d6eaf8', zorder=0)
+ax.add_feature(cfeature.COASTLINE, linewidth=0.8, color='#444', zorder=2)
+ax.add_feature(cfeature.BORDERS,   linewidth=0.5, linestyle=':', color='#777', zorder=2)
+
+gl = ax.gridlines(draw_labels=True, linewidth=0.4, color='gray',
+                  alpha=0.5, linestyle='--')
+gl.top_labels = False
+gl.right_labels = False
+
+sc = ax.scatter(lon, lat, c=depth, cmap='plasma_r', s=20,
+                transform=ccrs.PlateCarree(), zorder=5,
+                alpha=0.85, edgecolors='none')
+plt.colorbar(sc, ax=ax, label='Depth (km)', shrink=0.65, pad=0.02)
+ax.set_title('Seismicity Map', fontsize=13, pad=10)
+
+savefig('seismicity_map.png')   # pre-injected: saves PNG and registers [FIGURE]
+plt.close()
+```
+
+cartopy rules:
+- ✅ Always pass `transform=ccrs.PlateCarree()` to scatter/plot on a GeoAxes
+- ✅ `ax.set_extent([w,e,s,n])` — NOT ax.set_xlim/set_ylim
+- ✅ `savefig('name.png')` — pre-injected, auto-registers figure
+- ❌ NEVER call `plt.show()` — server has no display
+
+Magnitude-scaled markers: `s = (2**mag) * 3` (exponential)
+Multi-panel map+cross-section: use `subplot_kw` only on the map axes
+
+---
+
+### GMT: ONLY when user explicitly says "GMT" or "gmt绘图"
+
+Rules:
+1. ALWAYS use `run_gmt(script, outname)` — NEVER `subprocess.run(['gmt', ...])`
+2. Write data files in Python FIRST with `np.savetxt()`, then reference the path in script
+3. Use f-string with single-triple-quotes; Python vars: `{R}`, bash vars: `${{Z_MIN}}`, awk: `{{print $6}}`
+4. Skip @earth_relief_01m (timeout) — chain 02m→05m
+
+```python
+import numpy as np, os
+
+pts_file = os.path.join(os.environ.get('SAGE_OUTDIR', '/tmp'), 'points.txt')
+np.savetxt(pts_file, np.column_stack([lon, lat]), fmt='%.6f')
+
+R = f"{lon.min()-1:.2f}/{lon.max()+1:.2f}/{lat.min()-1:.2f}/{lat.max()+1:.2f}"
+J = "M15c"
+
+script = f'''
+# --- Download terrain grid with fallback resolution ---
+if gmt grdcut @earth_relief_02m -R{R} -Gtopo.grd 2>/dev/null && [ -f topo.grd ]; then
+  echo "02m OK"
+elif gmt grdcut @earth_relief_05m -R{R} -Gtopo.grd 2>/dev/null && [ -f topo.grd ]; then
+  echo "05m OK"
+else
+  echo "Terrain download failed" >&2; exit 1
+fi
+Z_MIN=$(gmt grdinfo topo.grd -C 2>/dev/null | awk '{{print $6}}')
+Z_MAX=$(gmt grdinfo topo.grd -C 2>/dev/null | awk '{{print $7}}')
+if [ -z "${{Z_MIN}}" ] || [ -z "${{Z_MAX}}" ]; then
+  Z_MIN=0
+  Z_MAX=3000
+fi
+gmt makecpt -Cgeo -T${{Z_MIN}}/${{Z_MAX}}/100 > topo.cpt
+if [ ! -s topo.cpt ]; then
+  echo "ERROR: topo.cpt empty" >&2
+  exit 1
+fi
+
+gmt begin location_map PNG
+  gmt grdimage topo.grd -J{J} -R{R} -Ctopo.cpt -I+d
+  gmt coast -R{R} -J{J} -W0.6p,gray30 -N1/0.8p,gray50 -A500 -Baf -BWSne+t"Map"
+  gmt plot {pts_file} -R{R} -J{J} -Sc0.2c -Gred -W0.3p,black
+  gmt colorbar -DJBC+w7c/0.35c -Ctopo.cpt -Baf+l"Elevation"
+gmt end
+'''
+run_gmt(script, outname="location_map", title="Location Map")
+```
+
+GMT DON'Ts:
+- ❌ bash array loops in f-string (`${arr[$i]}`, `<<EOF`) — SyntaxError
+- ❌ `subprocess.run(['gmt', ...])` — always crashes (no begin/end)
+- ❌ `@earth_relief_01m` — timeout
+- ❌ `gmt coast -Gtan/-Gwhite` — solid fill HIDES terrain under grdimage
+- ❌ `gmt basemap` before `gmt grdimage` — gets buried
+
+GMT layer order: grdimage → coast (NO -G) → plot → colorbar
 
 ## Available libraries
-obspy, numpy, scipy, matplotlib (Agg backend), pandas, sklearn (if installed)
+obspy, numpy, scipy, matplotlib (Agg backend), cartopy, pandas, sklearn (if installed)
 
-{toolkit}
-""".format(toolkit=_TOOLKIT_SUMMARY)
+""" + _TOOLKIT_SUMMARY
 
 # ── Debugger System Prompt ──────────────────────────────────────────────────
 _DEBUG_SYSTEM = """You are an expert Python debugger specializing in scientific computing.
@@ -174,7 +308,39 @@ Rules:
 - If the error is a logic bug, fix the logic.
 - If the failure is due to CSV/TXT parsing, inspect the file header and delimiter and use pandas with fallback parsing.
 - If the failure is due to unknown data structure, print the first rows and inferred column mapping, then retry with guessed columns.
-- NEVER use plt.show(). NEVER re-import toolkit functions.
+- If the error is `NameError: name 'lon' is not defined` (or 'lat', 'depth', etc.),
+  check the [Data file context] block for EXACT column names and use df['col_name'].values.
+  NEVER reference bare variable names like `lon`, `lat` unless they were explicitly assigned.
+- If the error contains `SAGE_HINT: do NOT call gmt via subprocess directly`, OR any GMT
+  syntax/IndentationError involving `gmt`, `<<EOF`, or `${...}` in Python code:
+  Rewrite using the f-string pattern:
+    1. Write data to file: `np.savetxt(pts_file, np.column_stack([lon, lat]), fmt='%.6f')`
+    2. Set region: `R = f"{lon.min()-1:.2f}/{lon.max()+1:.2f}/{lat.min()-1:.2f}/{lat.max()+1:.2f}"`
+    3. Build script as f-string: bash vars use `${{Z_MIN}}`, awk braces use `{{print $6}}`
+    4. Call: `run_gmt(script, outname="map")`
+    5. Use @earth_relief_02m → @earth_relief_05m chain (skip 01m to avoid timeout)
+    6. Always check `[ -f topo.grd ]` after grdcut before calling grdinfo/makecpt.
+- If the error is `SyntaxError: f-string: expecting ...` near GMT bash content:
+  The GMT script must NOT contain `${arr[$i]}`, `<<EOF`, or bash loops in an f-string.
+  Write data to a file in Python first; use only simple `{python_var}` substitutions in the f-string.
+- If the error is `ModuleNotFoundError: No module named 'sage'` or similar:
+  The toolkit functions (run_gmt, savefig, read_stream_from_dir, etc.) are PRE-INJECTED.
+  NEVER write `from sage import ...` or `import sage`. Call them directly: `run_gmt(script)`.
+- If the error is `ModuleNotFoundError: No module named 'cartopy'`:
+  Fall back to a plain matplotlib scatter without a geo projection:
+  ```python
+  fig, ax = plt.subplots(figsize=(10, 8))
+  sc = ax.scatter(lon, lat, c=depth, cmap='plasma_r', s=20, alpha=0.8)
+  plt.colorbar(sc, ax=ax, label='Depth (km)')
+  ax.set_xlabel('Longitude'); ax.set_ylabel('Latitude')
+  ax.set_title('Seismicity Map'); ax.grid(True, alpha=0.3)
+  savefig('seismicity_map.png'); plt.close()
+  ```
+- If the error is `AttributeError: 'GeoAxes' object has no attribute 'set_xlim'`:
+  Replace `ax.set_xlim/set_ylim` with `ax.set_extent([west, east, south, north])`.
+- If the error is `ValueError: ... transform ... PlateCarree`:
+  Add `transform=ccrs.PlateCarree()` to every scatter/plot call on a GeoAxes.
+- NEVER use plt.show(). NEVER re-import toolkit functions. NEVER import from sage.
 - The output code block must be complete and self-contained.
 """
 
@@ -362,8 +528,9 @@ def _format_file_context(profile: dict) -> str:
 
     if profile.get("type") == "tabular":
         shape = profile.get("shape", [])
+        cols  = profile.get("columns", [])
         lines.append(f"  Shape: {shape[0]} rows × {shape[1]} columns")
-        lines.append(f"  Columns: {', '.join(profile.get('columns', []))}")
+        lines.append(f"  Columns: {', '.join(cols)}")
 
         stats = profile.get("stats", {})
         if stats:
@@ -377,6 +544,59 @@ def _format_file_context(profile: dict) -> str:
         sample = profile.get("sample", [])
         if sample:
             lines.append(f"  Sample row: {json.dumps(sample[0], default=str)}")
+
+        # ── Emit explicit coordinate column hints ────────────────────────────
+        if cols:
+            def _find_col(keywords, exclude_patterns=None):
+                """Find best matching column. Prefer exact match, then *1 suffix, then first substring."""
+                exclude_patterns = exclude_patterns or []
+                candidates = []
+                for kw in keywords:
+                    for c in cols:
+                        cl = c.lower()
+                        # skip if matches an exclusion pattern
+                        if any(ep in cl for ep in exclude_patterns):
+                            continue
+                        if cl == kw:
+                            return c   # exact match wins immediately
+                        if kw in cl:
+                            candidates.append(c)
+                if not candidates:
+                    return None
+                # prefer columns ending in '1' (first of a pair like lon1/lon2)
+                for c in candidates:
+                    if c.endswith('1'):
+                        return c
+                return candidates[0]
+
+            # 'y' only used for latitude if no 'lat*' column exists at all
+            has_lat_col = any('lat' in c.lower() for c in cols)
+            lat_keywords = ['lat', 'latitude'] + ([] if has_lat_col else ['y'])
+
+            # exclude id/index columns from coordinate detection
+            exclude_id = ['id', 'index', 'ray', 'no', 'num']
+
+            lon_col = _find_col(['lon', 'longitude', 'long', 'lng', 'x'], exclude_id)
+            lat_col = _find_col(lat_keywords, exclude_id)
+            dep_col = _find_col(['dep', 'depth', 'z'], exclude_id)
+            mag_col = _find_col(['mag', 'magnitude', 'ml', 'mw', 'ms'], exclude_id)
+
+            if lon_col or lat_col:
+                lines.append("  ⚠ USE EXACTLY these column names (do NOT use 'lon'/'lat'):")
+                if lon_col:
+                    lines.append(f"    longitude → df['{lon_col}']   # lon = df['{lon_col}'].values")
+                if lat_col:
+                    lines.append(f"    latitude  → df['{lat_col}']   # lat = df['{lat_col}'].values")
+                if dep_col:
+                    lines.append(f"    depth     → df['{dep_col}']")
+                if mag_col:
+                    lines.append(f"    magnitude → df['{mag_col}']")
+                lines.append(f"  Minimal loading code:")
+                lines.append(f"    df = pd.read_csv(r'{profile['path']}')")
+                if lon_col:
+                    lines.append(f"    lon = df['{lon_col}'].values")
+                if lat_col:
+                    lines.append(f"    lat = df['{lat_col}'].values")
 
     if profile.get("profile_error"):
         lines.append(f"  [profile error: {profile['profile_error'][:200]}]")
@@ -399,14 +619,56 @@ def _extract_plan(text: str) -> List[str]:
 
 def _pre_sanitize(code: str) -> str:
     """Fix obvious LLM mistakes before execution (fast, no LLM call)."""
-    # Neutralise plt.show() calls (server has no display)
+    # Neutralise plt.show() / fig.show() calls (server has no display)
     code = re.sub(r"\bplt\.show\(\s*\)", "pass  # display suppressed", code)
+    code = re.sub(r"\bfig\.show\(\s*\)", "pass  # display suppressed", code)
+
+    # Ensure matplotlib uses Agg backend when cartopy is used
+    # (MPLBACKEND env is already set, but belt-and-braces for any import order issue)
+    if 'cartopy' in code and 'matplotlib.use' not in code:
+        code = "import matplotlib; matplotlib.use('Agg')\n" + code
     # Remove re-imports of the pre-injected toolkit (causes ImportError)
     code = re.sub(
         r"^\s*from\s+seismo_code\.toolkit\s+import\s+.*$",
         "pass  # toolkit pre-injected",
         code, flags=re.MULTILINE,
     )
+    # Detect direct GMT subprocess calls (wrong — no begin/end wrapper)
+    # Replace with a RuntimeError so the debug loop rewrites it with run_gmt()
+    if re.search(r"subprocess\.\w+\(\s*\[.{0,20}['\"]gmt['\"]", code):
+        code = re.sub(
+            r"subprocess\.\w+\(\s*\[.{0,20}['\"]gmt['\"][^\n]*",
+            "raise RuntimeError('SAGE_HINT: do NOT call gmt via subprocess directly"
+            " — use run_gmt(script) with a complete gmt begin/end bash script')",
+            code,
+        )
+
+    # Remove -G land-fill from gmt coast when grdimage is also present.
+    # -Gcolor fills land with solid color, completely hiding the terrain underneath.
+    if re.search(r'gmt\s+grdimage', code) and re.search(r'gmt\s+coast.*-G\w', code):
+        # Strip -Gcolor/-Gwhite/-Gtan etc. from coast lines inside string literals
+        code = re.sub(r'(gmt\s+coast\b[^\n]*?)\s+-G[a-zA-Z/0-9@]+', r'\1', code)
+
+    # Detect bash array/loop syntax inside Python strings that will cause SyntaxError
+    # Pattern: ${arr[$i]} or ${var[@]} or <<EOF inside any string literal
+    if re.search(r'\$\{[A-Za-z_]+\[', code) or re.search(r'<<\s*EOF', code):
+        hint = (
+            "raise RuntimeError('SAGE_HINT: GMT f-string conflict — "
+            "bash syntax \\${arr[$i]} or <<EOF inside Python string. "
+            "Write data with np.savetxt() in Python, then use f-string with "
+            "{python_var} for Python values and ${{bash_var}} for bash variables.')"
+        )
+        # inject the hint at the top of the script so it fails immediately
+        code = hint + "\n" + code
+
+    # Detect incorrect sage import (toolkit is pre-injected)
+    if re.search(r'from\s+sage\s+import|import\s+sage\b', code):
+        code = re.sub(
+            r'^\s*(from\s+sage\s+import.*|import\s+sage\b.*)$',
+            "pass  # SAGE_HINT: toolkit pre-injected — never import from sage",
+            code, flags=re.MULTILINE,
+        )
+
     return code
 
 
@@ -585,6 +847,7 @@ class CodeEngine:
         attempt: int,
         timeout: int,
         on_progress: Optional[Callable],
+        file_contexts: Optional[List[str]] = None,
     ) -> tuple[str, ExecutionResult, str]:
         """
         Ask the LLM debugger to fix the failing code.
@@ -593,10 +856,17 @@ class CodeEngine:
         """
         error_ctx = self._build_error_context(failed_code, exec_res)
 
+        # Include file context so debugger knows exact column names etc.
+        file_ctx_str = ""
+        if file_contexts:
+            file_ctx_str = "\n\n## Data file context (use EXACT column names shown here)\n" + \
+                           "\n\n".join(file_contexts)
+
         debug_messages = [
             {"role": "system", "content": _DEBUG_SYSTEM},
             {"role": "user", "content": (
-                f"## Original user request\n{original_request}\n\n"
+                f"## Original user request\n{original_request}"
+                f"{file_ctx_str}\n\n"
                 f"## Failing code\n```python\n{failed_code}\n```\n\n"
                 f"## Error output\n{error_ctx}\n\n"
                 "Fix the code. Output [DIAGNOSIS] then the corrected ```python``` block."
@@ -707,7 +977,11 @@ class CodeEngine:
         self._history.append({"role": "user", "content": msg_content})
 
         # Inject relevant skill docs into the system prompt for this turn
-        skill_ctx = _build_skill_context(user_request, max_chars=5000, top_k=2)
+        # Bias skill retrieval: prefer cartopy docs for non-GMT map requests.
+        # Appending "cartopy matplotlib" boosts cartopy_plotting score in keyword search.
+        _gmt_explicit = bool(re.search(r'\bgmt\b', user_request, re.I))
+        _skill_query = user_request if _gmt_explicit else (user_request + " cartopy matplotlib")
+        skill_ctx = _build_skill_context(_skill_query, max_chars=8000, top_k=2)
         system_content = _CODEGEN_SYSTEM
         if skill_ctx:
             system_content += "\n\n## Relevant skill docs\n" + skill_ctx
@@ -773,6 +1047,7 @@ class CodeEngine:
                 attempt=attempt,
                 timeout=timeout,
                 on_progress=on_progress,
+                file_contexts=file_contexts,
             )
 
             # Record diagnosis in the trace
@@ -797,10 +1072,29 @@ class CodeEngine:
                 self._emit(on_progress, "debugging", attempt,
                            f"Attempt {attempt} still failing, retrying…")
 
-        # ── 5. Update conversation history (add final code) ───────────────────
+        # ── 5. Update conversation history (code + execution result) ────────────
+        final_success = self._execution_success(exec_res)
+        result_summary = "Execution " + ("succeeded." if final_success else "failed.")
+        if exec_res and exec_res.figures:
+            result_summary += "\nGenerated figures: " + str(
+                [Path(f).name for f in exec_res.figures])
+        if exec_res and exec_res.output_files:
+            result_summary += "\nOutput files: " + str(
+                [Path(f).name for f in exec_res.output_files])
+        if exec_res and exec_res.stdout.strip():
+            clean_out = "\n".join(
+                l for l in exec_res.stdout.splitlines()
+                if not l.startswith('[FIGURE]') and not l.startswith('[GMT_SCRIPT]')
+            ).strip()
+            if clean_out:
+                result_summary += f"\nOutput (truncated):\n{clean_out[:400]}"
+        if exec_res and not final_success:
+            err = (exec_res.stderr or exec_res.error or "").strip()
+            if err:
+                result_summary += f"\nError:\n{err[:300]}"
         self._history.append({
             "role": "assistant",
-            "content": f"```python\n{code}\n```"
+            "content": f"```python\n{code}\n```\n\n[Result] {result_summary}"
         })
         if exec_res:
             self._last_exec_dir = exec_res.exec_dir

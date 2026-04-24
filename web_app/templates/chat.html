@@ -383,6 +383,8 @@ let chatHistory    = [];    // [{role,content}] for LLM context
 let kbHasDocs      = false;
 let lastCodeStdout = '';    // 上一次 sendCode 的 stdout，供下一轮绘图注入路径
 let lastDataPath   = '';    // 用户消息中提取到的最近一次数据目录/文件路径
+let lastIntentWasCode  = false; // 上一轮是否执行了代码，用于识别"改进/调整"等后续指令
+let lastIntentWasPaper = false; // 上一轮是否在解读论文，用于识别"复现/实现"等后续指令
 
 const chatMessages    = document.getElementById('chatMessages');
 const typingIndicator = document.getElementById('typingIndicator');
@@ -630,12 +632,20 @@ function hideTyping() { typingIndicator.classList.remove('show'); }
 async function classifyIntent(text) {
   const t = text.trim();
   const endsQ    = /[?？]\s*$/.test(t);
-  const hasPath  = /(?:^|\s)[/~][\w./\-]{4,}/.test(t);
+  const hasPath  = /(?:^|[\s\u4e00-\u9fff，。：、])[/~][\w./\-]{4,}/.test(t);
   const actionRe = /帮我|请帮|帮忙|执行|运行|处理一下|做一下|跑一下|跑下|计算一下|绘制一下|画一下|下载一下/;
   const questionStartRe = /^(如何|怎么|怎样|什么是|什么叫|为什么|为何|哪种|哪些|请解释|能解释|介绍|介绍一下|讲一下|讲讲|请问|有没有什么|有何区别|原理|有什么区别|what is|what are|how to|how does|why |explain|tell me about)/i;
 
   // 快速路径 A：有绝对路径 且 无问号 → code
   if (hasPath && !endsQ) return 'code';
+
+  // 快速路径 A2：上轮是代码，且含"改进/调整"等关键词 → 直接路由 code（不用问 LLM）
+  const improvementRe = /^(改|修改|调整|改成|改为|换成|换个|改一下|调大|调小|放大|缩小|加上|加入|加个|删掉|删除|去掉|优化|美化|换颜色|标注|标记|重新|再画|再试|再来|继续|在此基础上|基于上面|在上面|在刚才)/;
+  if (lastIntentWasCode && improvementRe.test(t) && !endsQ) return 'code';
+
+  // 快速路径 A3：有文献上下文，且要求复现/实现 → chain（先 RAG 提取方法，再 Code 生成）
+  const reproducingRe = /复现|实现一下|用.{0,5}实现|帮我写|帮我实现|编程实现|代码实现|写代码|写个程序|写出来|用Python|用代码|reproduce|implement|code it|write.*code/i;
+  if ((sessionDocs.length > 0 || lastIntentWasPaper) && reproducingRe.test(t) && !endsQ) return 'chain';
 
   // 快速路径 B：典型问句开头 且 无操作动词 → qa（不调 LLM，直接返回）
   if (questionStartRe.test(t) && !actionRe.test(t)) return 'qa';
@@ -673,19 +683,29 @@ async function sendMessage() {
   chatHistory.push({role:'user', content:text});
   input.value = '';
   autoResize(input);
+  // 清除上一轮的"继续改进"提示卡
+  document.querySelectorAll('.improve-hint-row').forEach(el => el.remove());
   showTyping(T('typing_routing'));  // 正在分析意图...
 
   try {
     // 用 LLM 判断意图（code / qa / chat）
     const intent = await classifyIntent(text);
 
-    if (intent === 'code') {
+    if (intent === 'chain') {
+      // ── 串联模式：论文解读 → 编程 Agent ──────────────────────────────
+      await sendChainRagCode(text);
+    } else if (intent === 'code') {
+      lastIntentWasPaper = false;
       showTyping(T('typing_code'));  // 正在生成代码...
       await sendCode(text);                              // 生成并执行技能代码
+      // lastIntentWasCode is set inside sendCode on success
     } else if (intent === 'qa' || sessionDocs.length > 0 || kbHasDocs) {
+      lastIntentWasCode = false;     // 切换到问答模式，清除改进标记
       showTyping(T('typing_rag'));  // 正在检索知识...
       await sendRag(text);                               // 知识问答 + RAG 检索
     } else {
+      lastIntentWasCode  = false;    // 切换到普通对话，清除改进标记
+      lastIntentWasPaper = false;
       showTyping(T('typing_chat'));  // 正在对话中...
       await sendNormal(text);                            // 普通对话
     }
@@ -695,8 +715,58 @@ async function sendMessage() {
   }
 }
 
+// ── Polling helper for async code jobs ────────────────────────────────────
+async function pollCodeJob(jobId) {
+  // Progress message labels (cycling through them looks alive)
+  const codeLabel = T('typing_code');
+  const progressLabels = {
+    analyzing:  codeLabel + ' — ' + (currentLang==='zh' ? '分析文件…' : 'Analyzing files…'),
+    planning:   codeLabel + ' — ' + (currentLang==='zh' ? '规划步骤…' : 'Planning…'),
+    generating: codeLabel + ' — ' + (currentLang==='zh' ? '生成代码…' : 'Generating…'),
+    executing:  codeLabel + ' — ' + (currentLang==='zh' ? '执行中…'   : 'Executing…'),
+    debugging:  codeLabel + ' — ' + (currentLang==='zh' ? '调试修复…' : 'Debugging…'),
+    verifying:  codeLabel + ' — ' + (currentLang==='zh' ? '验证结果…' : 'Verifying…'),
+    done:       codeLabel + ' — ' + (currentLang==='zh' ? '完成'       : 'Done'),
+  };
+
+  let lastShown = '';
+  const POLL_MS = 1000;
+
+  while (true) {
+    await new Promise(res => setTimeout(res, POLL_MS));
+    let poll;
+    try {
+      const pr = await fetch(`/api/chat/code/poll/${jobId}`);
+      poll = await pr.json();
+    } catch(e) {
+      // Network hiccup — keep retrying
+      continue;
+    }
+
+    // Update typing indicator with latest progress message
+    const progList = poll.progress || [];
+    if (progList.length > 0) {
+      const latest = progList[progList.length - 1];
+      const label = progressLabels[latest] || (T('typing_code') + ' (' + latest + ')');
+      if (label !== lastShown) {
+        showTyping(label);
+        lastShown = label;
+      }
+    }
+
+    if (poll.status === 'done') {
+      return poll.result || {ok: false, error: 'No result returned'};
+    }
+    if (poll.status === 'error') {
+      return {ok: false, error: poll.error || 'Job failed'};
+    }
+    // status === 'running' → keep polling
+  }
+}
+
 // ── CodeEngine 技能执行 ────────────────────────────────────────────────────
-async function sendCode(text) {
+// phase2Badge: 若为 true，在结果气泡顶部显示"步骤 2 — 代码实现"标签（链式调用时使用）
+async function sendCode(text, phase2Badge = false) {
   // ── 从当前消息或历史中提取数据路径 ────────────────────────────────────
   // 1. 从用户当前消息提取路径（如 "看下目录/data/seismic/waveform"）
   const pathInMsg = text.match(/([~\/][\w.\-/]{4,})/);
@@ -709,12 +779,31 @@ async function sendCode(text) {
     enrichedText += `\n（数据目录：${lastDataPath}，请直接用 read_stream_from_dir 读取并绘图，不要列目录，不要使用临时目录）`;
   }
 
-  const r = await fetch('/api/chat/code', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({message: enrichedText, session_id: SESSION_ID}),
-  });
-  const d = await r.json();
+  // ── Async job: POST → get job_id → poll until done ────────────────────
+  let startData;
+  try {
+    const r = await fetch('/api/chat/code', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({message: enrichedText, session_id: SESSION_ID}),
+    });
+    startData = await r.json();
+  } catch(e) {
+    hideTyping();
+    addMsg('assistant', `✗ ${T('skill_label')} error: ${e.message}`);
+    return;
+  }
+
+  if (!startData.ok) {
+    hideTyping();
+    addMsg('assistant', `✗ ${T('skill_label')} error: ${startData.error}`);
+    return;
+  }
+
+  // Poll the job until it's done
+  const jobId = startData.job_id;
+  const d = await pollCodeJob(jobId);
+
   hideTyping();
 
   if (!d.ok) {
@@ -732,6 +821,14 @@ async function sendCode(text) {
   const bubble = document.createElement('div');
   bubble.className = 'bubble';
   bubble.style.maxWidth = '82%';
+
+  // -1. Chain phase badge（串联调用时显示"步骤 2 — 代码实现"）
+  if (phase2Badge) {
+    const badgeEl = document.createElement('div');
+    badgeEl.style.cssText = 'display:inline-block;font-size:.72rem;padding:.08rem .5rem;background:#e8f5e9;border:1px solid #a5d6a7;border-radius:10px;color:#2e7d32;margin-bottom:.5rem;';
+    badgeEl.textContent = currentLang === 'zh' ? '⚙ 步骤 2 — 代码实现' : '⚙ Step 2 — Code Implementation';
+    bubble.appendChild(badgeEl);
+  }
 
   // 0. Plan banner (shown above everything else)
   if (d.plan && d.plan.length > 0) {
@@ -941,6 +1038,44 @@ async function sendCode(text) {
     (d.success ? '执行成功' : '执行失败') +
     (cleanOut ? '\n输出:\n' + cleanOut.slice(0, 300) : '');
   chatHistory.push({role:'assistant', content: summary});
+
+  // 标记此轮为代码模式，以便后续"改进/调整"指令自动路由到 code
+  lastIntentWasCode = true;
+
+  // 执行成功后，在气泡下方显示"继续改进"提示卡
+  if (d.success) {
+    const hintWrap = document.createElement('div');
+    hintWrap.className = 'msg msg-assistant improve-hint-row';
+    hintWrap.style.cssText = 'margin-top:-.4rem;margin-bottom:.75rem;';
+
+    const hintCard = document.createElement('div');
+    hintCard.style.cssText = 'display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;padding:.35rem .65rem;background:#f0f4ff;border:1px solid #c5cae9;border-radius:10px;font-size:.78rem;color:#3949ab;max-width:82%;';
+
+    const hintLabel = document.createElement('span');
+    hintLabel.style.cssText = 'opacity:.75;white-space:nowrap;';
+    hintLabel.textContent = currentLang === 'zh' ? '💡 继续改进：' : '💡 Refine:';
+    hintCard.appendChild(hintLabel);
+
+    const suggestions = currentLang === 'zh'
+      ? ['换个配色', '加上标题', '放大字体', '加网格线', '换底图分辨率']
+      : ['Change colors', 'Add a title', 'Larger font', 'Add grid lines', 'Higher resolution'];
+
+    suggestions.forEach(s => {
+      const chip = document.createElement('button');
+      chip.style.cssText = 'border:1px solid #9fa8da;background:#fff;color:#3949ab;border-radius:12px;padding:.1rem .6rem;font-size:.76rem;cursor:pointer;white-space:nowrap;';
+      chip.textContent = s;
+      chip.onclick = () => {
+        document.getElementById('userInput').value = s;
+        document.getElementById('userInput').focus();
+        hintWrap.remove();
+      };
+      hintCard.appendChild(chip);
+    });
+
+    hintWrap.appendChild(hintCard);
+    chatMessages.appendChild(hintWrap);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+  }
 }
 
 async function sendRag(text) {
@@ -967,6 +1102,121 @@ async function sendRag(text) {
   const sources = d.sources  || [];
   addMsg('assistant', answer, sources);
   chatHistory.push({role:'assistant', content:answer});
+
+  // 论文解读模式：标记状态，并显示"复现方法"提示卡
+  if (isPaperMode) {
+    lastIntentWasPaper = true;
+    lastIntentWasCode  = false;
+
+    const hintWrap = document.createElement('div');
+    hintWrap.className = 'msg msg-assistant improve-hint-row';
+    hintWrap.style.cssText = 'margin-top:-.4rem;margin-bottom:.75rem;';
+
+    const hintCard = document.createElement('div');
+    hintCard.style.cssText = 'display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;padding:.35rem .65rem;background:#fff8e1;border:1px solid #ffe082;border-radius:10px;font-size:.78rem;color:#e65100;max-width:82%;';
+
+    const hintLabel = document.createElement('span');
+    hintLabel.style.cssText = 'opacity:.75;white-space:nowrap;';
+    hintLabel.textContent = currentLang === 'zh' ? '🔗 串联编程 Agent：' : '🔗 Chain to Code:';
+    hintCard.appendChild(hintLabel);
+
+    const chips = currentLang === 'zh'
+      ? ['帮我复现这个方法', '用Python实现上述算法', '写出完整实现代码', '实现这个流程']
+      : ['Reproduce this method', 'Implement in Python', 'Full implementation', 'Code this workflow'];
+
+    chips.forEach(s => {
+      const chip = document.createElement('button');
+      chip.style.cssText = 'border:1px solid #ffcc02;background:#fff;color:#e65100;border-radius:12px;padding:.1rem .6rem;font-size:.76rem;cursor:pointer;white-space:nowrap;';
+      chip.textContent = s;
+      chip.onclick = () => {
+        document.getElementById('userInput').value = s;
+        document.getElementById('userInput').focus();
+        hintWrap.remove();
+      };
+      hintCard.appendChild(chip);
+    });
+
+    hintWrap.appendChild(hintCard);
+    chatMessages.appendChild(hintWrap);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+  } else {
+    lastIntentWasPaper = false;
+  }
+}
+
+// ── 串联模式：论文解读 → 编程 Agent ────────────────────────────────────────
+async function sendChainRagCode(originalText) {
+  lastIntentWasCode  = false;
+  lastIntentWasPaper = false;
+
+  // ── Phase 1：RAG — 提取论文方法 ─────────────────────────────────────────
+  showTyping(currentLang === 'zh' ? '📄 提取论文方法…' : '📄 Extracting paper methods…');
+
+  let ragAnswer = '';
+  let ragSources = [];
+  try {
+    const r1 = await fetch('/api/chat/rag', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        message:    originalText,
+        session_id: SESSION_ID,
+        mode:       'paper_read',
+        history:    chatHistory.slice(-8),
+        workspace:  wsEnabled ? wsPath : '',
+      }),
+    });
+    const d1 = await r1.json();
+    ragAnswer  = d1.response || '';
+    ragSources = d1.sources  || [];
+  } catch(e) {
+    // RAG 失败不致命，直接用原始文本去 code
+  }
+
+  // 展示论文解读结果（Phase 1 的回复）
+  if (ragAnswer) {
+    hideTyping();
+    const msgDiv = addMsg('assistant', ragAnswer, ragSources);
+    // 在气泡顶部插入阶段标签
+    const badge1 = document.createElement('div');
+    badge1.style.cssText = 'display:inline-block;font-size:.72rem;padding:.08rem .5rem;background:#fff8e1;border:1px solid #ffe082;border-radius:10px;color:#e65100;margin-bottom:.45rem;';
+    badge1.textContent = currentLang === 'zh' ? '📄 步骤 1 — 论文方法解读' : '📄 Step 1 — Paper Analysis';
+    const bbl = msgDiv.querySelector('.bubble');
+    if (bbl) bbl.prepend(badge1);
+    chatHistory.push({role:'assistant', content: ragAnswer});
+  }
+
+  // ── 连接指示器 ────────────────────────────────────────────────────────────
+  const connectorRow = document.createElement('div');
+  connectorRow.className = 'msg msg-assistant';
+  connectorRow.style.cssText = 'margin-bottom:.4rem;';
+  const connectorEl = document.createElement('div');
+  connectorEl.style.cssText = 'font-size:.75rem;color:#888;padding:.2rem .5rem;display:flex;align-items:center;gap:.35rem;';
+  connectorEl.innerHTML = `<span style="display:inline-block;width:1px;height:16px;background:#ddd;margin:0 2px"></span>⚙ ${currentLang==='zh' ? '将方法传递给编程 Agent…' : 'Passing methods to Code Agent…'}`;
+  connectorRow.appendChild(connectorEl);
+  chatMessages.appendChild(connectorRow);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+
+  // ── Phase 2：Code — 生成实现代码 ─────────────────────────────────────────
+  showTyping(currentLang === 'zh' ? '⚙ 生成复现代码…' : '⚙ Generating implementation…');
+
+  // 构造富含论文方法上下文的 code prompt
+  let enrichedPrompt;
+  if (ragAnswer) {
+    enrichedPrompt =
+      `请根据以下论文方法的解读，用 Python 实现完整代码。\n\n` +
+      `【论文方法解读】\n${ragAnswer.slice(0, 2000)}\n\n` +
+      `【用户需求】${originalText}`;
+  } else {
+    enrichedPrompt = originalText;
+  }
+
+  // 在 code 气泡上添加 Phase 2 标签（通过 enrichedPrompt 中的 hint 传递）
+  // 将阶段信息作为注释注入，让 code_engine 的历史看得到上下文
+  await sendCode(enrichedPrompt, /*phase2Badge=*/true);
+
+  // 完成后移除连接器
+  connectorRow.remove();
 }
 
 async function sendNormal(text) {
@@ -1018,8 +1268,10 @@ function clearChat() {
     <p class="text-muted">对话已清空，有什么可以帮您？</p>
   </div>`;
   contextBar.style.display = 'none';
-  lastCodeStdout = '';   // 清空路径缓存
-  lastDataPath   = '';   // 清空数据目录缓存
+  lastCodeStdout     = '';    // 清空路径缓存
+  lastDataPath       = '';    // 清空数据目录缓存
+  lastIntentWasCode  = false; // 清空改进模式标记
+  lastIntentWasPaper = false; // 清空论文串联模式标记
   // 同步重置 CodeEngine 历史，避免旧路径/变量污染新对话
   fetch('/api/chat/code/reset', {
     method: 'POST',

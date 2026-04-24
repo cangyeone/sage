@@ -1,7 +1,7 @@
 ---
 name: gmt_plotting
 category: visualization
-keywords: GMT, map, seismicity, epicenter distribution, station distribution, fault, topography, focal mechanism, coastline, contour, cross-section, travel time, earthquake catalog, basemap, coast, pscoast, meca, coupe, grdimage, gmt begin, gmt end, run_gmt, 地图, 震中分布, 台站分布, 地形, 震源机制, 海岸线
+keywords: GMT, map, seismicity, epicenter distribution, station distribution, fault, topography, terrain, terrain background, 地形底图, focal mechanism, coastline, contour, cross-section, travel time, earthquake catalog, basemap, coast, pscoast, meca, coupe, grdimage, gmt begin, gmt end, run_gmt, 地图, 震中分布, 台站分布, 地形, 地形底图, 震源机制, 海岸线
 ---
 
 # GMT Map Plotting
@@ -10,9 +10,11 @@ keywords: GMT, map, seismicity, epicenter distribution, station distribution, fa
 
 Use GMT (Generic Mapping Tools) to create professional seismology maps: epicenter distribution maps, station location maps, topographic maps, focal mechanism beachballs, cross-sections, etc.
 
+> If the user explicitly requests `地形底图` or `terrain background`, always include a terrain grid (`gmt grdimage`) before coastlines and plot layers.
+
 ---
 
-## ⚠️ Critical Note
+## ⚠️ Critical Rules
 
 - `run_gmt(script, outname, title)` is pre-injected; **call directly, no import needed**
 - `script` parameter is a **complete GMT6 bash script string** (multi-line string)
@@ -20,6 +22,71 @@ Use GMT (Generic Mapping Tools) to create professional seismology maps: epicente
 - **Write Chinese/non-ASCII titles and labels directly in the script** (e.g., `-BWSne+t"中国地形图"`); `run_gmt` auto-handles CJK characters without conversion needed
 - After execution, automatically generates **PNG image** and **.sh script file**, both downloadable from interface
 - Requires GMT >= 6.0 installed on system
+
+## ⚠️ TOPOGRAPHY RULES — READ FIRST
+
+**ALWAYS add terrain background when plotting geographic maps.**
+The user almost always wants topography. Do NOT skip it.
+
+### Layer order (mandatory):
+1. `gmt grdimage` — terrain background (FIRST, before everything)
+2. `gmt coast` — coastlines / borders on top of terrain (NO `-G` fill when using grdimage)
+3. `gmt plot` / `gmt meca` etc. — data on top
+4. `gmt colorbar` — color scale
+
+### Robust topography snippet (copy-paste this every time):
+```bash
+# --- Download relief grid (try high→low resolution) ---
+# Note: always check the file was actually created (grdcut may exit 0 without output)
+if gmt grdcut @earth_relief_01m -R${R} -Gtopo.grd 2>/dev/null && [ -f topo.grd ]; then
+  echo "01m OK"
+elif gmt grdcut @earth_relief_02m -R${R} -Gtopo.grd 2>/dev/null && [ -f topo.grd ]; then
+  echo "02m OK"
+else
+  gmt grdcut @earth_relief_05m -R${R} -Gtopo.grd
+fi
+
+# --- Verify grid exists before proceeding ---
+if [ ! -f topo.grd ]; then
+  echo "ERROR: topo.grd not created. Check region bounds: R=${R}" >&2
+  exit 1
+fi
+
+# --- ALWAYS build the CPT explicitly — never rely on -Cetopo1 alone ---
+Z_MIN=$(gmt grdinfo topo.grd -C 2>/dev/null | awk '{print $6}')
+Z_MAX=$(gmt grdinfo topo.grd -C 2>/dev/null | awk '{print $7}')
+if [ -z "${Z_MIN}" ] || [ -z "${Z_MAX}" ] || ! printf '%s\n' "${Z_MIN} ${Z_MAX}" | grep -Eq '^-?[0-9]+(\.[0-9]+)?\s+-?[0-9]+(\.[0-9]+)?$'; then
+  echo "ERROR: invalid elevation range (${Z_MIN}, ${Z_MAX})" >&2
+  exit 1
+fi
+gmt makecpt -Cgeo -T${Z_MIN}/${Z_MAX} -Z > topo.cpt
+if [ ! -s topo.cpt ]; then
+  echo "ERROR: topo.cpt empty" >&2
+  exit 1
+fi
+
+# --- Render terrain with hillshading ---
+gmt grdimage topo.grd -J${J} -R${R} -Ctopo.cpt -I+d
+
+# --- Coast on top of terrain (NO -G fill — would hide terrain) ---
+gmt coast -R${R} -J${J} -W0.6p,gray30 -N1/0.8p,gray50 -A500
+
+# --- Elevation colorbar ---
+gmt colorbar -DJBC+w7c/0.35c+o0/0.5c -Ctopo.cpt -Baf+l"Elevation"
+```
+
+### Why explicit makecpt is required:
+- ❌ `-Cetopo1` — GMT looks for built-in CPT; if not found, falls back to **grayscale → land appears solid black**
+- ✅ `gmt makecpt -Cgeo -T${Z_MIN}/${Z_MAX} -Z > topo.cpt` then `-Ctopo.cpt` — always works, correct colors
+- `-Cgeo` is built into every GMT6 installation (land=tan/green/brown, ocean=blue/cyan)
+- Use `gmt grdinfo -C` to get real min/max so the color range exactly fits the data
+
+### Other common mistakes:
+- ❌ `gmt coast -Gtan` / `-Gwhite` / `-G<ANY color>` — SOLID fill completely **hides terrain**. NEVER use -G with grdimage.
+- ❌ `gmt basemap` before `gmt grdimage` — basemap frame gets buried under terrain
+- ❌ Missing `-I+d` on grdimage — flat, washed-out colors without hillshading
+- ❌ Hard-coding `-T-6000/6000` when region is all land — white/grey scale, looks wrong
+- ❌ `gmt coast -Slightblue` alone without grdimage — ocean will be colored but land has no terrain
 
 ---
 
@@ -232,6 +299,127 @@ Negative height flips the Y-axis (depth increasing downward).
 
 ---
 
+## Complete Working Example: Topographic Basemap
+
+**Use this template directly.** It handles all common pitfalls: terrain download, CPT creation, hillshading, coastlines, and colorbar.
+
+```bash
+#!/usr/bin/env bash
+
+# ============================================================================
+# Complete Topographic Basemap Script
+# Region: Western China (95–110°E, 20–35°N)
+# ============================================================================
+
+# Map settings
+region=95/110/20/35
+projection=M15c
+
+    # --- Step 1: Download terrain grid with fallback resolution ---
+    if gmt grdcut @earth_relief_01m -R${region} -Gtopo.grd 2>/dev/null && [ -f topo.grd ]; then
+        echo "✓ Terrain resolution 01m downloaded"
+    elif gmt grdcut @earth_relief_02m -R${region} -Gtopo.grd 2>/dev/null && [ -f topo.grd ]; then
+        echo "✓ Terrain resolution 02m downloaded"
+    else
+        echo "⚠ Using fallback resolution 05m"
+        gmt grdcut @earth_relief_05m -R${region} -Gtopo.grd
+    fi
+
+    # --- Step 2: Verify terrain file exists ---
+    if [ ! -f topo.grd ]; then
+        echo "ERROR: topo.grd not created. Check region: R=${region}" >&2
+        exit 1
+    fi
+
+    # --- Step 3: Extract elevation range and create color palette ---
+    Z_MIN=$(gmt grdinfo topo.grd -C 2>/dev/null | awk '{print $6}')
+    Z_MAX=$(gmt grdinfo topo.grd -C 2>/dev/null | awk '{print $7}')
+    if [ -z "${Z_MIN}" ] || [ -z "${Z_MAX}" ] || ! printf '%s\n' "${Z_MIN} ${Z_MAX}" | grep -Eq '^-?[0-9]+(\.[0-9]+)?\s+-?[0-9]+(\.[0-9]+)?$'; then
+        echo "ERROR: invalid elevation range (${Z_MIN}, ${Z_MAX})" >&2
+        exit 1
+    fi
+    echo "Elevation range: ${Z_MIN} — ${Z_MAX} m"
+
+    gmt makecpt -Cgeo -T${Z_MIN}/${Z_MAX}/100 > topo.cpt
+    if [ ! -s topo.cpt ]; then
+        echo "ERROR: topo.cpt empty" >&2
+        exit 1
+    fi
+
+gmt begin topo_map png
+
+    # --- Step 4: Render terrain with hillshading ---
+    gmt grdimage topo.grd -R${region} -J${projection} \
+        -Ctopo.cpt -I+d
+
+    # --- Step 5: Add coastlines and borders on top of terrain ---
+    # NOTE: NO -G (fill) — it would completely hide the terrain!
+    gmt coast -R${region} -J${projection} \
+        -W0.6p,gray30 \
+        -N1/0.8p,gray50 \
+        -A500
+
+    # --- Step 6: Add title and frame ---
+    gmt basemap -R${region} -J${projection} \
+        -Bxa2f1+l"Longitude (°E)" \
+        -Bya2f1+l"Latitude (°N)" \
+        -BWSen+t"Topographic Basemap"
+
+    # --- Step 7: Add elevation colorbar ---
+    # CRITICAL: -C topo.cpt and -D position must be present
+    gmt colorbar -DJBC+w7c/0.35c+o0/0.5c \
+        -Ctopo.cpt \
+        -Baf+l"Elevation (m)"
+
+    # --- Optional: Add stations/earthquakes as red dots ---
+    # gmt plot stations.txt -Sc0.15c -Gred -W0.3p,black
+    # gmt plot earthquakes.txt -Sc0.08c -Gred -W0.1p,darkred
+
+gmt end show
+```
+
+### Key Features
+
+| Feature | How It Works |
+|---------|-------------|
+| **Fallback resolution** | Tries 01m → 02m → 05m to ensure download succeeds |
+| **Validation** | Checks `topo.grd` exists and elevation range is valid before continuing |
+| **Explicit CPT** | Uses `gmt makecpt -Cgeo -T${Z_MIN}/${Z_MAX}` instead of relying on built-in colormap names |
+| **Hillshading** | `-I+d` adds relief shading for 3D effect |
+| **No terrain override** | `gmt coast` has NO `-G` fill; coastlines draw cleanly over terrain |
+| **Colorbar** | Specifies `-D` position and `-C topo.cpt` explicitly |
+| **Frame** | `gmt basemap` adds axes, ticks, labels, and title **after** terrain is rendered |
+
+### Common Customizations
+
+**Different region:**
+```bash
+region=100/115/25/40    # Japan & nearby
+region=70/100/10/30     # India & Himalayas
+```
+
+**Different projection:**
+```bash
+projection=M20c         # Wider map
+projection=L100/25/20/30/12c    # Lambert Conic (better for latitude range)
+```
+
+**Add data points (stations, earthquakes):**
+```bash
+# Before "gmt end show", add:
+gmt plot stations.txt -Sc0.2c -Gblue -W0.3p,black
+gmt plot earthquakes.txt -Sc0.08c -Gred -W0.1p,darkred
+```
+
+**Different color scheme:**
+```bash
+gmt makecpt -Cturbo -T${Z_MIN}/${Z_MAX} -Z > topo.cpt     # Turbo (viridis-like)
+gmt makecpt -Cbilbao -T${Z_MIN}/${Z_MAX} -Z > topo.cpt    # Bilbao (blue→red)
+gmt makecpt -Chot -T${Z_MIN}/${Z_MAX} -Z > topo.cpt       # Hot (white→red)
+```
+
+---
+
 ## Minimal Working Example
 
 ```bash
@@ -323,30 +511,91 @@ If you want, I can extend this into a **full GMT seismic plotting skill set** (b
 
 ## Example Collection
 
-### 1. Epicenter Distribution Map (Most Common)
+### 0. Plot Points from CSV with Non-Standard Column Names (e.g. lon1/lat1)
+
+When your CSV has coordinate columns named `lon1`, `lat1` (not `lon`, `lat`), extract
+them first in Python, write a temp GMT-format file, then call `run_gmt()`.
 
 ```python
-gmt_script = """
+import pandas as pd, numpy as np, os
+
+# 1. Load CSV — use EXACT column names from FILE CONTEXT
+df = pd.read_csv("/path/to/data.csv")
+print("columns:", df.columns.tolist()); print(df.head(3))
+
+lon_col = 'lon1'   # ← exact name from FILE CONTEXT (prefer lon1 over lon2)
+lat_col = 'lat1'   # ← exact name from FILE CONTEXT (prefer lat1 over lat2)
+lon = df[lon_col].values
+lat = df[lat_col].values
+
+# ⚠️ Validate BEFORE calling GMT — wrong column causes region error
+assert -180 <= lon.min() and lon.max() <= 180, \
+    f"lon out of range {lon.min():.2f}~{lon.max():.2f} — column '{lon_col}' is not longitude"
+assert  -90 <= lat.min() and lat.max() <=  90, \
+    f"lat out of range {lat.min():.2f}~{lat.max():.2f} — column '{lat_col}' is not latitude!"
+print(f"lon: {lon.min():.4f}~{lon.max():.4f}  lat: {lat.min():.4f}~{lat.max():.4f}")
+
+# 2. Write data file in Python (NEVER use bash loops in f-string — causes SyntaxError)
+pts_file = os.path.join(os.environ.get('SAGE_OUTDIR', '/tmp'), 'points.txt')
+np.savetxt(pts_file, np.column_stack([lon, lat]), fmt='%.6f')
+
+# 3. Region as Python string (substituted directly into f-string)
+R = f"{lon.min()-1:.2f}/{lon.max()+1:.2f}/{lat.min()-1:.2f}/{lat.max()+1:.2f}"
+J = "M15c"
+print(f"Region: {R}")
+
+# 4. GMT f-string: Python vars use {R}, bash vars use ${{Z_MIN}}, awk uses {{print $6}}
+#    Skip @earth_relief_01m — use 02m→05m to avoid download timeout
+script = f"""
+gmt begin location_map PNG
+  if gmt grdcut @earth_relief_02m -R{R} -Gtopo.grd 2>/dev/null && [ -f topo.grd ]; then
+    echo "02m OK"
+  elif gmt grdcut @earth_relief_05m -R{R} -Gtopo.grd 2>/dev/null && [ -f topo.grd ]; then
+    echo "05m OK"
+  else
+    echo "Terrain download failed" >&2; exit 1
+  fi
+  Z_MIN=$(gmt grdinfo topo.grd -C | awk '{{print $6}}')
+  Z_MAX=$(gmt grdinfo topo.grd -C | awk '{{print $7}}')
+  gmt makecpt -Cgeo -T${{Z_MIN}}/${{Z_MAX}} -Z > topo.cpt
+  gmt grdimage topo.grd -J{J} -R{R} -Ctopo.cpt -I+d
+  gmt coast -R{R} -J{J} -W0.6p,gray30 -N1/0.8p,gray50 -A500 -Baf -BWSne+t"Location Map"
+  gmt plot {pts_file} -R{R} -J{J} -Sc0.2c -Gred -W0.3p,black
+  gmt colorbar -DJBC+w7c/0.35c -Ctopo.cpt -Baf+l"Elevation (m)"
+gmt end
+"""
+run_gmt(script, outname="location_map", title="Location map from CSV")
+```
+
+---
+
+### 1. Epicenter Distribution Map (Most Common) — with topography
+
+```python
+R = "70/140/15/55"
+J = "M15c"
+
+gmt_script = f"""
 gmt begin seismicity PNG
-  # Base map: China and surrounding regions
-  gmt basemap -R70/140/15/55 -JM15c -Baf -BWSne+t"Seismicity Map"
 
-  # Coastlines + national boundaries
-  gmt coast -Gtan -Slightblue -W0.5p,gray40 -N1/0.8p,gray60
+  # ── Topography first ────────────────────────────────────────────────────
+  if gmt grdcut @earth_relief_02m -R{R} -Gtopo.grd 2>/dev/null; then
+    echo "02m OK"
+  else
+    gmt grdcut @earth_relief_05m -R{R} -Gtopo.grd
+  fi
+  Z_MIN=$(gmt grdinfo topo.grd -C | awk '{{print $6}}')
+  Z_MAX=$(gmt grdinfo topo.grd -C | awk '{{print $7}}')
+  gmt makecpt -Cgeo -T${{Z_MIN}}/${{Z_MAX}} -Z > topo.cpt
+  gmt grdimage topo.grd -J{J} -R{R} -Ctopo.cpt -I+d
 
-  # Read earthquake catalog from CSV and plot epicenters (lon, lat, depth, mag)
-  # CSV format: lon lat depth mag
-  gmt plot catalog.csv -i0,1 -Sc0.2c -Cjet -W0.3p,black -t30
+  # ── Coast on top (no -G — would hide terrain) ───────────────────────────
+  gmt coast -R{R} -J{J} -W0.5p,gray40 -N1/0.8p,gray60 -Slightblue@60 \\
+      -Baf -BWSne+t"Seismicity Map"
 
-  # Legend
-  gmt legend -DjBL+w4c+o0.2c -F+g255/255/255@30 << 'EOF'
-G 0.1c
-H 9p,Helvetica-Bold Epicenter Distribution
-D 0.1c 1p
-S 0.2c c 0.3c red 0.5p,black 0.4c M<=4
-S 0.2c c 0.4c orange 0.5p,black 0.4c 4<M<=5
-S 0.2c c 0.5c blue 0.5p,black 0.4c M>5
-EOF
+  # ── Plot epicenters ─────────────────────────────────────────────────────
+  # CSV format: lon lat [depth [mag]]
+  # gmt plot catalog.csv -i0,1 -Sc0.2c -Gred -W0.3p,black -t30
 
 gmt end
 """
@@ -402,22 +651,37 @@ run_gmt(gmt_script, outname="focal_map", title="Focal mechanism map")
 
 ---
 
-### 4. Topographic Map (ETOPO / SRTM)
+### 4. Topographic Map (ETOPO / SRTM) — Robust Version
 
 ```python
-gmt_script = """
+R = "100/115/25/40"
+J = "M14c"
+
+gmt_script = f"""
 gmt begin topo_map PNG
-  # Download and use ETOPO topographic data (requires internet)
-  gmt grdcut @earth_relief_01m -R100/115/25/40 -Gtopo.grd
 
-  # Topography rendering
-  gmt grdimage topo.grd -JM14c -Cetopo1 -I+d
+  # --- Download relief (fallback resolutions) ---
+  if gmt grdcut @earth_relief_01m -R{R} -Gtopo.grd 2>/dev/null; then
+    echo "01m OK"
+  elif gmt grdcut @earth_relief_02m -R{R} -Gtopo.grd 2>/dev/null; then
+    echo "02m OK"
+  else
+    gmt grdcut @earth_relief_05m -R{R} -Gtopo.grd
+  fi
 
-  # Overlay coastlines and boundaries
-  gmt coast -W0.5p,gray40 -N1/0.8p,gray60 -Baf -BWSne+t"Topography"
+  # REQUIRED: build CPT from actual data range (avoids black-terrain bug)
+  Z_MIN=$(gmt grdinfo topo.grd -C | awk '{{print $6}}')
+  Z_MAX=$(gmt grdinfo topo.grd -C | awk '{{print $7}}')
+  gmt makecpt -Cgeo -T${{Z_MIN}}/${{Z_MAX}} -Z > topo.cpt
 
-  # Color bar
-  gmt colorbar -DJBC+w8c/0.4c+e -Baf+l"Elevation (m)"
+  # Render terrain with hillshading
+  gmt grdimage topo.grd -J{J} -R{R} -Ctopo.cpt -I+d
+
+  # Coastlines + borders (NO -G fill)
+  gmt coast -R{R} -J{J} -W0.6p,gray30 -N1/0.8p,gray50 -A500 \\
+      -Bxaf+l"Longitude" -Byaf+l"Latitude" -BWSne+t"Topographic Map"
+
+  gmt colorbar -DJBC+w8c/0.4c+e -Ctopo.cpt -Baf+l"Elevation (m)"
 
 gmt end
 """
@@ -488,108 +752,152 @@ print("Earthquake count: " + str(sum(1 for _ in open(catalog_file)) - 1))
 
 ---
 
-## Complete Chained Example: Read CSV Data and Plot Locations with GMT
+## Complete Chained Example: Read CSV Data and Plot Locations with GMT + Topography
+
+This is the **canonical template** for any "read CSV → plot locations on map" request.
+Always follow this pattern when the user provides a data file with lon/lat columns.
 
 ```python
 import pandas as pd
-import os
+import numpy as np
+import os, tempfile
 
-# Read CSV data file
-data_file = "/Users/yuziye/Documents/GitHub/sage/data/seismic/waveform/data.csv"
+# --- 1. Load data and inspect ---
+data_file = "/path/to/your/data.csv"   # replace with actual path
 df = pd.read_csv(data_file)
+print("Columns:", list(df.columns))
+print("Shape:", df.shape)
 
-# Extract unique station locations (lon1,lat1 and lon2,lat2 pairs)
-stations = []
-for _, row in df.iterrows():
-    stations.append((row['lon1'], row['lat1']))
-    stations.append((row['lon2'], row['lat2']))
+# --- 2. Auto-detect lon/lat columns ---
+lon_col = next((c for c in df.columns if 'lon' in c.lower()), df.columns[0])
+lat_col = next((c for c in df.columns if 'lat' in c.lower()), df.columns[1])
+print(f"Using lon={lon_col}, lat={lat_col}")
 
-# Remove duplicates
-unique_stations = list(set(stations))
+lons = pd.concat([df[lon_col]] + ([df['lon2']] if 'lon2' in df.columns else [])).dropna()
+lats = pd.concat([df[lat_col]] + ([df['lat2']] if 'lat2' in df.columns else [])).dropna()
 
-# Create temporary file for GMT plotting
-temp_file = "/tmp/stations.txt"
-with open(temp_file, 'w') as f:
-    for lon, lat in unique_stations:
-        f.write(f"{lon} {lat}\n")
+# --- 3. Compute map region (with 5% padding) ---
+pad = 0.05
+lon_min = lons.min(); lon_max = lons.max()
+lat_min = lats.min(); lat_max = lats.max()
+dlon = max(lon_max - lon_min, 1.0); dlat = max(lat_max - lat_min, 1.0)
+R = f"{lon_min - pad*dlon:.2f}/{lon_max + pad*dlon:.2f}/{lat_min - pad*dlat:.2f}/{lat_max + pad*dlat:.2f}"
+J = "M15c"
+print(f"Region: {R}")
 
-# Create GMT script for station map
-gmt_script = """
-gmt begin station_locations PNG
-  # Set map region to cover China and surrounding areas
-  gmt basemap -R100/125/35/45 -JM15c -Baf -BWSne+t"Station Locations"
+# --- 4. Write point coordinates to temp file ---
+tmp = tempfile.mktemp(suffix='.txt')
+points = pd.DataFrame({'lon': df[lon_col], 'lat': df[lat_col]}).drop_duplicates()
+points.to_csv(tmp, sep=' ', index=False, header=False)
+print(f"Plotting {len(points)} unique locations")
 
-  # Add topography
-  gmt grdcut @earth_relief_01m -R100/125/35/45 -Gtopo.grd
-  gmt grdimage topo.grd -Cetopo1 -I+d
+# --- 5. GMT script with robust topography ---
+gmt_script = f"""
+gmt begin locations_map PNG
 
-  # Coastlines and political boundaries
-  gmt coast -W0.5p,gray40 -N1/0.8p,gray60 -A500
+  # ── Topography (try 01m → 02m → 05m) ──────────────────────────────────
+  if gmt grdcut @earth_relief_01m -R{R} -Gtopo.grd 2>/dev/null; then
+    echo "terrain 01m loaded"
+  elif gmt grdcut @earth_relief_02m -R{R} -Gtopo.grd 2>/dev/null; then
+    echo "terrain 02m loaded"
+  else
+    gmt grdcut @earth_relief_05m -R{R} -Gtopo.grd
+    echo "terrain 05m loaded"
+  fi
 
-  # Plot station locations as red triangles
-  gmt plot """ + temp_file + """ -St0.3c -Gred -W0.5p,black
+  # Render terrain with hillshading
+  Z_MIN=$(gmt grdinfo topo.grd -C | awk '{{print $6}}')
+  Z_MAX=$(gmt grdinfo topo.grd -C | awk '{{print $7}}')
+  gmt makecpt -Cgeo -T${{Z_MIN}}/${{Z_MAX}} -Z > topo.cpt
+  gmt grdimage topo.grd -J{J} -R{R} -Ctopo.cpt -I+d
 
-  # Add station labels (optional)
-  awk '{print $1,$2,NR}' """ + temp_file + """ | gmt text -F+f6p,Helvetica-Bold,white+jBL -Gblack@50 -D0.1c/0.1c
+  # ── Coastlines + borders on top (no -G fill — preserves terrain) ──────
+  gmt coast -R{R} -J{J} \\
+      -W0.6p,gray30 -N1/0.8p,gray50 -A500 \\
+      -Bxaf+l"Longitude (°E)" -Byaf+l"Latitude (°N)" \\
+      -BWSne+t"Seismic Station Locations"
+
+  # ── Plot data points ───────────────────────────────────────────────────
+  gmt plot {tmp} -R{R} -J{J} -St0.35c -Gred -W0.6p,black
+
+  # ── Elevation color bar ────────────────────────────────────────────────
+  gmt colorbar -DJBC+w7c/0.35c+o0/0.5c -Baf+l"Elevation (m)" -F+g255/255/255@40
 
 gmt end
 """
 
-# Execute GMT script
-run_gmt(gmt_script, outname="station_locations", title="Station location map")
-
-# Clean up temporary file
-os.remove(temp_file)
+run_gmt(gmt_script, outname="seismic_locations_topo", title="Seismic locations on topographic map")
+os.remove(tmp)
+print("Map with topography saved.")
 ```
 
 ---
 
-## Complete Chained Example: Ray Path Visualization
+## Complete Chained Example: Ray Path Visualization with Topography
 
 ```python
 import pandas as pd
-import os
+import os, tempfile
 
-# Read CSV data file
-data_file = "/Users/yuziye/Documents/GitHub/sage/data/seismic/waveform/data.csv"
+data_file = "/path/to/your/data.csv"   # replace with actual path
 df = pd.read_csv(data_file)
 
-# Create temporary file for ray paths
-temp_file = "/tmp/ray_paths.txt"
-with open(temp_file, 'w') as f:
-    for _, row in df.iterrows():
-        # Write great circle path points (simplified as straight lines for visualization)
-        f.write(f">{row['ray_id']}\\n")
-        f.write(f"{row['lon1']} {row['lat1']}\\n")
-        f.write(f"{row['lon2']} {row['lat2']}\\n")
+# Auto-detect region from all four endpoint columns
+all_lons = list(df['lon1']) + list(df['lon2'])
+all_lats = list(df['lat1']) + list(df['lat2'])
+pad = 0.5
+R = f"{min(all_lons)-pad:.2f}/{max(all_lons)+pad:.2f}/{min(all_lats)-pad:.2f}/{max(all_lats)+pad:.2f}"
+J = "M15c"
 
-# Create GMT script for ray path visualization
-gmt_script = """
+# Write ray path segments (GMT multi-segment format)
+rays_file = tempfile.mktemp(suffix='_rays.txt')
+pts_file  = tempfile.mktemp(suffix='_pts.txt')
+ray_ids = df['ray_id'].unique()[:500]   # limit to 500 rays for clarity
+
+with open(rays_file, 'w') as fr, open(pts_file, 'w') as fp:
+    seen = set()
+    for rid in ray_ids:
+        sub = df[df['ray_id'] == rid].iloc[0]
+        fr.write(f">\n{sub.lon1} {sub.lat1}\n{sub.lon2} {sub.lat2}\n")
+        for pt in [(sub.lon1, sub.lat1), (sub.lon2, sub.lat2)]:
+            if pt not in seen:
+                fp.write(f"{pt[0]} {pt[1]}\n")
+                seen.add(pt)
+
+gmt_script = f"""
 gmt begin ray_paths PNG
-  # Set map region
-  gmt basemap -R100/125/35/45 -JM15c -Baf -BWSne+t"Ray Paths"
 
-  # Add topography
-  gmt grdcut @earth_relief_01m -R100/125/35/45 -Gtopo.grd
-  gmt grdimage topo.grd -Cetopo1 -I+d
+  # ── Topography ──────────────────────────────────────────────────────────
+  if gmt grdcut @earth_relief_01m -R{R} -Gtopo.grd 2>/dev/null; then
+    echo "01m OK"
+  elif gmt grdcut @earth_relief_02m -R{R} -Gtopo.grd 2>/dev/null; then
+    echo "02m OK"
+  else
+    gmt grdcut @earth_relief_05m -R{R} -Gtopo.grd
+  fi
+  Z_MIN=$(gmt grdinfo topo.grd -C | awk '{{print $6}}')
+  Z_MAX=$(gmt grdinfo topo.grd -C | awk '{{print $7}}')
+  gmt makecpt -Cgeo -T${{Z_MIN}}/${{Z_MAX}} -Z > topo.cpt
+  gmt grdimage topo.grd -J{J} -R{R} -Ctopo.cpt -I+d
 
-  # Coastlines
-  gmt coast -W0.5p,gray40 -N1/0.8p,gray60 -A500
+  # ── Coast + frame ───────────────────────────────────────────────────────
+  gmt coast -R{R} -J{J} -W0.5p,gray30 -N1/0.6p,gray50 -A500 \\
+      -Bxaf+l"Longitude" -Byaf+l"Latitude" -BWSne+t"Ray Paths"
 
-  # Plot ray paths as blue lines
-  gmt plot """ + temp_file + """ -W1p,blue -Gblue@20
+  # ── Ray paths (semi-transparent blue) ──────────────────────────────────
+  gmt plot {rays_file} -R{R} -J{J} -W0.4p,dodgerblue@60
 
-  # Plot station locations
-  awk 'NR>1 && NF==2 {print $1,$2}' """ + temp_file + """ | gmt plot -Sc0.15c -Gred -W0.5p,black
+  # ── Station / source points ─────────────────────────────────────────────
+  gmt plot {pts_file} -R{R} -J{J} -Sc0.12c -Gred -W0.4p,black
+
+  gmt colorbar -DJBC+w7c/0.35c+o0/0.5c -Baf+l"Elevation (m)"
 
 gmt end
 """
 
-# Execute GMT script
-run_gmt(gmt_script, outname="ray_paths", title="Ray path visualization")
-
-# Clean up temporary file
-os.remove(temp_file)
+run_gmt(gmt_script, outname="ray_paths_topo", title="Ray path visualization with topography")
+os.remove(rays_file); os.remove(pts_file)
+print(f"Plotted {len(ray_ids)} ray paths, {len(seen)} unique endpoints")
 ```
 
 ---
@@ -626,7 +934,7 @@ Important:
 
 ````
 
-再把你的绘图模板改成这种更稳的：
+Stable station map template:
 
 ```python
 gmt_script = f"""
@@ -635,22 +943,32 @@ gmt begin station_map PNG
   gmt set MAP_FRAME_TYPE plain
   gmt set FORMAT_GEO_MAP ddd.x
 
-  # Define region and projection explicitly
   REGION="-R{lon_min}/{lon_max}/{lat_min}/{lat_max}"
   PROJ="-JM15c"
 
-  # Topography first
-  gmt grdcut @earth_relief_01m $REGION -Gtopo.grd
-  gmt grdimage topo.grd $REGION $PROJ -Cetopo1 -I+d
+  # Topography with fallback + explicit CPT (avoids black-terrain bug)
+  if gmt grdcut @earth_relief_01m $REGION -Gtopo.grd 2>/dev/null; then
+    echo "01m OK"
+  elif gmt grdcut @earth_relief_02m $REGION -Gtopo.grd 2>/dev/null; then
+    echo "02m OK"
+  else
+    gmt grdcut @earth_relief_05m $REGION -Gtopo.grd
+  fi
+  Z_MIN=$(gmt grdinfo topo.grd -C | awk '{{print $6}}')
+  Z_MAX=$(gmt grdinfo topo.grd -C | awk '{{print $7}}')
+  gmt makecpt -Cgeo -T${{Z_MIN}}/${{Z_MAX}} -Z > topo.cpt
+  gmt grdimage topo.grd $REGION $PROJ -Ctopo.cpt -I+d
 
-  # Coastline and frame
-  gmt coast $REGION $PROJ -W0.5p,gray40 -N1/0.5p,gray60 -A500 \
-      -Bxa2f1+l"Longitude" \
-      -Bya2f1+l"Latitude" \
+  # Coastline and frame (no -G fill)
+  gmt coast $REGION $PROJ -W0.5p,gray40 -N1/0.5p,gray60 -A500 \\
+      -Bxa2f1+l"Longitude" \\
+      -Bya2f1+l"Latitude" \\
       -BWSne+t"Station Map"
 
   # Plot stations
   gmt plot stations.txt $REGION $PROJ -St0.25c -Gred -W0.4p,black
+
+  gmt colorbar -DJBC+w6c/0.3c+o0/0.4c -Ctopo.cpt -Baf+l"Elevation (m)"
 
 gmt end
 """

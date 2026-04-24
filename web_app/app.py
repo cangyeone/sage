@@ -56,6 +56,18 @@ tasks = {}
 # Ollama pull status: { model_name: {status, progress, detail, error} }
 _pull_status: dict = {}
 
+# ── Async code-execution jobs (job_id → state dict) ──────────────────────────
+import uuid as _uuid
+import time as _time
+_code_jobs: dict = {}   # job_id → {status, progress, result, ts}
+
+def _gc_code_jobs():
+    """Discard jobs older than 10 minutes."""
+    cutoff = _time.time() - 600
+    stale = [k for k, v in _code_jobs.items() if v.get('ts', 0) < cutoff]
+    for k in stale:
+        _code_jobs.pop(k, None)
+
 
 def run_task(task_id, command, task_type, cwd=None):
     """Run a seismic processing task in background"""
@@ -986,201 +998,173 @@ def _get_code_engine(session_id: str, llm_cfg: dict):
     return _code_engines[session_id]
 
 
+def _serialize_code_result(result, skill_used: str):
+    """Serialize a CodeRunResult into the JSON payload the frontend expects."""
+    import base64 as _b64
+
+    # ── GMT script map (from stdout markers) ─────────────────────────────────
+    gmt_script_map: dict = {}
+    for line in (result.stdout or '').splitlines():
+        if line.startswith('[GMT_SCRIPT] '):
+            sp = line[len('[GMT_SCRIPT] '):].strip()
+            if os.path.isfile(sp):
+                try:
+                    with open(sp, encoding='utf-8') as sf:
+                        base = Path(sp).stem
+                        gmt_script_map[base] = {'name': Path(sp).name, 'content': sf.read()}
+                except Exception:
+                    pass
+
+    # ── Figures ───────────────────────────────────────────────────────────────
+    figure_paths = list(result.figures) if result.figures else []
+    for out_path in (result.output_files or []):
+        if os.path.splitext(out_path)[1].lower() in ('.png', '.svg', '.pdf') \
+                and out_path not in figure_paths:
+            figure_paths.append(out_path)
+
+    figures = []
+    for fig_path in figure_paths:
+        try:
+            with open(fig_path, 'rb') as f:
+                fig_base = Path(fig_path).stem
+                entry = {'name': Path(fig_path).name,
+                         'data': _b64.b64encode(f.read()).decode('utf-8')}
+                if fig_base in gmt_script_map:
+                    entry['gmt_script'] = gmt_script_map[fig_base]
+                figures.append(entry)
+        except Exception:
+            pass
+
+    # ── Debug trace ───────────────────────────────────────────────────────────
+    debug_trace = [
+        {'attempt': d.attempt, 'diagnosis': d.diagnosis,
+         'success': d.success, 'error': (d.error or '')[-400:]}
+        for d in (result.debug_trace or [])
+    ]
+
+    # ── Downloads (script + output files + figures) ───────────────────────────
+    downloads = []
+    seen = set()
+
+    def _add_download(path, mime):
+        rp = os.path.realpath(path)
+        if rp in seen or not os.path.isfile(rp):
+            return
+        try:
+            with open(rp, 'rb') as _f:
+                downloads.append({'name': Path(rp).name,
+                                  'data': _b64.b64encode(_f.read()).decode('utf-8'),
+                                  'mimetype': mime})
+            seen.add(rp)
+        except Exception:
+            pass
+
+    _MIME = {'.py': 'text/x-python', '.sh': 'text/x-shellscript',
+             '.txt': 'text/plain', '.png': 'image/png',
+             '.svg': 'image/svg+xml', '.pdf': 'application/pdf',
+             '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+             '.csv': 'text/csv', '.dat': 'text/plain'}
+
+    if result.script_path:
+        _add_download(result.script_path, 'text/x-python')
+    for p in (result.output_files or []):
+        _add_download(p, _MIME.get(Path(p).suffix.lower(), 'application/octet-stream'))
+    for p in figure_paths:
+        _add_download(p, _MIME.get(Path(p).suffix.lower(), 'image/png'))
+
+    script_b64 = next((d['data'] for d in downloads if d['name'].endswith('.py')), '')
+
+    return {
+        'ok':          True,
+        'success':     result.success,
+        'response':    result.response,
+        'code':        result.code,
+        'stdout':      result.stdout,
+        'figures':     figures,
+        'skill_used':  skill_used,
+        'attempts':    result.attempts,
+        'debug_trace': debug_trace,
+        'plan':        result.plan,
+        'script_b64':  script_b64,
+        'downloads':   downloads,
+    }
+
+
 @app.route('/api/chat/code', methods=['POST'])
 def chat_code():
     """
-    调用 session 级别的 CodeEngine 执行地震学技能代码。
-    同一 session 内的对话历史（文件路径、变量等）会被保留，
-    支持"绘制上述波形"等跨轮引用。
-
-    请求体：
-      { "message": "...", "session_id": "sess_abc123" }
+    Start an async code-generation job.
+    Returns immediately with {ok, job_id}.
+    Frontend polls /api/chat/code/poll/<job_id> for progress + result.
     """
-    import base64 as _b64
-
-    data      = request.json or {}
-    user_msg  = (data.get('message') or '').strip()
+    data       = request.json or {}
+    user_msg   = (data.get('message') or '').strip()
     session_id = data.get('session_id', 'default')
     if not user_msg:
         return jsonify({'ok': False, 'error': '消息不能为空'}), 400
 
     llm_cfg = _get_llm_config()
     if not llm_cfg.get('api_base'):
-        return jsonify({
-            'ok': True, 'success': False,
-            'response': '未配置 LLM 后端，请在 LLM 设置页面完成配置。',
-            'code': '', 'stdout': '', 'figures': [], 'skill_used': None,
-        })
+        job_id = _uuid.uuid4().hex[:8]
+        _code_jobs[job_id] = {
+            'status': 'done', 'progress': [], 'ts': _time.time(),
+            'result': {'ok': True, 'success': False,
+                       'response': '未配置 LLM 后端，请在 LLM 设置页面完成配置。',
+                       'code': '', 'stdout': '', 'figures': [],
+                       'skill_used': None, 'attempts': 0,
+                       'debug_trace': [], 'plan': [],
+                       'script_b64': '', 'downloads': []},
+        }
+        return jsonify({'ok': True, 'job_id': job_id})
 
-    try:
-        from seismo_skill import search_skills, invalidate_cache
-        invalidate_cache()  # 确保 keyword 更改立即生效
+    _gc_code_jobs()
+    job_id = _uuid.uuid4().hex[:8]
+    _code_jobs[job_id] = {'status': 'running', 'progress': [], 'result': None,
+                          'ts': _time.time()}
 
-        # 查找最相关技能（仅用于界面展示）
+    def _run():
         try:
-            hits = search_skills(user_msg, top_k=1)
-            skill_used = hits[0]['name'] if hits else None
-        except Exception:
-            skill_used = None
-
-        # 获取 session 级别 Engine（保留历史）
-        engine = _get_code_engine(session_id, llm_cfg)
-        result = engine.run(
-            user_msg,
-            timeout=120,
-            max_debug_rounds=4,   # auto-debug up to 4 rounds
-            run_verify=False,     # lightweight — skip verify by default
-        )
-
-        # 图像 base64 编码，同时关联 GMT 脚本
-        # 先从 stdout 中提取 [GMT_SCRIPT] 标记
-        gmt_script_map: dict = {}   # basename_no_ext → {name, content}
-        for line in (result.stdout or '').splitlines():
-            if line.startswith('[GMT_SCRIPT] '):
-                sp = line[len('[GMT_SCRIPT] '):].strip()
-                if os.path.isfile(sp):
-                    try:
-                        with open(sp, encoding='utf-8') as sf:
-                            base = Path(sp).stem   # e.g. "gmt_output"
-                            gmt_script_map[base] = {
-                                'name': Path(sp).name,
-                                'content': sf.read(),
-                            }
-                    except Exception:
-                        pass
-
-        figures = []
-        figure_paths = list(result.figures) if result.figures else []
-        # Also treat any image output files as figures when safe_executor did not label them
-        for out_path in result.output_files:
-            if os.path.splitext(out_path)[1].lower() in ('.png', '.svg', '.pdf') and out_path not in figure_paths:
-                figure_paths.append(out_path)
-
-        for fig_path in figure_paths:
+            from seismo_skill import search_skills, invalidate_cache
+            invalidate_cache()
             try:
-                with open(fig_path, 'rb') as f:
-                    fig_base = Path(fig_path).stem
-                    entry = {
-                        'name': Path(fig_path).name,
-                        'data': _b64.b64encode(f.read()).decode('utf-8'),
-                    }
-                    # 附加对应的 GMT 脚本（如果有）
-                    if fig_base in gmt_script_map:
-                        entry['gmt_script'] = gmt_script_map[fig_base]
-                    figures.append(entry)
+                hits = search_skills(user_msg, top_k=1)
+                skill_used = hits[0]['name'] if hits else None
             except Exception:
-                pass
+                skill_used = None
 
-        # Build compact debug trace for the frontend
-        debug_trace = []
-        for d in result.debug_trace:
-            debug_trace.append({
-                'attempt':   d.attempt,
-                'diagnosis': d.diagnosis,
-                'success':   d.success,
-                'error':     d.error[-400:] if d.error else '',
-            })
+            def _on_progress(p):
+                # Save phase key (e.g. "planning", "generating") — frontend maps to i18n label
+                _code_jobs[job_id]['progress'].append(p.get('phase', p.get('message', '')))
 
-        # Encode the saved script for download
-        downloads = []
-        seen_paths = set()
-        if result.script_path and os.path.isfile(result.script_path):
-            try:
-                with open(result.script_path, 'rb') as _sf:
-                    downloads.append({
-                        'name': Path(result.script_path).name,
-                        'data': _b64.b64encode(_sf.read()).decode('utf-8'),
-                        'mimetype': 'text/x-python',
-                    })
-                    seen_paths.add(os.path.realpath(result.script_path))
-            except Exception:
-                pass
+            engine = _get_code_engine(session_id, llm_cfg)
+            result = engine.run(
+                user_msg,
+                timeout=180,
+                max_debug_rounds=4,
+                run_verify=False,
+                on_progress=_on_progress,
+            )
+            _code_jobs[job_id]['result'] = _serialize_code_result(result, skill_used)
+        except Exception as exc:
+            _code_jobs[job_id]['result'] = {'ok': False, 'error': str(exc)}
+        finally:
+            _code_jobs[job_id]['status'] = 'done'
 
-        # Include other generated files from execution results
-        for out_path in result.output_files:
-            try:
-                real_path = os.path.realpath(out_path)
-                if real_path in seen_paths:
-                    continue
-                if os.path.isfile(real_path):
-                    ext = Path(real_path).suffix.lower()
-                    mimetype = 'text/plain'
-                    if ext == '.py':
-                        mimetype = 'text/x-python'
-                    elif ext == '.sh':
-                        mimetype = 'text/x-shellscript'
-                    elif ext == '.txt':
-                        mimetype = 'text/plain'
-                    elif ext == '.png':
-                        mimetype = 'image/png'
-                    elif ext == '.svg':
-                        mimetype = 'image/svg+xml'
-                    elif ext in ('.jpg', '.jpeg'):
-                        mimetype = 'image/jpeg'
-                    elif ext == '.pdf':
-                        mimetype = 'application/pdf'
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({'ok': True, 'job_id': job_id})
 
-                    with open(real_path, 'rb') as _f:
-                        downloads.append({
-                            'name': Path(real_path).name,
-                            'data': _b64.b64encode(_f.read()).decode('utf-8'),
-                            'mimetype': mimetype,
-                        })
-                        seen_paths.add(real_path)
-            except Exception:
-                pass
 
-        # Also ensure figure output files are available for download when they are not already included.
-        for fig_path in figure_paths:
-            try:
-                real_path = os.path.realpath(fig_path)
-                if real_path in seen_paths:
-                    continue
-                if os.path.isfile(real_path):
-                    ext = Path(real_path).suffix.lower()
-                    mimetype = 'image/png' if ext == '.png' else 'application/octet-stream'
-                    if ext == '.svg':
-                        mimetype = 'image/svg+xml'
-                    elif ext == '.pdf':
-                        mimetype = 'application/pdf'
-                    elif ext in ('.jpg', '.jpeg'):
-                        mimetype = 'image/jpeg'
-
-                    with open(real_path, 'rb') as _f:
-                        downloads.append({
-                            'name': Path(real_path).name,
-                            'data': _b64.b64encode(_f.read()).decode('utf-8'),
-                            'mimetype': mimetype,
-                        })
-                        seen_paths.add(real_path)
-            except Exception:
-                pass
-
-        script_b64 = ''
-        if result.script_path and os.path.isfile(result.script_path):
-            try:
-                with open(result.script_path, 'rb') as _sf:
-                    script_b64 = _b64.b64encode(_sf.read()).decode('utf-8')
-            except Exception:
-                pass
-
-        return jsonify({
-            'ok':          True,
-            'success':     result.success,
-            'response':    result.response,
-            'code':        result.code,
-            'stdout':      result.stdout,
-            'figures':     figures,
-            'skill_used':  skill_used,
-            'attempts':    result.attempts,
-            'debug_trace': debug_trace,
-            'plan':        result.plan,
-            'script_b64':  script_b64,
-            'downloads':   downloads,
-        })
-
-    except Exception as e:
-        return jsonify({'ok': False, 'error': str(e)})
+@app.route('/api/chat/code/poll/<job_id>', methods=['GET'])
+def poll_code_job(job_id):
+    """Poll progress and result for an async code job."""
+    job = _code_jobs.get(job_id)
+    if not job:
+        return jsonify({'error': 'job not found'}), 404
+    return jsonify({
+        'status':   job['status'],          # 'running' | 'done'
+        'progress': job['progress'],        # list of progress message strings
+        'result':   job['result'],          # None while running, payload when done
+    })
 
 
 @app.route('/api/chat/code/reset', methods=['POST'])
@@ -1217,7 +1201,8 @@ def chat_route():
     msg_stripped = message.strip()
 
     # ── 快速路径 1：含绝对路径且无问号 → 直接判 code ──────────────────────
-    has_path  = bool(_re.search(r'(?:^|\s)[/~][\w./\-]{4,}', message))
+    # 路径前可以是：空格、行首、中文字符、标点（读取/Users/... 帮我从/data/...）
+    has_path  = bool(_re.search(r'(?:^|[\s\u4e00-\u9fff，。：、])[/~][\w./\-]{4,}', message))
     ends_q    = bool(_re.search(r'[?？]\s*$', msg_stripped))
     if has_path and not ends_q:
         return jsonify({'ok': True, 'intent': 'code'})
@@ -1290,9 +1275,9 @@ def chat_route():
     except Exception:
         # LLM 不可用时的保守回退：有操作动词→code，否则→qa
         fallback = 'code' if _re.search(ACTION_VERB, message) or _re.search(
-            r'(绘制|画图|画波形|滤波|读取|执行|运行|下载|处理|plot|filter|spectrum|\.sac|\.mseed)',
+            r'(绘制|画图|画波形|滤波|读取|执行|运行|下载|处理|绘图|GMT|plot|filter|spectrum|\.sac|\.mseed|\.csv)',
             message, _re.I
-        ) else 'qa'
+        ) or _re.search(r'(?:^|[\s\u4e00-\u9fff])[/~][\w./\-]{4,}', message) else 'qa'
         return jsonify({'ok': True, 'intent': fallback, 'fallback': True})
 
 
