@@ -110,46 +110,262 @@ gmt colorbar -DJBC+w7c/0.35c+o0/0.5c -Ctopo.cpt -Baf+l"Elevation"
 
 ## Legend / 图例
 
-When the user requests a legend, the skill should generate a dedicated GMT legend block after plot layers and before or after the colorbar.
+Use `gmt legend` to draw a boxed legend after all data layers. Never use `gmt basemap` for legend placement.
 
-- Use `gmt legend` rather than trying to force a legend through `gmt basemap`.
-- Place legend commands after all `gmt plot` / `gmt meca` layers so the legend is drawn on top.
-- Use `-Dj` to anchor placement and `-F` to draw a boxed background.
-- The legend symbol line must match the actual plot style exactly.
+### Quick rule of thumb
 
-### Recommended workflow for station points
+| Want to plot | Legend spec line |
+|---|---|
+| Circle point | `S 0.3c c <fill> <pen> Label` |
+| Triangle (station) | `S 0.3c t <fill> <pen> Label` |
+| Square | `S 0.3c s <fill> <pen> Label` |
+| Line | `S 0.5c - - <pen> Label` |
+| Dashed line | `S 0.5c - - <pen>,- Label` |
+
+### Legend spec file format — all directives
+
+```
+H <fontsize> [<font>] <heading>       ← bold title inside legend box
+D [gap] <pen>                          ← horizontal divider line (gap optional e.g. 0.1c)
+N <ncols>                              ← number of columns for following S lines
+S [dx1] <symbol> <size> <fill> <pen> [dx2] <label>
+G <gap>                                ← extra vertical space (e.g. 0.1c)
+T <text>                               ← plain text line
+L <size> <justification> <text>        ← left/center/right-justified text (L/C/R)
+```
+
+`S` line field widths:
+```
+S  dx1  symbol  size  fill     pen        [dx2]  label
+S  0.3c   c     0.2c   red   0.5p,black         Earthquake
+```
+- `dx1`: horizontal offset of symbol from left edge of box (default 0.2c is fine)
+- symbol letters: `c` circle, `t` triangle, `s` square, `d` diamond, `i` inverted-triangle, `-` line, `f` fault, `v` vector
+- `fill` and `pen` must match the `gmt plot` command exactly; use `-` for "none"
+- `dx2` (optional): gap between symbol and label; omit to use default
+
+### Placement `-D` options
 
 ```bash
-gmt plot stations.txt -Sc0.25c -Gred -W0.5p,black
-cat > legend.txt << EOF
-S 0.25c c red 0.5p,black Seismic station
+-DjBR+w5c+o0.2c/0.2c    # bottom-right, box width 5c, 0.2c offset from edge
+-DjBL+w5c+o0.2c/0.2c    # bottom-left
+-DjTR+w5c+o0.2c/0.2c    # top-right
+-DjBC+w8c+o0/0.5c        # bottom-center (e.g. above the colorbar)
+-DjTL+w5c+o0.2c/0.2c    # top-left
+```
+
+### Box background `-F` options
+
+Always use `-F` on terrain maps so the legend is readable:
+```bash
+-F+p0.8p,black+gwhite          # white background, black border
+-F+p0.8p,gray30+gwhite@20      # semi-transparent white
+-F+p0.5p,gray50+glightgray     # gray background
+```
+
+---
+
+### Example 1 — Station-only legend
+
+```bash
+gmt plot stations.txt -St0.3c -Gred -W0.5p,black
+
+cat > legend.txt << 'EOF'
+H 11 Legend
+D 0.1c 0.5p
+S 0.2c t 0.3c red 0.5p,black 0.3c Seismic station
 EOF
 
-gmt legend legend.txt -DjBR+w4c+o0.3c -F+p0.8p,black+gwhite
+gmt legend legend.txt -DjBR+w4.5c+o0.2c/0.2c -F+p0.8p,black+gwhite
 ```
 
-### Equivalent inline legend definition
+---
+
+### Example 2 — Multi-layer legend: stations + earthquakes + faults
 
 ```bash
-gmt plot stations.txt -Sc0.25c -Gred -W0.5p,black
-printf "S 0.25c c red 0.5p,black Seismic station\n" \
-  | gmt legend -DjBR+w4c+o0.3c -F+p0.8p,black+gwhite
+gmt plot faults.txt    -W1.2p,firebrick
+gmt plot earthquakes.txt -Sc0.2c -Gblue   -W0.3p,black
+gmt plot stations.txt    -St0.3c -Gred    -W0.5p,black
+
+cat > legend.txt << 'EOF'
+H 11 Legend
+D 0.1c 0.5p
+S 0.5c - - - 1.2p,firebrick 0.3c Fault
+S 0.2c c 0.2c blue 0.3p,black 0.3c Earthquake
+S 0.2c t 0.3c red 0.5p,black  0.3c Station
+EOF
+
+gmt legend legend.txt -DjBR+w5.5c+o0.2c/0.2c -F+p0.8p,black+gwhite
 ```
 
-### Why this matters
+---
 
-- The legend entry must use the same symbol and colors as the plot line: if you plot with `-Sc0.25c -Gred -W0.5p,black`, the legend line should use `S 0.25c c red 0.5p,black`.
-- `-F+p...+g...` is important on top of terrain so the legend box remains readable.
-- The legend block should come after the data layer, not before.
+### Example 3 — Magnitude-scaled earthquake legend
 
-If the map also has a colorbar, put the legend either before or after the `gmt colorbar` command, but always after the main plotting commands.
+When earthquake circles are scaled by magnitude (`-Sc` with variable size), use several
+representative rows to communicate the scale:
+
+```bash
+# Variable-size circles: size = mag * 0.08c
+awk '{print $1,$2,$3*0.08"c"}' catalog.txt | gmt plot -Sc -Gblue@40 -W0.3p,gray30
+
+cat > legend.txt << 'EOF'
+H 11 Magnitude
+D 0.1c 0.5p
+S 0.25c c 0.24c blue@40 0.3p,gray30 0.4c M 3
+S 0.25c c 0.40c blue@40 0.3p,gray30 0.4c M 5
+S 0.25c c 0.56c blue@40 0.3p,gray30 0.4c M 7
+EOF
+
+gmt legend legend.txt -DjBR+w3.8c+o0.2c/0.2c -F+p0.8p,black+gwhite
+```
+
+---
+
+### Example 4 — Focal mechanism legend (gmt meca)
+
+`gmt meca` symbols use type letter matching the `-S` flag: `a` = Aki-Richards, `d` = double-couple.
+
+```bash
+gmt meca focal.txt -Sa0.5c -Gred -W0.5p,black
+
+cat > legend.txt << 'EOF'
+H 11 Focal mechanism
+D 0.1c 0.5p
+S 0.3c a 0.5c red 0.5p,black 0.3c Focal mechanism (Mw≥4)
+EOF
+
+gmt legend legend.txt -DjTR+w5c+o0.2c/0.2c -F+p0.8p,black+gwhite
+```
+
+---
+
+### Example 5 — Depth-colored earthquakes with separate legend + colorbar
+
+```bash
+# Color by depth using a CPT
+gmt makecpt -Cjet -T0/100/10 > depth.cpt
+awk '{print $1,$2,$3}' catalog.txt | gmt plot -Sc0.15c -Cdepth.cpt -W0.2p,gray30
+
+# Colorbar for depth
+gmt colorbar -DJBC+w7c/0.35c+o0/0.5c -Cdepth.cpt -Baf+l"Depth (km)"
+
+# Separate legend for symbol type
+cat > legend.txt << 'EOF'
+H 11 Data
+D 0.1c 0.5p
+S 0.2c c 0.15c gray50 0.2p,gray30 0.3c Earthquake (color = depth)
+EOF
+
+gmt legend legend.txt -DjTR+w5c+o0.2c/0.2c -F+p0.8p,black+gwhite
+```
+
+---
+
+### f-string safe legend patterns (Python-generated scripts)
+
+When the GMT script is built inside a Python f-string, use `printf` + pipe or a heredoc
+with `'EOF'` (single-quoted = no variable expansion). Both are safe:
+
+```python
+gmt_script = f"""
+gmt begin mymap PNG
+
+  # ... terrain, coast, plot layers ...
+
+  gmt plot {pts_file} -R{R} -J{J} -Sc0.2c -Gblue -W0.3p,black
+
+  printf 'H 11 Legend\\nD 0.1c 0.5p\\nS 0.2c c 0.2c blue 0.3p,black 0.3c Data point\\n' \\
+    | gmt legend -DjBR+w4.5c+o0.2c/0.2c -F+p0.8p,black+gwhite
+
+gmt end
+"""
+```
+
+Or, using a single-quoted heredoc (no `${{}}` escaping needed):
+```python
+gmt_script = f"""
+gmt begin mymap PNG
+
+  gmt plot {pts_file} -R{R} -J{J} -St0.3c -Gred -W0.5p,black
+
+  cat > legend.txt << 'EOF'
+H 11 Legend
+D 0.1c 0.5p
+S 0.2c t 0.3c red 0.5p,black 0.3c Seismic station
+EOF
+  gmt legend legend.txt -DjBR+w4.5c+o0.2c/0.2c -F+p0.8p,black+gwhite
+
+gmt end
+"""
+```
+
+> **Rule**: inside an f-string, use `'EOF'` (single-quoted) for the legend heredoc — this prevents the shell from expanding any `$` inside the legend spec, and you don't need to escape anything.
+
+---
+
+### Complete working example: terrain map with stations + earthquakes + legend
+
+```python
+import pandas as pd, numpy as np, tempfile, os
+
+stations_file  = "/path/to/stations.txt"   # lon lat name
+catalog_file   = "/path/to/catalog.txt"    # lon lat depth mag
+
+R = "95/115/25/42"
+J = "M15c"
+
+gmt_script = f"""
+gmt begin seismic_map PNG
+
+  # ── Topography ─────────────────────────────────────────────────────────
+  if gmt grdcut @earth_relief_02m -R{R} -Gtopo.grd 2>/dev/null && [ -f topo.grd ]; then
+    echo "02m OK"
+  else
+    gmt grdcut @earth_relief_05m -R{R} -Gtopo.grd
+  fi
+  Z_MIN=$(gmt grdinfo topo.grd -C | awk '{{print $6}}')
+  Z_MAX=$(gmt grdinfo topo.grd -C | awk '{{print $7}}')
+  gmt makecpt -Cgeo -T${{Z_MIN}}/${{Z_MAX}} -Z > topo.cpt
+  gmt grdimage topo.grd -J{J} -R{R} -Ctopo.cpt -I+d
+
+  # ── Coast + frame ──────────────────────────────────────────────────────
+  gmt coast -R{R} -J{J} -W0.6p,gray30 -N1/0.8p,gray50 -A500 \\
+      -Bxaf+l"Longitude (°E)" -Byaf+l"Latitude (°N)" -BWSne+t"Seismicity Map"
+
+  # ── Data layers ────────────────────────────────────────────────────────
+  gmt plot {catalog_file}  -R{R} -J{J} -Sc0.15c -Gblue@40 -W0.3p,gray20
+  gmt plot {stations_file} -R{R} -J{J} -St0.35c -Gred    -W0.6p,black
+
+  # ── Elevation colorbar ─────────────────────────────────────────────────
+  gmt colorbar -DJBC+w7c/0.35c+o0/0.5c -Ctopo.cpt -Baf+l"Elevation (m)"
+
+  # ── Legend (single-quoted heredoc — safe in f-string) ──────────────────
+  cat > legend.txt << 'EOF'
+H 12 Legend
+D 0.1c 0.5p
+S 0.2c c 0.15c blue@40 0.3p,gray20 0.3c Earthquake
+S 0.2c t 0.35c red    0.6p,black   0.3c Station
+EOF
+  gmt legend legend.txt -DjBR+w5c+o0.3c/0.3c -F+p0.8p,black+gwhite
+
+gmt end
+"""
+
+run_gmt(gmt_script, outname="seismic_map", title="Seismicity map with legend")
+```
+
+---
 
 ### Common legend mistakes
 
-- ❌ Placing `gmt legend` before `gmt grdimage` or before data layers
-- ❌ Using legend placement that overlaps the plotted points without a background box
-- ❌ Forgetting to specify `-F` when the legend should be visible on top of terrain
-- ❌ Using a legend symbol definition that does not match the plotted symbol style
+- ❌ Placing `gmt legend` **before** `gmt grdimage` or before data layers — legend gets buried
+- ❌ Missing `-F` — legend text invisible on top of terrain
+- ❌ Symbol letter in spec doesn't match `gmt plot -S` flag (e.g. plotting `-St` but writing `c` in spec)
+- ❌ Fill/pen in legend spec doesn't match the plot command — use copy-paste to avoid mismatch
+- ❌ Using `<< EOF` (unquoted) inside f-string — shell expands `$` in spec lines, causing errors
+- ❌ Legend box too narrow (`+w` too small) — label text gets clipped; use `+w5c` or wider as default
 
 ---
 

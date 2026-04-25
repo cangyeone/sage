@@ -1,0 +1,30 @@
+{
+  "_comment": "Sample AgentConfig for EvidenceDrivenGeoAgent. Pass via --workspace-root etc. in CLI, or load directly in Python.",
+
+  "workspace_root":    "./examples/evidence_geo_agent",
+  "literature_root":   "./examples/evidence_geo_agent/literature",
+  "output_dir":        "./examples/evidence_geo_agent/outputs",
+
+  "allow_python":      true,
+  "allow_shell":       false,
+  "allow_web_search":  false,
+  "use_multimodal":    false,
+  "use_rag":           true,
+  "use_local_files":   true,
+
+  "max_iterations":            3,
+  "max_tool_calls_per_iter":   8,
+
+  "rag_top_k":        8,
+  "score_threshold":  0.30,
+
+  "code_timeout_s":   60,
+  "code_max_output":  8192,
+
+  "allowed_extensions": [
+    ".pdf", ".md", ".txt", ".csv", ".json",
+    ".yaml", ".yml", ".sac", ".mseed", ".xml",
+    ".gmt", ".grd", ".nc", ".bib", ".dat",
+    ".inp", ".out", ".log"
+  ]
+}

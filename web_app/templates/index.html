@@ -146,16 +146,16 @@
                         <a class="nav-link" href="/chat"><i class="bi bi-chat-dots"></i> AI Chat</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="/picker">Phase Picker</a>
+                        <a class="nav-link" href="/evidence-geo-agent"><i class="bi bi-geo-alt-fill"></i> Geo Agent</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="/associator">Associator</a>
+                        <a class="nav-link" href="/knowledge"><i class="bi bi-journal-bookmark-fill"></i> Knowledge</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="/polarity">Polarity</a>
+                        <a class="nav-link" href="/skills"><i class="bi bi-lightning-charge"></i> Skills</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="/llm-settings"><i class="bi bi-cpu"></i> LLM Settings</a>
+                        <a class="nav-link" href="/llm-settings"><i class="bi bi-cpu"></i> LLM</a>
                     </li>
                 </ul>
             </div>
@@ -167,68 +167,68 @@
         <div class="container">
             <h1 class="hero-title">SeismicX Analysis Platform</h1>
             <p class="hero-subtitle">
-                Advanced deep learning tools for seismic phase detection, association, and analysis
+                AI-powered seismology platform — natural language chat, evidence-driven geo interpretation, and a searchable knowledge base
             </p>
         </div>
     </section>
 
-    <!-- Skills Section -->
+    <!-- Features Section -->
     <section class="container mb-5">
         <div class="row">
-            <!-- Phase Picker Card -->
+            <!-- AI Chat Card -->
             <div class="col-md-4">
-                <div class="skill-card" onclick="location.href='/picker'">
+                <div class="skill-card" onclick="location.href='/chat'">
                     <div class="skill-icon">
-                        <i class="bi bi-graph-up"></i>
+                        <i class="bi bi-chat-dots"></i>
                     </div>
-                    <h3 class="skill-title">Phase Picker</h3>
+                    <h3 class="skill-title">AI Chat</h3>
                     <p class="skill-description">
-                        Detect seismic phases (Pg, Sg, Pn, Sn) from continuous waveform data using state-of-the-art deep learning models. Supports multiple model architectures with automatic visualization.
+                        Converse with an AI assistant to analyze seismic data, run phase picking, association, polarity analysis, generate GMT maps, and execute Python code — all via natural language.
                     </p>
                     <ul class="list-unstyled mt-3">
-                        <li><i class="bi bi-check-circle-fill text-success"></i> Multiple DL models (PNSN, PhaseNet, EQT)</li>
-                        <li><i class="bi bi-check-circle-fill text-success"></i> Real-time processing</li>
-                        <li><i class="bi bi-check-circle-fill text-success"></i> Automatic plotting</li>
+                        <li><i class="bi bi-check-circle-fill text-success"></i> Phase picking, association & polarity</li>
+                        <li><i class="bi bi-check-circle-fill text-success"></i> Code generation & execution</li>
+                        <li><i class="bi bi-check-circle-fill text-success"></i> GMT map drawing</li>
                     </ul>
-                    <button class="btn btn-skill">Launch Phase Picker</button>
+                    <button class="btn btn-skill">Open Chat</button>
                 </div>
             </div>
 
-            <!-- Phase Associator Card -->
+            <!-- Geo Agent Card -->
             <div class="col-md-4">
-                <div class="skill-card" onclick="location.href='/associator'">
+                <div class="skill-card" onclick="location.href='/evidence-geo-agent'">
                     <div class="skill-icon">
-                        <i class="bi bi-diagram-3"></i>
+                        <i class="bi bi-geo-alt-fill"></i>
                     </div>
-                    <h3 class="skill-title">Phase Associator</h3>
+                    <h3 class="skill-title">Geo Agent <span class="badge text-bg-warning fw-normal" style="font-size:.6rem;vertical-align:middle;">alpha</span></h3>
                     <p class="skill-description">
-                        Associate phase picks from multiple stations into coherent earthquake events. Choose from REAL, FastLink, or GaMMA algorithms for optimal results.
+                        Evidence-driven autonomous geoscience interpretation agent. Retrieves data, extracts evidence, generates competing hypotheses, and writes a fully traceable interpretation report.
                     </p>
                     <ul class="list-unstyled mt-3">
-                        <li><i class="bi bi-check-circle-fill text-success"></i> Three association methods</li>
-                        <li><i class="bi bi-check-circle-fill text-success"></i> 3D hypocenter location</li>
-                        <li><i class="bi bi-check-circle-fill text-success"></i> Quality control metrics</li>
+                        <li><i class="bi bi-check-circle-fill text-success"></i> Multi-source prioritised retrieval</li>
+                        <li><i class="bi bi-check-circle-fill text-success"></i> Structured evidence table + hypothesis scoring</li>
+                        <li><i class="bi bi-check-circle-fill text-success"></i> Image / CSV / PDF upload + web search</li>
                     </ul>
-                    <button class="btn btn-skill">Launch Associator</button>
+                    <button class="btn btn-skill">Launch Geo Agent</button>
                 </div>
             </div>
 
-            <!-- Polarity Analyzer Card -->
+            <!-- Knowledge Base Card -->
             <div class="col-md-4">
-                <div class="skill-card" onclick="location.href='/polarity'">
+                <div class="skill-card" onclick="location.href='/knowledge'">
                     <div class="skill-icon">
-                        <i class="bi bi-arrows-vertical"></i>
+                        <i class="bi bi-journal-bookmark-fill"></i>
                     </div>
-                    <h3 class="skill-title">Polarity Analyzer</h3>
+                    <h3 class="skill-title">Knowledge Base</h3>
                     <p class="skill-description">
-                        Analyze first-motion polarity of P-waves for focal mechanism determination. Deep learning-based classification with confidence scoring and visualization.
+                        Upload research PDFs to build a searchable vector knowledge base. Used by AI Chat and Geo Agent for literature-grounded Q&A and evidence retrieval.
                     </p>
                     <ul class="list-unstyled mt-3">
-                        <li><i class="bi bi-check-circle-fill text-success"></i> Up/Down classification</li>
-                        <li><i class="bi bi-check-circle-fill text-success"></i> Confidence scoring</li>
-                        <li><i class="bi bi-check-circle-fill text-success"></i> Waveform visualization</li>
+                        <li><i class="bi bi-check-circle-fill text-success"></i> BGE-M3 vector embeddings</li>
+                        <li><i class="bi bi-check-circle-fill text-success"></i> FAISS semantic search</li>
+                        <li><i class="bi bi-check-circle-fill text-success"></i> Batch PDF ingestion</li>
                     </ul>
-                    <button class="btn btn-skill">Launch Polarity Analyzer</button>
+                    <button class="btn btn-skill">Manage Knowledge Base</button>
                 </div>
             </div>
         </div>
@@ -238,21 +238,33 @@
     <section class="container">
         <div class="stats-section">
             <div class="row">
-                <div class="col-md-3 stat-item">
+                <div class="col-md-2 stat-item">
                     <div class="stat-number" id="totalTasks">0</div>
                     <div class="stat-label">Total Tasks</div>
                 </div>
-                <div class="col-md-3 stat-item">
+                <div class="col-md-2 stat-item">
                     <div class="stat-number" id="activeTasks">0</div>
                     <div class="stat-label">Active Tasks</div>
                 </div>
-                <div class="col-md-3 stat-item">
+                <div class="col-md-2 stat-item">
                     <div class="stat-number" id="completedTasks">0</div>
                     <div class="stat-label">Completed</div>
                 </div>
-                <div class="col-md-3 stat-item">
-                    <div class="stat-number">3</div>
+                <div class="col-md-2 stat-item">
+                    <div class="stat-number">5</div>
                     <div class="stat-label">Analysis Tools</div>
+                </div>
+                <div class="col-md-2 stat-item">
+                    <div class="stat-number" id="ragDocs" title="Documents in RAG knowledge base">
+                        <span class="spinner-border spinner-border-sm text-secondary" role="status"></span>
+                    </div>
+                    <div class="stat-label">KB Documents</div>
+                </div>
+                <div class="col-md-2 stat-item">
+                    <div class="stat-number" id="ragChunks" title="Text chunks indexed in vector store">
+                        <span class="spinner-border spinner-border-sm text-secondary" role="status"></span>
+                    </div>
+                    <div class="stat-label">KB Chunks</div>
                 </div>
             </div>
         </div>
@@ -268,26 +280,43 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        // Update stats
-        function updateStats() {
+        // Update task stats
+        function updateTaskStats() {
             fetch('/api/tasks')
                 .then(response => response.json())
                 .then(data => {
                     const tasks = data.tasks || {};
                     const taskList = Object.values(tasks);
-
                     document.getElementById('totalTasks').textContent = taskList.length;
                     document.getElementById('activeTasks').textContent =
                         taskList.filter(t => t.status === 'running' || t.status === 'queued').length;
                     document.getElementById('completedTasks').textContent =
                         taskList.filter(t => t.status === 'completed').length;
                 })
-                .catch(err => console.error('Error fetching stats:', err));
+                .catch(err => console.error('Error fetching task stats:', err));
         }
 
-        // Update stats every 5 seconds
-        updateStats();
-        setInterval(updateStats, 5000);
+        // Update RAG knowledge base stats
+        function updateKBStats() {
+            fetch('/api/knowledge/status')
+                .then(response => response.json())
+                .then(data => {
+                    const nDocs   = data.n_docs   ?? 0;
+                    const nChunks = data.n_chunks ?? data.n_vectors ?? 0;
+                    document.getElementById('ragDocs').textContent   = nDocs;
+                    document.getElementById('ragChunks').textContent = nChunks;
+                })
+                .catch(err => {
+                    document.getElementById('ragDocs').textContent   = '—';
+                    document.getElementById('ragChunks').textContent = '—';
+                });
+        }
+
+        // Initial load + polling
+        updateTaskStats();
+        updateKBStats();
+        setInterval(updateTaskStats, 5000);
+        setInterval(updateKBStats, 30000);  // KB changes less often
     </script>
 </body>
 </html>

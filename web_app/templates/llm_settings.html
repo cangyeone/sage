@@ -60,7 +60,9 @@ body { background: #f5f7fa; min-height: 100vh; }
     <div class="collapse navbar-collapse">
       <ul class="navbar-nav ms-auto gap-1 align-items-center">
         <li class="nav-item"><a class="nav-link" href="/chat"><i class="bi bi-chat-dots"></i> <span data-i18n="nav_chat">对话</span></a></li>
+        <li class="nav-item"><a class="nav-link" href="/evidence-geo-agent"><i class="bi bi-geo-alt-fill"></i> <span data-i18n="nav_geo">地学解译</span> <span class="badge text-bg-warning fw-normal" style="font-size:.62rem;vertical-align:middle;">alpha</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/knowledge"><i class="bi bi-journal-bookmark-fill"></i> <span data-i18n="nav_knowledge">知识库</span></a></li>
+        <li class="nav-item"><a class="nav-link" href="/skills"><i class="bi bi-lightning-charge"></i> <span data-i18n="nav_skills">技能</span></a></li>
         <li class="nav-item"><a class="nav-link active fw-bold" href="/llm-settings"><i class="bi bi-cpu"></i> LLM</a></li>
         <li class="nav-item">
           <button id="langToggle" onclick="toggleLang()"
@@ -125,12 +127,21 @@ body { background: #f5f7fa; min-height: 100vh; }
               </div>
             </div>
           </div>
+          <div class="provider-card" data-provider="deepseek" onclick="selectProvider(this)">
+            <div class="d-flex align-items-center gap-2">
+              <i class="bi bi-stars text-primary fs-5"></i>
+              <div>
+                <div class="fw-bold">DeepSeek</div>
+                <div class="text-muted" style="font-size:.85rem" data-i18n="deepseek_sub">deepseek-chat / deepseek-reasoner，需要 API Key</div>
+              </div>
+            </div>
+          </div>
           <div class="provider-card" data-provider="custom" onclick="selectProvider(this)">
             <div class="d-flex align-items-center gap-2">
               <i class="bi bi-gear text-secondary fs-5"></i>
               <div>
                 <div class="fw-bold" data-i18n="custom_title">自定义 API（兼容 OpenAI 格式）</div>
-                <div class="text-muted" style="font-size:.85rem" data-i18n="custom_sub">DeepSeek / SiliconFlow / 本地 vLLM 等</div>
+                <div class="text-muted" style="font-size:.85rem" data-i18n="custom_sub">SiliconFlow / 月之暗面 / 本地 vLLM 等</div>
               </div>
             </div>
           </div>
@@ -191,21 +202,81 @@ body { background: #f5f7fa; min-height: 100vh; }
 
         <!-- 在线 API 设置 -->
         <div id="onlineSection" style="display:none">
-          <div class="mb-3">
-            <label class="form-label fw-bold" data-i18n="label_api_base">API Base URL</label>
-            <input type="text" class="form-control" id="apiBase"
-                   placeholder="https://api.openai.com/v1">
+
+          <!-- DeepSeek section (only shown when deepseek provider selected) -->
+          <div id="deepseekSection" style="display:none">
+            <div class="alert alert-primary py-2 mb-3" style="font-size:.85rem">
+              <i class="bi bi-stars me-1"></i>
+              <strong>DeepSeek</strong> —
+              <span data-i18n="deepseek_hint">在 <a href="https://platform.deepseek.com" target="_blank">platform.deepseek.com</a> 注册并获取 API Key</span>
+            </div>
+            <div class="mb-3">
+              <label class="form-label fw-bold" data-i18n="label_model_name">模型名称</label>
+              <div class="d-flex flex-wrap gap-2 mb-2">
+                <button type="button" class="btn btn-sm btn-outline-primary"
+                  onclick="setOnlineModel('deepseek-chat','https://api.deepseek.com/v1')">
+                  deepseek-chat
+                  <span class="badge bg-primary ms-1" style="font-size:.65rem" data-i18n="badge_recommend">推荐</span>
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary"
+                  onclick="setOnlineModel('deepseek-reasoner','https://api.deepseek.com/v1')">
+                  deepseek-reasoner
+                  <span class="badge bg-secondary ms-1" style="font-size:.65rem" data-i18n="badge_reasoning">推理</span>
+                </button>
+              </div>
+              <input type="text" class="form-control" id="onlineModel"
+                     placeholder="deepseek-chat">
+            </div>
           </div>
+
+          <!-- Generic section (openai / custom) -->
+          <div id="genericOnlineSection">
+            <!-- Quick-fill presets (shown for custom provider) -->
+            <div id="presetRow" style="display:none;margin-bottom:.85rem">
+              <div class="fw-bold mb-2" style="font-size:.85rem" data-i18n="label_presets">快速填充</div>
+              <div class="d-flex flex-wrap gap-2">
+                <button type="button" class="btn btn-sm btn-outline-secondary"
+                  onclick="applyPreset('openai')">
+                  <i class="bi bi-cloud me-1"></i>OpenAI
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary"
+                  onclick="applyPreset('siliconflow')">
+                  SiliconFlow
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary"
+                  onclick="applyPreset('moonshot')">
+                  月之暗面
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary"
+                  onclick="applyPreset('dashscope')">
+                  阿里通义
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary"
+                  onclick="applyPreset('zhipu')">
+                  智谱 GLM
+                </button>
+              </div>
+            </div>
+            <div class="mb-3">
+              <label class="form-label fw-bold" data-i18n="label_api_base">API Base URL</label>
+              <input type="text" class="form-control" id="apiBase"
+                     placeholder="https://api.openai.com/v1">
+            </div>
+            <div class="mb-3" id="modelNameRow">
+              <label class="form-label fw-bold" data-i18n="label_model_name">模型名称</label>
+              <input type="text" class="form-control" id="onlineModelGeneric"
+                     placeholder="gpt-4o / Qwen/Qwen2.5-72B-Instruct / …">
+            </div>
+          </div>
+
+          <!-- API Key (always shown for online providers) -->
           <div class="mb-3">
             <label class="form-label fw-bold" data-i18n="label_api_key">API Key</label>
             <input type="password" class="form-control" id="apiKey"
-                   placeholder="sk-…">
+                   data-i18n-placeholder="api_key_placeholder"
+                   placeholder="sk-… （留空表示不变）">
           </div>
-          <div class="mb-3">
-            <label class="form-label fw-bold" data-i18n="label_model_name">模型名称</label>
-            <input type="text" class="form-control" id="onlineModel"
-                   placeholder="gpt-4o / deepseek-chat / …">
-          </div>
+
         </div>
 
         <!-- 保存 -->
@@ -238,7 +309,7 @@ body { background: #f5f7fa; min-height: 100vh; }
 // ── i18n ──────────────────────────────────────────────────────────────────────
 const I18N = {
   zh: {
-    nav_chat: '对话', nav_knowledge: '知识库',
+    nav_chat: '对话', nav_geo: '地学解译', nav_knowledge: '知识库', nav_skills: '技能',
     page_title: 'LLM 模型设置',
     page_sub: '配置 AI 后端，对话、RAG 问答均使用此设置',
     current_model: '当前模型：',
@@ -248,8 +319,14 @@ const I18N = {
     ollama_title: 'Ollama（本地）',
     ollama_sub: '本地运行，保护隐私，支持离线使用',
     openai_sub: 'GPT-4o / GPT-4o-mini，需要 API Key',
+    deepseek_sub: 'deepseek-chat / deepseek-reasoner，需要 API Key',
+    deepseek_hint: '在 <a href="https://platform.deepseek.com" target="_blank">platform.deepseek.com</a> 注册并获取 API Key',
+    badge_recommend: '推荐',
+    badge_reasoning: '推理',
+    label_presets: '快速填充',
+    api_key_placeholder: 'sk-… （留空表示不变）',
     custom_title: '自定义 API（兼容 OpenAI 格式）',
-    custom_sub: 'DeepSeek / SiliconFlow / 本地 vLLM 等',
+    custom_sub: 'SiliconFlow / 月之暗面 / 本地 vLLM 等',
     label_installed_models: '选择 Ollama 模型',
     models_loading: '正在读取已安装模型…',
     custom_model_placeholder: '或手动输入模型名称，如 qwen3:30b',
@@ -287,7 +364,7 @@ const I18N = {
     save_validate_online: '请填写 API URL 和模型名称',
   },
   en: {
-    nav_chat: 'Chat', nav_knowledge: 'Knowledge',
+    nav_chat: 'Chat', nav_geo: 'Geo Agent', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
     page_title: 'LLM Model Settings',
     page_sub: 'Configure the AI backend used by chat and RAG Q&A',
     current_model: 'Active model:',
@@ -297,8 +374,14 @@ const I18N = {
     ollama_title: 'Ollama (Local)',
     ollama_sub: 'Runs locally — private, works offline',
     openai_sub: 'GPT-4o / GPT-4o-mini — requires an API Key',
+    deepseek_sub: 'deepseek-chat / deepseek-reasoner — requires an API Key',
+    deepseek_hint: 'Sign up at <a href="https://platform.deepseek.com" target="_blank">platform.deepseek.com</a> to get your API Key',
+    badge_recommend: 'Recommended',
+    badge_reasoning: 'Reasoning',
+    label_presets: 'Quick Fill',
+    api_key_placeholder: 'sk-… (leave blank to keep existing)',
     custom_title: 'Custom API (OpenAI-compatible)',
-    custom_sub: 'DeepSeek / SiliconFlow / local vLLM, etc.',
+    custom_sub: 'SiliconFlow / Moonshot / local vLLM, etc.',
     label_installed_models: 'Select Ollama Model',
     models_loading: 'Loading installed models…',
     custom_model_placeholder: 'Or type a model name, e.g. qwen3:30b',
@@ -346,11 +429,16 @@ function applyLang() {
   document.getElementById('langLabel').textContent = currentLang === 'zh' ? 'EN' : '中';
   document.querySelectorAll('[data-i18n]').forEach(el => {
     const k = el.getAttribute('data-i18n');
-    if (I18N[currentLang][k] !== undefined) el.textContent = I18N[currentLang][k];
+    const v = I18N[currentLang]?.[k];
+    if (v !== undefined) {
+      // Use innerHTML for values that may contain HTML tags (e.g. <a>)
+      if (v.includes('<')) el.innerHTML = v; else el.textContent = v;
+    }
   });
   document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
     const k = el.getAttribute('data-i18n-placeholder');
-    if (I18N[currentLang][k] !== undefined) el.placeholder = I18N[currentLang][k];
+    const v = I18N[currentLang]?.[k];
+    if (v !== undefined) el.placeholder = v;
   });
 }
 
@@ -371,14 +459,57 @@ let _pullTimer    = null;
 
 document.addEventListener('DOMContentLoaded', () => { applyLang(); loadConfig(); });
 
+// ── Provider presets ──────────────────────────────────────────────────────────
+const PRESETS = {
+  openai:      { base: 'https://api.openai.com/v1',              model: 'gpt-4o' },
+  siliconflow: { base: 'https://api.siliconflow.cn/v1',          model: 'Qwen/Qwen2.5-72B-Instruct' },
+  moonshot:    { base: 'https://api.moonshot.cn/v1',             model: 'moonshot-v1-8k' },
+  dashscope:   { base: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-turbo' },
+  zhipu:       { base: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-4' },
+};
+
+function applyPreset(key) {
+  const p = PRESETS[key];
+  if (!p) return;
+  document.getElementById('apiBase').value         = p.base;
+  document.getElementById('onlineModelGeneric').value = p.model;
+}
+
+function setOnlineModel(model, base) {
+  document.getElementById('onlineModel').value = model;
+  if (base) document.getElementById('apiBase').value = base;
+}
+
 // ── Provider selection ────────────────────────────────────────────────────────
 function selectProvider(el) {
+  if (!el) return;
   document.querySelectorAll('.provider-card').forEach(c => c.classList.remove('selected'));
   el.classList.add('selected');
   const p = el.dataset.provider;
   document.getElementById('provider').value = p;
-  document.getElementById('ollamaSection').style.display  = p === 'ollama' ? 'block' : 'none';
-  document.getElementById('onlineSection').style.display  = p !== 'ollama' ? 'block' : 'none';
+
+  const isOllama   = p === 'ollama';
+  const isDeepseek = p === 'deepseek';
+  const isOnline   = !isOllama;
+
+  document.getElementById('ollamaSection').style.display  = isOllama   ? 'block' : 'none';
+  document.getElementById('onlineSection').style.display  = isOnline   ? 'block' : 'none';
+
+  if (isOnline) {
+    document.getElementById('deepseekSection').style.display    = isDeepseek ? 'block' : 'none';
+    document.getElementById('genericOnlineSection').style.display = isDeepseek ? 'none'  : 'block';
+    document.getElementById('presetRow').style.display            = p === 'custom' ? 'flex' : 'none';
+
+    // Pre-fill OpenAI base for openai provider
+    if (p === 'openai' && !document.getElementById('apiBase').value) {
+      document.getElementById('apiBase').value         = PRESETS.openai.base;
+      document.getElementById('onlineModelGeneric').value = PRESETS.openai.model;
+    }
+    if (isDeepseek && !document.getElementById('onlineModel').value) {
+      document.getElementById('onlineModel').value = 'deepseek-chat';
+      document.getElementById('apiBase').value     = 'https://api.deepseek.com/v1';
+    }
+  }
 }
 
 // ── Load config ───────────────────────────────────────────────────────────────
@@ -400,9 +531,12 @@ async function loadConfig() {
     if (provider === 'ollama') {
       document.getElementById('ollamaCustomModel').value = currentConfig.model || '';
       loadOllamaModels();
+    } else if (provider === 'deepseek') {
+      document.getElementById('onlineModel').value = currentConfig.model    || 'deepseek-chat';
+      document.getElementById('apiBase').value     = currentConfig.api_base || 'https://api.deepseek.com/v1';
     } else {
-      document.getElementById('apiBase').value     = currentConfig.api_base || '';
-      document.getElementById('onlineModel').value = currentConfig.model    || '';
+      document.getElementById('apiBase').value            = currentConfig.api_base || '';
+      document.getElementById('onlineModelGeneric').value = currentConfig.model    || '';
     }
 
     updateOllamaStatus(d.ollama_available);
@@ -564,9 +698,15 @@ document.getElementById('llmForm').addEventListener('submit', async e => {
     if (!model) { showToast(T('save_validate_model'), 'warning'); return; }
     payload.model    = model;
     payload.api_base = 'http://localhost:11434';
+  } else if (provider === 'deepseek') {
+    payload.api_base = 'https://api.deepseek.com/v1';
+    payload.model    = document.getElementById('onlineModel').value.trim() || 'deepseek-chat';
+    const key = document.getElementById('apiKey').value.trim();
+    if (key) payload.api_key = key;
+    if (!payload.model) { showToast(T('save_validate_model'), 'warning'); return; }
   } else {
     payload.api_base = document.getElementById('apiBase').value.trim();
-    payload.model    = document.getElementById('onlineModel').value.trim();
+    payload.model    = document.getElementById('onlineModelGeneric').value.trim();
     const key = document.getElementById('apiKey').value.trim();
     if (key) payload.api_key = key;
     if (!payload.api_base || !payload.model) {

@@ -38,6 +38,21 @@ SAGE is an earthquake science AI platform integrating **natural language interac
 - [Conversation Routing Mechanism](#conversation-routing-mechanism)
 - [seismo_skill Skill System](#seismo_skill-skill-system)
 - [GMT Map Drawing](#gmt-map-drawing)
+- [EvidenceDrivenGeoAgent — Geoscience Interpretation Agent](#evidencedrivengeoagent--geoscience-interpretation-agent)
+  - [Design Principles](#design-principles)
+  - [Architecture](#architecture)
+  - [Agent Reasoning Loop](#agent-reasoning-loop)
+  - [Evidence Record Schema](#evidence-record-schema)
+  - [Nine Built-in Tools](#nine-built-in-tools)
+  - [Data Source Priority](#data-source-priority)
+  - [Convergence Conditions](#convergence-conditions)
+  - [Web UI](#geo-agent-web-ui)
+  - [File Upload for Research Data](#file-upload-for-research-data)
+  - [Inline Web Literature Search](#inline-web-literature-search)
+  - [CLI Command](#geo-agent-cli-command)
+  - [Flask API](#geo-agent-flask-api)
+  - [Python Programmatic Usage](#python-programmatic-usage)
+  - [Output Schema](#output-schema)
 - [Core Modules Details](#core-modules-details)
 - [Directory Structure](#directory-structure)
 - [Configuration Files](#configuration-files)
@@ -641,6 +656,358 @@ GMT's PostScript engine does not support CJK characters. SAGE automatically hand
 Toolbar below each GMT image provides:
 - **⬇ Image**: Download PNG file
 - **⬇ GMT Script**: Download `.sh` script file, can independently run in terminal to completely reproduce the map
+
+---
+
+## EvidenceDrivenGeoAgent — Geoscience Interpretation Agent
+
+`EvidenceDrivenGeoAgent` is an autonomous geoscience interpretation agent that follows an evidence-first, anti-hallucination design philosophy. Given a geological research question, it autonomously retrieves data from multiple sources, extracts structured evidence, generates and scores competing hypotheses, and finally produces a fully traceable interpretation report.
+
+### Design Principles
+
+| Principle | Implementation |
+|---|---|
+| **Evidence-first** | Every claim must reference at least one evidence record with source, confidence, and polarity |
+| **Anti-hallucination** | Cannot assert any conclusion not supported by retrieved evidence |
+| **Convergence detection** | Stops automatically when new evidence no longer changes hypothesis scores (Δ < 0.05) |
+| **Competing hypotheses** | Always maintains ≥ 2 competing hypotheses until evidence definitively rules one out |
+| **Full traceability** | Every step of the reasoning chain is logged in the tool call history |
+
+### Architecture
+
+```
+EvidenceDrivenGeoAgent
+├── AgentConfig              # All parameters: workspace, LLM, loop limits, capability flags
+├── EvidenceRecord           # Structured evidence: content / source / confidence / polarity / data_type
+├── GeoHypothesis            # Hypothesis: description / support_score / evidence_ids / status
+├── AgentState               # Running state: question / evidence list / hypotheses / iteration counter
+└── Tool Registry (9 tools)
+    ├── retrieve_local_literature   # FAISS semantic search in local PDFs
+    ├── retrieve_rag_chunks         # RAG vector database search
+    ├── web_search                  # DuckDuckGo HTML + Semantic Scholar API
+    ├── read_local_file             # Read CSV / GeoJSON / text data files
+    ├── run_python_analysis         # Sandboxed Python execution (optional)
+    ├── generate_hypothesis         # Propose new competing hypotheses
+    ├── score_hypothesis            # Score and rank hypotheses based on evidence
+    ├── write_report                # Generate structured Markdown interpretation report
+    └── request_missing_info        # Document data gaps and additional information needed
+```
+
+### Agent Reasoning Loop
+
+```
+Question → Initialization
+     ↓
+┌─── Iteration N ────────────────────────────────────┐
+│  1. Plan: which tools to call this round           │
+│  2. Execute tools (≤ max_tool_calls_per_iter)      │
+│  3. Extract evidence → append to evidence list     │
+│  4. Update hypothesis scores                       │
+│  5. Convergence check (Δscore < 0.05 for 2 iters) │
+└─────────────────────────────────────────────────────┘
+     ↓  (converged or max_iterations reached)
+Write Report → Return AgentOutput
+```
+
+### Evidence Record Schema
+
+```python
+@dataclass
+class EvidenceRecord:
+    evidence_id:  str    # Unique ID, e.g. "ev_001"
+    content:      str    # Evidence text content
+    source:       str    # Source: filename / URL / "user_upload"
+    source_type:  str    # "literature" | "rag" | "web" | "data" | "user_upload"
+    confidence:   float  # 0.0 – 1.0
+    polarity:     str    # "support" | "contradict" | "neutral"
+    data_type:    str    # "text" | "numeric" | "geospatial" | "figure"
+    timestamp:    str    # ISO 8601
+```
+
+### Nine Built-in Tools
+
+| Tool | Description | Required Config |
+|---|---|---|
+| `retrieve_local_literature` | Semantic search in local PDF literature directory | `literature_root` set, PyPDF2 installed |
+| `retrieve_rag_chunks` | Search FAISS / ChromaDB vector database | `use_rag=True`, RAG engine initialized |
+| `web_search` | DuckDuckGo web search + Semantic Scholar academic search | `allow_web_search=True` |
+| `read_local_file` | Read CSV / GeoJSON / TXT data files | `use_local_files=True`, `workspace_root` set |
+| `run_python_analysis` | Execute Python code in a sandbox for data processing | `allow_python=True` |
+| `generate_hypothesis` | Propose ≥ 2 competing interpretations for the question | Always available |
+| `score_hypothesis` | Score hypotheses based on current evidence | Always available |
+| `write_report` | Generate structured Markdown report with evidence citations | Always available |
+| `request_missing_info` | Document data gaps and additional information needed | Always available |
+
+### Data Source Priority
+
+The agent searches data sources in the following priority order:
+
+1. **User-uploaded files** (uploaded via the web UI in the current session) — highest priority, most relevant to the current task
+2. **Local workspace files** (`workspace_root`) — project data files
+3. **Local literature directory** (`literature_root`) — locally stored PDF papers
+4. **RAG vector database** — indexed knowledge base (all uploaded historical documents)
+5. **Web search** — DuckDuckGo + Semantic Scholar (only when `allow_web_search=True`)
+
+### Convergence Conditions
+
+The agent stops the reasoning loop when **any** of the following conditions is met:
+
+- `max_iterations` reached (default: 3)
+- Hypothesis score changes across two consecutive iterations all < 0.05 (convergence)
+- A `write_report` tool call has been made
+- All required tools have been called and evidence is sufficient
+
+### Geo Agent Web UI
+
+Access the web interface at `http://localhost:5000/evidence-geo-agent`.
+
+**Left sidebar — Configuration panel:**
+
+| Section | Controls |
+|---|---|
+| Workspace | Workspace path / Literature directory / Output directory |
+| Loop Parameters | Max iterations / Max tool calls / RAG top-k / Score threshold |
+| Capabilities | Python execution / RAG search / Local files / Multimodal / Web search |
+| File Upload | Drag-and-drop upload of images, PDFs, CSVs (auto-classified) |
+| Web Search | Keyword search across DuckDuckGo + Semantic Scholar |
+
+**Main area — Interpretation task:**
+
+| Field | Description |
+|---|---|
+| Research Question | The geological question to interpret, e.g. "What is the seismogenic structure of the 2023 M7.8 Turkey earthquake?" |
+| Study Area | Geographic location (optional), e.g. "Kahramanmaraş, Turkey" |
+| Example buttons | Click to auto-fill a typical question |
+
+**Results tabs:**
+
+| Tab | Content |
+|---|---|
+| Report | Full Markdown interpretation report, rendered to HTML |
+| Evidence Table | All evidence records with source, confidence, polarity, collapsible |
+| Hypotheses | All competing hypotheses with final scores and ranking |
+| Figures | All figures output by the agent, displayed as a thumbnail grid |
+| Tool Log | Complete tool call history per iteration, collapsible |
+| Missing Info | Data gaps and additional information the agent could not obtain |
+
+**Bilingual support:** Click the `中/EN` button in the top-right to toggle between Chinese and English. The preference is saved in `localStorage` and persists across sessions.
+
+### File Upload for Research Data
+
+The web UI supports drag-and-drop or click-to-select upload of multiple files simultaneously:
+
+```
+Supported formats:
+  PDF              → auto-classified to literature/
+  PNG / JPG / SVG  → auto-classified to figures/
+  CSV              → auto-classified to data/
+  TXT / JSON / XML → auto-classified to misc/
+```
+
+Each upload session gets an isolated workspace directory:
+
+```
+uploads/geo_workspaces/<session_id>/
+├── literature/   ← uploaded PDF papers
+├── figures/      ← uploaded images / diagrams
+├── data/         ← uploaded CSV / data files
+└── misc/         ← other file types
+```
+
+The agent automatically discovers and reads files from this workspace, with user uploads taking highest priority in the data source hierarchy.
+
+**API endpoint:**
+
+```
+POST /api/evidence_geo_agent/upload
+Content-Type: multipart/form-data
+
+Fields:
+  files[]     — one or more files
+  session_id  — session identifier (generated by frontend if not provided)
+
+Response:
+  { "ok": true, "uploaded": [...], "session_id": "...", "workspace": "..." }
+```
+
+### Inline Web Literature Search
+
+The web UI includes an instant web search panel in the left sidebar. Without starting a full agent run, you can directly search for relevant papers and web resources:
+
+```
+Search modes:
+  scholar_search  — Semantic Scholar API, returns title / authors / year / abstract / citation count
+  web_search      — DuckDuckGo HTML scraping, returns title / URL / snippet
+```
+
+**API endpoint:**
+
+```
+POST /api/evidence_geo_agent/web_search
+Content-Type: application/json
+
+Body:
+  { "query": "East Anatolian Fault seismicity", "search_type": "scholar_search" }
+
+Response:
+  { "ok": true, "results": [ { "title": "...", "url": "...", "snippet": "..." }, ... ] }
+```
+
+### Geo Agent CLI Command
+
+```bash
+# Basic usage
+sage-geo "What is the seismogenic mechanism of the 2021 Maduo earthquake?"
+
+# Full options
+sage-geo "Analyze the seismotectonics of Sichuan Basin" \
+  --workspace /path/to/project \
+  --literature /path/to/papers \
+  --output outputs/my_report \
+  --max-iter 5 \
+  --web-search \
+  --rag \
+  --multimodal
+
+# Available options
+  --workspace       Project workspace root directory
+  --literature      Local PDF literature directory
+  --output          Output directory for results
+  --max-iter        Maximum reasoning iterations (default: 3)
+  --max-tools       Maximum tool calls per iteration (default: 8)
+  --rag-k           RAG retrieval top-k (default: 8)
+  --web-search      Enable web search (DuckDuckGo + Semantic Scholar)
+  --no-rag          Disable RAG vector database search
+  --no-local-files  Disable local file reading
+  --multimodal      Enable multimodal analysis (requires vision-capable LLM)
+  --allow-shell     Allow shell command execution
+  --provider        LLM provider (ollama/openai/custom)
+  --model           Model name
+  --api-key         API key (for online providers)
+  --api-base        API base URL (for custom/compatible providers)
+```
+
+**Output files:**
+
+```
+outputs/evidence_driven_geo_agent/
+├── report_<timestamp>.md           # Full Markdown interpretation report
+├── evidence_table_<timestamp>.json # All structured evidence records
+├── hypotheses_<timestamp>.json     # All hypotheses with scores
+└── agent_state_<timestamp>.json    # Complete agent state snapshot
+```
+
+### Geo Agent Flask API
+
+**Start an interpretation task:**
+
+```
+POST /api/evidence_geo_agent
+Content-Type: application/json
+
+{
+  "question":                "Analyze the seismogenic structure of the 2023 M7.8 Turkey earthquake",
+  "study_area":              "Kahramanmaraş, Turkey",
+  "session_id":              "optional-session-id",
+  "workspace_root":          "/path/to/workspace",
+  "literature_root":         "/path/to/papers",
+  "output_dir":              "outputs/evidence_driven_geo_agent",
+  "allow_web_search":        true,
+  "use_rag":                 true,
+  "use_local_files":         true,
+  "use_multimodal":          false,
+  "max_iterations":          3,
+  "max_tool_calls_per_iter": 8,
+  "rag_top_k":               8,
+  "score_threshold":         0.35
+}
+
+Response: { "job_id": "geo_xxxx", "status": "started" }
+```
+
+**Poll for results:**
+
+```
+GET /api/evidence_geo_agent/poll/<job_id>
+
+Response (running):
+  { "status": "running", "progress": [...log lines...], "result": null }
+
+Response (completed):
+  {
+    "status": "completed",
+    "progress": [...],
+    "result": {
+      "report":          "# Interpretation Report\n...",
+      "evidence_list":   [ { "evidence_id": "ev_001", ... }, ... ],
+      "hypotheses":      [ { "description": "...", "support_score": 0.82, ... }, ... ],
+      "figures":         [ "/api/evidence_geo_agent/figure?path=...", ... ],
+      "tool_log":        [ { "iter": 1, "tool": "web_search", ... }, ... ],
+      "missing_info":    [ "High-resolution focal mechanism data", ... ],
+      "iterations_used": 3,
+      "converged":       true
+    }
+  }
+```
+
+**Serve a figure:**
+
+```
+GET /api/evidence_geo_agent/figure?path=<relative-or-absolute-path>
+
+Returns the image file (PNG/JPG/SVG) with appropriate Content-Type.
+Path is sandbox-checked to stay within the project root or geo_workspaces directory.
+```
+
+### Python Programmatic Usage
+
+```python
+from sage_agents import EvidenceDrivenGeoAgent, AgentConfig
+
+cfg = AgentConfig(
+    workspace_root          = "/path/to/project",
+    literature_root         = "/path/to/papers",
+    output_dir              = "outputs/my_analysis",
+    allow_web_search        = True,
+    use_rag                 = True,
+    use_multimodal          = False,
+    max_iterations          = 5,
+    max_tool_calls_per_iter = 10,
+    rag_top_k               = 8,
+    score_threshold         = 0.35,
+    allow_python            = True,
+    allow_shell             = False,
+    code_timeout_s          = 60,
+)
+
+agent = EvidenceDrivenGeoAgent(config=cfg)
+
+output = agent.run(
+    question   = "What is the seismogenic structure of the 2021 Maduo earthquake?",
+    study_area = "Maduo County, Qinghai Province, China",
+)
+
+print(output.report)
+print(f"Converged in {output.iterations_used} iterations")
+print(f"Evidence records: {len(output.evidence_list)}")
+print(f"Top hypothesis: {output.hypotheses[0].description} (score={output.hypotheses[0].support_score:.2f})")
+```
+
+### Output Schema
+
+```python
+@dataclass
+class AgentOutput:
+    report:          str                    # Full Markdown interpretation report
+    evidence_list:   List[EvidenceRecord]   # All structured evidence records
+    hypotheses:      List[GeoHypothesis]    # All hypotheses, sorted by score descending
+    figures:         List[str]              # Paths to output figures
+    tool_log:        List[dict]             # Detailed tool call log per iteration
+    missing_info:    List[str]              # Data gaps the agent could not fill
+    iterations_used: int                    # Actual iterations completed
+    converged:       bool                   # Whether stopped due to convergence
+    error:           Optional[str]          # Error message if run failed
+```
 
 ---
 

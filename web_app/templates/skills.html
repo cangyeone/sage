@@ -111,6 +111,7 @@ body { background:#f5f7fa; min-height:100vh; }
     <div class="collapse navbar-collapse">
       <ul class="navbar-nav ms-auto gap-1">
         <li class="nav-item"><a class="nav-link" href="/chat"><i class="bi bi-chat-dots"></i> <span data-i18n="nav_chat">对话</span></a></li>
+        <li class="nav-item"><a class="nav-link" href="/evidence-geo-agent"><i class="bi bi-geo-alt-fill"></i> <span data-i18n="nav_geo">地学解译</span> <span class="badge text-bg-warning fw-normal" style="font-size:.62rem;vertical-align:middle;">alpha</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/knowledge"><i class="bi bi-journal-bookmark-fill"></i> <span data-i18n="nav_knowledge">知识库</span></a></li>
         <li class="nav-item"><a class="nav-link active fw-bold" href="/skills"><i class="bi bi-lightning-charge"></i> <span data-i18n="nav_skills">技能</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/llm-settings"><i class="bi bi-cpu"></i> LLM</a></li>
@@ -264,7 +265,7 @@ body { background:#f5f7fa; min-height:100vh; }
 <script>
 const I18N = {
   zh: {
-    nav_chat: '对话', nav_knowledge: '知识库', nav_skills: '技能',
+    nav_chat: '对话', nav_geo: '地学解译', nav_knowledge: '知识库', nav_skills: '技能',
     page_title: '技能管理', page_sub: '查看内置技能，创建和编辑自定义技能',
     builtin_section: '内置技能', custom_section: '自定义技能',
     btn_new: '新建技能', btn_save: '保存', btn_delete: '删除',
@@ -272,7 +273,7 @@ const I18N = {
     empty_state: '选择左侧技能查看详情，或点击「新建技能」创建'
   },
   en: {
-    nav_chat: 'Chat', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
+    nav_chat: 'Chat', nav_geo: 'Geo Agent', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
     page_title: 'Skill Manager', page_sub: 'View built-in skills, create and edit custom skills',
     builtin_section: 'Built-in Skills', custom_section: 'Custom Skills',
     btn_new: 'New Skill', btn_save: 'Save', btn_delete: 'Delete',

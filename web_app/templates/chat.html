@@ -143,6 +143,7 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
     <div class="collapse navbar-collapse">
       <ul class="navbar-nav ms-auto gap-1 align-items-center">
         <li class="nav-item"><a class="nav-link active fw-bold" href="/chat"><i class="bi bi-chat-dots"></i> <span data-i18n="nav_chat">对话</span></a></li>
+        <li class="nav-item"><a class="nav-link" href="/evidence-geo-agent"><i class="bi bi-geo-alt-fill"></i> <span data-i18n="nav_geo">地学解译</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/knowledge"><i class="bi bi-journal-bookmark-fill"></i> <span data-i18n="nav_knowledge">知识库</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/skills"><i class="bi bi-lightning-charge"></i> <span data-i18n="nav_skills">技能</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/llm-settings"><i class="bi bi-cpu"></i> LLM</a></li>
@@ -280,7 +281,7 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
 <script>
 const I18N = {
   zh: {
-    nav_chat: '对话', nav_knowledge: '知识库', nav_skills: '技能',
+    nav_chat: '对话', nav_geo: '地学解译', nav_knowledge: '知识库', nav_skills: '技能',
     sb_uploads: '本次上传', sb_no_doc: '暂无上传文档<br>点击 📎 上传 PDF',
     sb_kb: '知识库', loading: '加载中…', sb_manage_kb: '管理知识库',
     sb_workspace: '本地工作目录', sb_ws_auth: '授权访问', sb_save_path: '保存路径',
@@ -310,7 +311,7 @@ const I18N = {
     typing_code: '正在生成代码...', typing_rag: '正在检索知识...', typing_chat: '正在对话中...',
   },
   en: {
-    nav_chat: 'Chat', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
+    nav_chat: 'Chat', nav_geo: 'Geo Agent', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
     sb_uploads: 'Uploaded', sb_no_doc: 'No documents uploaded<br>Click 📎 to upload PDF',
     sb_kb: 'Knowledge Base', loading: 'Loading…', sb_manage_kb: 'Manage KB',
     sb_workspace: 'Local Workspace', sb_ws_auth: 'Authorize', sb_save_path: 'Save Path',

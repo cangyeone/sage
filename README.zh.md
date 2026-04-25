@@ -38,6 +38,21 @@ SAGE 是集**自然语言交互**、**智能震相拾取**、**统计分析**、
 - [对话路由机制](#对话路由机制)
 - [seismo_skill 技能系统](#seismo_skill-技能系统)
 - [GMT 地图绘制](#gmt-地图绘制)
+- [EvidenceDrivenGeoAgent — 地学解译 Agent](#evidencedrivengeoagent--地学解译-agent)
+  - [设计原则](#设计原则)
+  - [架构](#架构)
+  - [Agent 推理循环](#agent-推理循环)
+  - [证据记录结构](#证据记录结构)
+  - [九个内置工具](#九个内置工具)
+  - [数据源优先级](#数据源优先级)
+  - [收敛条件](#收敛条件)
+  - [Web UI](#地学解译-web-ui)
+  - [研究数据文件上传](#研究数据文件上传)
+  - [内嵌 Web 文献检索](#内嵌-web-文献检索)
+  - [CLI 命令](#地学解译-cli-命令)
+  - [Flask API](#地学解译-flask-api)
+  - [Python 编程接口](#python-编程接口)
+  - [输出结构](#输出结构)
 - [核心模块详解](#核心模块详解)
 - [目录结构](#目录结构)
 - [配置文件](#配置文件)
@@ -58,6 +73,7 @@ SAGE 是集**自然语言交互**、**智能震相拾取**、**统计分析**、
 | 🗺️ **GMT 地图绘制** | 调用 GMT6 绘制震中图、台站图、地形图、震源机制球，图像与脚本均可下载 |
 | 🤖 **自主 Agent** | 读入论文 → 理解方法 → 自主规划 → 逐步编程实现，每步自动重试 |
 | 📚 **知识库 RAG** | BGE-M3 向量化 + FAISS 检索，持久化存储，批量 PDF 入库与文献问答 |
+| 🌍 **地学解译 Agent** | 证据驱动的自主地球科学解译；自动检索数据、提取证据、生成竞争假设、撰写可追溯报告 |
 | 📖 **文献解读** | 临时上传 PDF → 深度解读方法/公式/结论，多轮追问 |
 | 🗂 **本地文件访问** | 授权指定目录后，LLM 可直接读取文件列表辅助分析 |
 | ⚡ **技能系统** | Markdown 格式技能文档（7 个内置 + 无限自定义），对话和代码生成时自动检索注入 |
@@ -641,6 +657,358 @@ GMT 的 PostScript 引擎不支持 CJK 字符。SAGE 自动处理这一问题：
 每张 GMT 图像下方的工具栏提供：
 - **⬇ 图像**：下载 PNG 文件
 - **⬇ GMT脚本**：下载 `.sh` 脚本文件，可在终端独立运行完整复现地图
+
+---
+
+## EvidenceDrivenGeoAgent — 地学解译 Agent
+
+`EvidenceDrivenGeoAgent` 是一个自主地球科学解译 Agent，遵循"证据优先、防止幻觉"的设计理念。给定一个地质研究问题，它会自主从多个数据源检索信息、提取结构化证据、生成并评分竞争假设，最终输出一份完全可追溯的解译报告。
+
+### 设计原则
+
+| 原则 | 实现方式 |
+|---|---|
+| **证据优先** | 每一个断言都必须引用至少一条证据记录，包含来源、置信度和支持极性 |
+| **防止幻觉** | 不能主张任何未经检索证据支持的结论 |
+| **收敛检测** | 当新证据不再改变假设评分（Δ < 0.05）时自动停止 |
+| **竞争假设** | 始终维护 ≥ 2 个竞争假设，直到证据明确排除其中之一 |
+| **完全可追溯** | 推理链的每一步都记录在工具调用历史中 |
+
+### 架构
+
+```
+EvidenceDrivenGeoAgent
+├── AgentConfig              # 所有参数：工作区、LLM、循环限制、能力开关
+├── EvidenceRecord           # 结构化证据：内容 / 来源 / 置信度 / 极性 / 数据类型
+├── GeoHypothesis            # 假设：描述 / 支持评分 / 证据ID列表 / 状态
+├── AgentState               # 运行状态：问题 / 证据列表 / 假设 / 迭代计数器
+└── 工具注册表（9 个工具）
+    ├── retrieve_local_literature   # FAISS 语义检索本地 PDF 文献
+    ├── retrieve_rag_chunks         # RAG 向量数据库检索
+    ├── web_search                  # DuckDuckGo HTML + Semantic Scholar API
+    ├── read_local_file             # 读取 CSV / GeoJSON / 文本数据文件
+    ├── run_python_analysis         # 沙箱 Python 执行（可选）
+    ├── generate_hypothesis         # 提出新的竞争假设
+    ├── score_hypothesis            # 基于证据对假设评分和排序
+    ├── write_report                # 生成带证据引用的结构化 Markdown 报告
+    └── request_missing_info        # 记录数据缺口和所需补充信息
+```
+
+### Agent 推理循环
+
+```
+问题输入 → 初始化
+     ↓
+┌─── 第 N 轮迭代 ─────────────────────────────────────┐
+│  1. 规划：本轮调用哪些工具                           │
+│  2. 执行工具（≤ max_tool_calls_per_iter 次）         │
+│  3. 提取证据 → 追加到证据列表                       │
+│  4. 更新假设评分                                    │
+│  5. 收敛检测（连续 2 轮 Δscore < 0.05）             │
+└─────────────────────────────────────────────────────┘
+     ↓  （已收敛或达到 max_iterations）
+写入报告 → 返回 AgentOutput
+```
+
+### 证据记录结构
+
+```python
+@dataclass
+class EvidenceRecord:
+    evidence_id:  str    # 唯一ID，例如 "ev_001"
+    content:      str    # 证据文本内容
+    source:       str    # 来源：文件名 / URL / "user_upload"
+    source_type:  str    # "literature" | "rag" | "web" | "data" | "user_upload"
+    confidence:   float  # 0.0 – 1.0
+    polarity:     str    # "support"（支持）| "contradict"（反驳）| "neutral"（中性）
+    data_type:    str    # "text" | "numeric" | "geospatial" | "figure"
+    timestamp:    str    # ISO 8601 时间戳
+```
+
+### 九个内置工具
+
+| 工具 | 说明 | 需要的配置 |
+|---|---|---|
+| `retrieve_local_literature` | 在本地 PDF 文献目录中进行语义检索 | 设置 `literature_root`，安装 PyPDF2 |
+| `retrieve_rag_chunks` | 检索 FAISS / ChromaDB 向量数据库 | `use_rag=True`，RAG 引擎已初始化 |
+| `web_search` | DuckDuckGo 网络搜索 + Semantic Scholar 学术搜索 | `allow_web_search=True` |
+| `read_local_file` | 读取 CSV / GeoJSON / TXT 数据文件 | `use_local_files=True`，设置 `workspace_root` |
+| `run_python_analysis` | 在沙箱中执行 Python 代码进行数据处理 | `allow_python=True` |
+| `generate_hypothesis` | 为问题提出 ≥ 2 个竞争解释 | 始终可用 |
+| `score_hypothesis` | 基于当前证据对假设评分 | 始终可用 |
+| `write_report` | 生成带证据引用的结构化 Markdown 报告 | 始终可用 |
+| `request_missing_info` | 记录数据缺口和所需补充信息 | 始终可用 |
+
+### 数据源优先级
+
+Agent 按以下优先级顺序检索数据源：
+
+1. **用户上传文件**（当前会话通过 Web UI 上传）— 最高优先级，与当前任务最相关
+2. **本地工作区文件**（`workspace_root`）— 项目数据文件
+3. **本地文献目录**（`literature_root`）— 本地存储的 PDF 论文
+4. **RAG 向量数据库** — 已索引的知识库（所有历史上传文档）
+5. **Web 搜索** — DuckDuckGo + Semantic Scholar（仅当 `allow_web_search=True` 时）
+
+### 收敛条件
+
+满足以下**任意**条件时，Agent 停止推理循环：
+
+- 达到 `max_iterations`（默认：3）
+- 连续两轮迭代的假设评分变化均 < 0.05（收敛）
+- 已调用 `write_report` 工具
+- 所有必要工具已调用且证据充分
+
+### 地学解译 Web UI
+
+访问 `http://localhost:5000/evidence-geo-agent` 打开 Web 界面。
+
+**左侧边栏 — 配置面板：**
+
+| 区域 | 控件 |
+|---|---|
+| 工作区 | 工作区路径 / 文献目录 / 输出目录 |
+| 循环参数 | 最大迭代次数 / 最大工具调用次数 / RAG top-k / 评分阈值 |
+| 能力开关 | Python 执行 / RAG 检索 / 本地文件 / 多模态 / Web 搜索 |
+| 文件上传 | 拖放上传图片、PDF、CSV（自动分类） |
+| Web 检索 | 关键词搜索 DuckDuckGo + Semantic Scholar |
+
+**主区域 — 解译任务：**
+
+| 字段 | 说明 |
+|---|---|
+| 研究问题 | 待解译的地质问题，例如"2023 年土耳其 M7.8 地震的发震构造是什么？" |
+| 研究区域 | 地理位置（可选），例如"土耳其卡赫拉曼马拉什" |
+| 示例按钮 | 点击自动填入典型问题 |
+
+**结果标签页：**
+
+| 标签 | 内容 |
+|---|---|
+| 报告 | 完整 Markdown 解译报告，渲染为 HTML |
+| 证据表 | 所有证据记录，含来源、置信度、极性，可折叠展开 |
+| 假设 | 所有竞争假设及最终评分与排名 |
+| 图件 | Agent 输出的所有图件，以缩略图网格展示 |
+| 工具日志 | 每轮迭代的完整工具调用历史，可折叠 |
+| 缺失信息 | Agent 未能获取的数据缺口和补充需求 |
+
+**双语支持：** 点击右上角 `中/EN` 按钮可在中英文之间切换。偏好保存在 `localStorage` 中，跨会话持久化。
+
+### 研究数据文件上传
+
+Web UI 支持拖放或点击选择同时上传多个文件：
+
+```
+支持格式：
+  PDF              → 自动归入 literature/
+  PNG / JPG / SVG  → 自动归入 figures/
+  CSV              → 自动归入 data/
+  TXT / JSON / XML → 自动归入 misc/
+```
+
+每个上传会话获得独立的工作区目录：
+
+```
+uploads/geo_workspaces/<session_id>/
+├── literature/   ← 上传的 PDF 论文
+├── figures/      ← 上传的图像 / 图表
+├── data/         ← 上传的 CSV / 数据文件
+└── misc/         ← 其他文件类型
+```
+
+Agent 自动发现并读取此工作区中的文件，用户上传文件在数据源优先级中最高。
+
+**API 端点：**
+
+```
+POST /api/evidence_geo_agent/upload
+Content-Type: multipart/form-data
+
+字段：
+  files[]     — 一个或多个文件
+  session_id  — 会话标识符（前端未提供时自动生成）
+
+响应：
+  { "ok": true, "uploaded": [...], "session_id": "...", "workspace": "..." }
+```
+
+### 内嵌 Web 文献检索
+
+Web UI 左侧边栏包含即时 Web 检索面板。无需启动完整 Agent 运行，即可直接检索相关论文和网络资源：
+
+```
+检索模式：
+  scholar_search  — Semantic Scholar API，返回标题 / 作者 / 年份 / 摘要 / 引用数
+  web_search      — DuckDuckGo HTML 抓取，返回标题 / URL / 摘要片段
+```
+
+**API 端点：**
+
+```
+POST /api/evidence_geo_agent/web_search
+Content-Type: application/json
+
+请求体：
+  { "query": "东安纳托利亚断层地震活动性", "search_type": "scholar_search" }
+
+响应：
+  { "ok": true, "results": [ { "title": "...", "url": "...", "snippet": "..." }, ... ] }
+```
+
+### 地学解译 CLI 命令
+
+```bash
+# 基本用法
+sage-geo "2021 年玛多地震的发震机制是什么？"
+
+# 完整选项
+sage-geo "分析四川盆地地震构造" \
+  --workspace /path/to/project \
+  --literature /path/to/papers \
+  --output outputs/my_report \
+  --max-iter 5 \
+  --web-search \
+  --rag \
+  --multimodal
+
+# 可用选项
+  --workspace       项目工作区根目录
+  --literature      本地 PDF 文献目录
+  --output          结果输出目录
+  --max-iter        最大推理迭代次数（默认：3）
+  --max-tools       每次迭代最大工具调用次数（默认：8）
+  --rag-k           RAG 检索 top-k（默认：8）
+  --web-search      启用 Web 搜索（DuckDuckGo + Semantic Scholar）
+  --no-rag          禁用 RAG 向量数据库检索
+  --no-local-files  禁用本地文件读取
+  --multimodal      启用多模态分析（需要支持视觉的 LLM）
+  --allow-shell     允许执行 Shell 命令
+  --provider        LLM 提供商（ollama/openai/custom）
+  --model           模型名称
+  --api-key         API Key（在线提供商需要）
+  --api-base        API 基础 URL（自定义/兼容提供商）
+```
+
+**输出文件：**
+
+```
+outputs/evidence_driven_geo_agent/
+├── report_<timestamp>.md           # 完整 Markdown 解译报告
+├── evidence_table_<timestamp>.json # 所有结构化证据记录
+├── hypotheses_<timestamp>.json     # 所有假设及评分
+└── agent_state_<timestamp>.json    # 完整 Agent 状态快照
+```
+
+### 地学解译 Flask API
+
+**启动解译任务：**
+
+```
+POST /api/evidence_geo_agent
+Content-Type: application/json
+
+{
+  "question":                "分析 2023 年土耳其 M7.8 地震的发震构造",
+  "study_area":              "土耳其卡赫拉曼马拉什",
+  "session_id":              "可选会话ID",
+  "workspace_root":          "/path/to/workspace",
+  "literature_root":         "/path/to/papers",
+  "output_dir":              "outputs/evidence_driven_geo_agent",
+  "allow_web_search":        true,
+  "use_rag":                 true,
+  "use_local_files":         true,
+  "use_multimodal":          false,
+  "max_iterations":          3,
+  "max_tool_calls_per_iter": 8,
+  "rag_top_k":               8,
+  "score_threshold":         0.35
+}
+
+响应：{ "job_id": "geo_xxxx", "status": "started" }
+```
+
+**轮询结果：**
+
+```
+GET /api/evidence_geo_agent/poll/<job_id>
+
+响应（运行中）：
+  { "status": "running", "progress": [...日志行...], "result": null }
+
+响应（已完成）：
+  {
+    "status": "completed",
+    "progress": [...],
+    "result": {
+      "report":          "# 解译报告\n...",
+      "evidence_list":   [ { "evidence_id": "ev_001", ... }, ... ],
+      "hypotheses":      [ { "description": "...", "support_score": 0.82, ... }, ... ],
+      "figures":         [ "/api/evidence_geo_agent/figure?path=...", ... ],
+      "tool_log":        [ { "iter": 1, "tool": "web_search", ... }, ... ],
+      "missing_info":    [ "高分辨率震源机制数据", ... ],
+      "iterations_used": 3,
+      "converged":       true
+    }
+  }
+```
+
+**提供图件：**
+
+```
+GET /api/evidence_geo_agent/figure?path=<相对或绝对路径>
+
+返回图像文件（PNG/JPG/SVG），带适当的 Content-Type。
+路径经沙箱检验，必须位于项目根目录或 geo_workspaces 目录内。
+```
+
+### Python 编程接口
+
+```python
+from sage_agents import EvidenceDrivenGeoAgent, AgentConfig
+
+cfg = AgentConfig(
+    workspace_root          = "/path/to/project",
+    literature_root         = "/path/to/papers",
+    output_dir              = "outputs/my_analysis",
+    allow_web_search        = True,
+    use_rag                 = True,
+    use_multimodal          = False,
+    max_iterations          = 5,
+    max_tool_calls_per_iter = 10,
+    rag_top_k               = 8,
+    score_threshold         = 0.35,
+    allow_python            = True,
+    allow_shell             = False,
+    code_timeout_s          = 60,
+)
+
+agent = EvidenceDrivenGeoAgent(config=cfg)
+
+output = agent.run(
+    question   = "2021 年玛多地震的发震构造是什么？",
+    study_area = "青海省玛多县",
+)
+
+print(output.report)
+print(f"经 {output.iterations_used} 轮迭代{'收敛' if output.converged else '达到上限'}")
+print(f"证据记录数：{len(output.evidence_list)}")
+print(f"最优假设：{output.hypotheses[0].description}（评分={output.hypotheses[0].support_score:.2f}）")
+```
+
+### 输出结构
+
+```python
+@dataclass
+class AgentOutput:
+    report:          str                    # 完整 Markdown 解译报告
+    evidence_list:   List[EvidenceRecord]   # 所有结构化证据记录
+    hypotheses:      List[GeoHypothesis]    # 所有假设，按评分降序排列
+    figures:         List[str]              # 输出图件路径列表
+    tool_log:        List[dict]             # 每轮迭代详细工具调用日志
+    missing_info:    List[str]              # Agent 未能填补的数据缺口
+    iterations_used: int                    # 实际完成的迭代次数
+    converged:       bool                   # 是否因收敛而停止
+    error:           Optional[str]          # 运行失败时的错误信息
+```
 
 ---
 

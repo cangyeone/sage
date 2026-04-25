@@ -330,6 +330,12 @@ def chat_page():
     return render_template('chat.html')
 
 
+@app.route('/evidence-geo-agent')
+def evidence_geo_agent_page():
+    """Evidence-driven geoscience interpretation agent page"""
+    return render_template('evidence_geo.html')
+
+
 @app.route('/api/chat', methods=['POST'])
 def chat_message():
     """Process chat message"""
@@ -1335,6 +1341,365 @@ def knowledge_retrieve():
         })
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
+
+
+# ── Literature Loop Agent ───────────────────────────────────────────────────
+
+# Async job store for literature-loop jobs (same pattern as code jobs)
+_lit_jobs: dict = {}   # job_id → {status, progress, result, error, ts}
+
+def _lit_gc():
+    cutoff = _time.time() - 1800  # 30-min TTL (reports are larger than code results)
+    for k in [k for k, v in _lit_jobs.items() if v.get("ts", 0) < cutoff]:
+        _lit_jobs.pop(k, None)
+
+
+@app.route('/api/literature_loop', methods=['POST'])
+def literature_loop():
+    """
+    Start an async literature-loop interpretation job.
+
+    Request JSON:
+      {
+        "question":        "Why are M>4 earthquakes near the Molingchang fault?",
+        "study_area":      "Weiyuan, Sichuan Basin",
+        "max_iterations":  3,
+        "rag_top_k":       8,
+        "output_format":   "markdown"
+      }
+
+    Response JSON:
+      {"ok": true, "job_id": "lit_xxxx"}
+
+    Poll /api/literature_loop/poll/<job_id> for status and result.
+    """
+    import threading as _threading
+    data          = request.json or {}
+    question      = (data.get("question") or "").strip()
+    study_area    = (data.get("study_area") or "").strip()
+    max_iters     = int(data.get("max_iterations", 3))
+    top_k         = int(data.get("rag_top_k", 8))
+
+    if not question:
+        return jsonify({"ok": False, "error": "question is required"}), 400
+
+    _lit_gc()
+    job_id = "lit_" + _uuid.uuid4().hex[:10]
+    _lit_jobs[job_id] = {
+        "status":   "running",
+        "progress": [],
+        "result":   None,
+        "error":    None,
+        "ts":       _time.time(),
+    }
+
+    def _run():
+        try:
+            import sys as _sys, os as _os
+            _root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+            if _root not in _sys.path:
+                _sys.path.insert(0, _root)
+            from sage_agents import LiteratureLoopAgent
+
+            def _prog(d):
+                phase = d.get("phase", "")
+                msg   = d.get("message") or d.get("msg", "")
+                _lit_jobs[job_id]["progress"].append(
+                    {"phase": phase, "message": msg, "ts": _time.time()}
+                )
+
+            agent  = LiteratureLoopAgent(llm_cfg=_get_llm_config(), top_k=top_k)
+            result = agent.run(question, study_area, max_iterations=max_iters,
+                               on_progress=_prog)
+            _lit_jobs[job_id]["status"] = "done"
+            _lit_jobs[job_id]["result"] = agent.result_to_dict(result)
+        except Exception as exc:
+            _lit_jobs[job_id]["status"] = "error"
+            _lit_jobs[job_id]["error"]  = str(exc)
+
+    _threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"ok": True, "job_id": job_id})
+
+
+@app.route('/api/literature_loop/poll/<job_id>', methods=['GET'])
+def literature_loop_poll(job_id):
+    """Poll for literature-loop job status."""
+    job = _lit_jobs.get(job_id)
+    if not job:
+        return jsonify({"ok": False, "error": "Job not found"}), 404
+    return jsonify({
+        "ok":       True,
+        "status":   job["status"],
+        "progress": job["progress"],
+        "result":   job["result"],
+        "error":    job["error"],
+    })
+
+
+# ── Evidence-Driven Geo Agent ─────────────────────────────────────────────────
+
+# Async job store for evidence-geo-agent jobs
+_geo_agent_jobs: dict = {}   # job_id → {status, progress, result, error, ts}
+
+def _geo_agent_gc():
+    """Discard jobs older than 45 minutes."""
+    cutoff = _time.time() - 2700
+    for k in [k for k, v in _geo_agent_jobs.items() if v.get("ts", 0) < cutoff]:
+        _geo_agent_jobs.pop(k, None)
+
+
+@app.route('/api/evidence_geo_agent', methods=['POST'])
+def evidence_geo_agent():
+    """
+    Start an async evidence-driven geoscience interpretation job.
+
+    Request JSON:
+      {
+        "question":          "Why are M>4 earthquakes near the Molingchang fault?",
+        "study_area":        "Weiyuan, Sichuan Basin",
+        "workspace_root":    "./examples/weiyuan",
+        "literature_root":   "./papers/weiyuan",
+        "max_iterations":    3,
+        "max_tool_calls_per_iter": 8,
+        "allow_python":      true,
+        "allow_shell":       false,
+        "allow_web_search":  false,
+        "use_multimodal":    false,
+        "rag_top_k":         8
+      }
+
+    Response JSON:
+      {"ok": true, "job_id": "geo_xxxx"}
+
+    Poll /api/evidence_geo_agent/poll/<job_id> for status and result.
+    """
+    import threading as _threading
+    data         = request.json or {}
+    question     = (data.get("question") or "").strip()
+    study_area   = (data.get("study_area") or "").strip()
+
+    if not question:
+        return jsonify({"ok": False, "error": "question is required"}), 400
+
+    _geo_agent_gc()
+    job_id = "geo_" + _uuid.uuid4().hex[:10]
+    _geo_agent_jobs[job_id] = {
+        "status":   "running",
+        "progress": [],
+        "result":   None,
+        "error":    None,
+        "ts":       _time.time(),
+    }
+
+    def _run():
+        try:
+            import sys as _sys, os as _os
+            _root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+            if _root not in _sys.path:
+                _sys.path.insert(0, _root)
+            from sage_agents import EvidenceDrivenGeoAgent, AgentConfig
+
+            # Build config from request
+            cfg = AgentConfig(
+                workspace_root=data.get("workspace_root") or ".",
+                literature_root=data.get("literature_root") or "",
+                output_dir=data.get("output_dir") or "outputs/evidence_driven_geo_agent",
+                allow_python=bool(data.get("allow_python", True)),
+                allow_shell=bool(data.get("allow_shell", False)),
+                allow_web_search=bool(data.get("allow_web_search", False)),
+                use_multimodal=bool(data.get("use_multimodal", False)),
+                use_rag=bool(data.get("use_rag", True)),
+                use_local_files=bool(data.get("use_local_files", True)),
+                max_iterations=int(data.get("max_iterations", 3)),
+                max_tool_calls_per_iter=int(data.get("max_tool_calls_per_iter", 8)),
+                rag_top_k=int(data.get("rag_top_k", 8)),
+                score_threshold=float(data.get("score_threshold", 0.35)),
+                code_timeout_s=int(data.get("code_timeout_s", 60)),
+            )
+
+            def _prog(d):
+                phase = d.get("phase", "")
+                msg   = d.get("message") or d.get("msg", "")
+                _geo_agent_jobs[job_id]["progress"].append(
+                    {"phase": phase, "message": msg, "ts": _time.time()}
+                )
+
+            agent  = EvidenceDrivenGeoAgent(config=cfg, llm_cfg=_get_llm_config())
+            result = agent.run(question, study_area, on_progress=_prog)
+            _geo_agent_jobs[job_id]["status"] = "done"
+            _geo_agent_jobs[job_id]["result"] = result
+        except Exception as exc:
+            _geo_agent_jobs[job_id]["status"] = "error"
+            _geo_agent_jobs[job_id]["error"]  = str(exc)
+
+    _threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"ok": True, "job_id": job_id})
+
+
+@app.route('/api/evidence_geo_agent/poll/<job_id>', methods=['GET'])
+def evidence_geo_agent_poll(job_id):
+    """Poll for evidence-geo-agent job status and result."""
+    job = _geo_agent_jobs.get(job_id)
+    if not job:
+        return jsonify({"ok": False, "error": "Job not found"}), 404
+    return jsonify({
+        "ok":       True,
+        "status":   job["status"],       # "running" | "done" | "error"
+        "progress": job["progress"],     # list of {phase, message, ts}
+        "result":   job["result"],       # None while running, full dict when done
+        "error":    job["error"],
+    })
+
+
+# ── EvidenceGeoAgent — file upload for workspace ───────────────────────────
+
+# Per-session workspace directories are created under uploads/geo_workspaces/
+GEO_WORKSPACE_ROOT = Path(__file__).parent / "uploads" / "geo_workspaces"
+GEO_WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
+
+_GEO_ALLOWED_EXTS = {
+    ".pdf", ".png", ".jpg", ".jpeg",
+    ".csv", ".txt", ".md", ".json",
+    ".yaml", ".yml", ".bib", ".dat",
+    ".sac", ".mseed", ".xml",
+}
+
+
+@app.route('/api/evidence_geo_agent/upload', methods=['POST'])
+def evidence_geo_agent_upload():
+    """
+    Upload a research file (PDF, image, CSV, …) into the agent's workspace.
+
+    Form fields:
+      file       — the file to upload
+      session_id — opaque session identifier (used as sub-directory name)
+      workspace  — optional: client-supplied workspace_root hint (ignored for security,
+                   we always save under GEO_WORKSPACE_ROOT/<session_id>/)
+
+    Returns:
+      {"ok": true, "path": "<absolute path on server>", "file_type": "pdf|image|data|text"}
+    """
+    if 'file' not in request.files:
+        return jsonify({"ok": False, "error": "No file provided"}), 400
+
+    f          = request.files['file']
+    session_id = (request.form.get('session_id') or 'default').replace('/', '_').replace('..', '_')
+    orig_name  = Path(f.filename).name if f.filename else 'upload'
+    ext        = Path(orig_name).suffix.lower()
+
+    if ext not in _GEO_ALLOWED_EXTS:
+        return jsonify({"ok": False, "error": f"File type '{ext}' not allowed"}), 400
+
+    # Create session workspace
+    ws_dir = GEO_WORKSPACE_ROOT / session_id
+    ws_dir.mkdir(parents=True, exist_ok=True)
+
+    # Determine sub-folder by type
+    if ext == '.pdf':
+        sub = 'literature';  ftype = 'pdf'
+    elif ext in {'.png', '.jpg', '.jpeg'}:
+        sub = 'figures';     ftype = 'image'
+    elif ext == '.csv':
+        sub = 'data';        ftype = 'data'
+    else:
+        sub = 'misc';        ftype = 'text'
+
+    sub_dir = ws_dir / sub
+    sub_dir.mkdir(exist_ok=True)
+
+    dest = sub_dir / orig_name
+    f.save(str(dest))
+
+    return jsonify({
+        "ok":        True,
+        "path":      str(dest),
+        "file_type": ftype,
+        "session_workspace": str(ws_dir),
+    })
+
+
+# ── EvidenceGeoAgent — inline web / scholar search ────────────────────────
+
+@app.route('/api/evidence_geo_agent/web_search', methods=['POST'])
+def evidence_geo_agent_web_search():
+    """
+    Lightweight inline web search used by the frontend search panel.
+    Does NOT require allow_web_search — this is a UI-side helper, not agent-internal.
+
+    Body JSON:
+      query        — search query string
+      search_type  — "web" | "scholar" (default "scholar")
+      max_results  — int (default 10)
+
+    Returns {"ok": true, "results": [...]}
+    """
+    data         = request.json or {}
+    query        = (data.get('query') or '').strip()
+    search_type  = data.get('search_type', 'scholar')
+    max_results  = int(data.get('max_results', 10))
+
+    if not query:
+        return jsonify({"ok": False, "error": "query is required"}), 400
+
+    import sys as _sys, os as _os
+    _root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    if _root not in _sys.path:
+        _sys.path.insert(0, _root)
+
+    try:
+        from sage_agents.evidence_driven_geo_agent import AgentConfig, WebSearchTool
+        cfg  = AgentConfig(allow_web_search=True)
+        tool = WebSearchTool(cfg)
+
+        if search_type == 'scholar':
+            result = tool.dispatch('scholar_search', {'query': query, 'max_results': max_results})
+        else:
+            result = tool.dispatch('web_search', {'query': query, 'max_results': max_results})
+
+        if 'error' in result:
+            return jsonify({"ok": False, "error": result['error']})
+
+        # Normalise to a flat list
+        items = result.get('results', result.get('papers', []))
+        return jsonify({"ok": True, "results": items[:max_results]})
+
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)})
+
+
+# ── EvidenceGeoAgent — serve a generated figure by path ───────────────────
+
+@app.route('/api/evidence_geo_agent/figure', methods=['GET'])
+def evidence_geo_agent_figure():
+    """
+    Serve a generated figure PNG from the agent's output directory.
+    Query param: path — the file path returned in result['generated_figures']
+    Only paths under recognised output directories are served.
+    """
+    import os as _os
+    fig_path = request.args.get('path', '').strip()
+    if not fig_path:
+        return jsonify({"error": "path required"}), 400
+
+    p = Path(fig_path)
+    # Security: only serve files that exist and have image extensions
+    if p.suffix.lower() not in {'.png', '.jpg', '.jpeg', '.svg'}:
+        return jsonify({"error": "Unsupported file type"}), 400
+    if not p.exists():
+        return jsonify({"error": "File not found"}), 404
+
+    # Resolve and check it stays within the project root or GEO_WORKSPACE_ROOT
+    proj_root = Path(__file__).parent.parent.resolve()
+    try:
+        p.resolve().relative_to(proj_root)
+    except ValueError:
+        try:
+            p.resolve().relative_to(GEO_WORKSPACE_ROOT.resolve())
+        except ValueError:
+            return jsonify({"error": "Access denied"}), 403
+
+    mime = 'image/svg+xml' if p.suffix.lower() == '.svg' else 'image/png'
+    return send_file(str(p.resolve()), mimetype=mime)
 
 
 # ── 聊天界面临时文档上传 ────────────────────────────────────────────────────

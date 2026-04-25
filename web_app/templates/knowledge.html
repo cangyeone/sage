@@ -64,6 +64,7 @@ body { background: #f5f7fa; min-height: 100vh; }
     <div class="collapse navbar-collapse">
       <ul class="navbar-nav ms-auto gap-1">
         <li class="nav-item"><a class="nav-link" href="/chat"><i class="bi bi-chat-dots"></i> <span data-i18n="nav_chat">对话</span></a></li>
+        <li class="nav-item"><a class="nav-link" href="/evidence-geo-agent"><i class="bi bi-geo-alt-fill"></i> <span data-i18n="nav_geo">地学解译</span> <span class="badge text-bg-warning fw-normal" style="font-size:.62rem;vertical-align:middle;">alpha</span></a></li>
         <li class="nav-item"><a class="nav-link active fw-bold" href="/knowledge"><i class="bi bi-journal-bookmark-fill"></i> <span data-i18n="nav_knowledge">知识库</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/skills"><i class="bi bi-lightning-charge"></i> <span data-i18n="nav_skills">技能</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/llm-settings"><i class="bi bi-cpu"></i> LLM</a></li>
@@ -165,7 +166,7 @@ body { background: #f5f7fa; min-height: 100vh; }
 <script>
 const I18N = {
   zh: {
-    nav_chat: '对话', nav_knowledge: '知识库', nav_skills: '技能',
+    nav_chat: '对话', nav_geo: '地学解译', nav_knowledge: '知识库', nav_skills: '技能',
     page_title: '知识库管理', page_sub: '上传论文 PDF，建立可检索的知识库',
     drop_title: '拖拽 PDF 到此处', drop_sub: '或点击选择文件（支持批量上传）',
     docs_section: '已索引文献', btn_clear: '清空知识库',
@@ -173,7 +174,7 @@ const I18N = {
     loading: '加载中…'
   },
   en: {
-    nav_chat: 'Chat', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
+    nav_chat: 'Chat', nav_geo: 'Geo Agent', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
     page_title: 'Knowledge Base', page_sub: 'Upload research PDFs to build a searchable knowledge base',
     drop_title: 'Drag PDF files here', drop_sub: 'or click to select files (batch upload supported)',
     docs_section: 'Indexed Documents', btn_clear: 'Clear Knowledge Base',

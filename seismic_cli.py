@@ -1559,6 +1559,305 @@ def run_agent(args):
     print(f"输出目录: {result['output_dir']}")
 
 
+def _setup_literature_loop_parser(subparsers):
+    """Register the literature-loop subcommand."""
+    p = subparsers.add_parser(
+        'literature-loop',
+        help='Iterative geoscience literature interpretation agent',
+        description=(
+            'Run a multi-iteration literature-loop agent that retrieves papers from the '
+            'RAG knowledge base, extracts geological evidence, generates competing '
+            'hypotheses, evaluates them, and writes a structured interpretation report.'
+        ),
+    )
+    p.add_argument(
+        '--question', '-q',
+        required=True,
+        help='Scientific question to investigate (e.g. "Why are M>4 events near fault X?")',
+    )
+    p.add_argument(
+        '--study-area', '-a',
+        default='',
+        help='Geographic/geological study area context (improves retrieval focus)',
+    )
+    p.add_argument(
+        '--max-iterations', '-n',
+        type=int,
+        default=3,
+        help='Maximum reasoning loops (default: 3)',
+    )
+    p.add_argument(
+        '--top-k', '-k',
+        type=int,
+        default=8,
+        help='Number of RAG chunks to retrieve per query (default: 8)',
+    )
+    p.add_argument(
+        '--score-threshold',
+        type=float,
+        default=0.35,
+        help='Minimum cosine similarity for RAG retrieval (default: 0.35)',
+    )
+    p.add_argument(
+        '--output', '-o',
+        default=None,
+        help='Output file path for the Markdown report (default: print to stdout)',
+    )
+    p.add_argument(
+        '--json',
+        action='store_true',
+        help='Output full result as JSON (evidence table, hypotheses, etc.)',
+    )
+    p.add_argument(
+        '--verbose', '-v',
+        action='store_true',
+        help='Print progress messages during execution',
+    )
+    return p
+
+
+def _setup_evidence_geo_agent_parser(subparsers):
+    """Register the evidence-geo-agent subcommand."""
+    p = subparsers.add_parser(
+        'evidence-geo-agent',
+        help='Autonomous evidence-driven geoscience interpretation agent',
+        description=(
+            'An autonomous agent that searches local files, literature libraries, '
+            'RAG indexes, and seismic datasets to build a traceable evidence table, '
+            'generate competing geological hypotheses, validate them (optionally via '
+            'Python code), and write a structured interpretation report.\n\n'
+            'The agent loop: plan → search → read → extract evidence → '
+            'generate hypotheses → evaluate → update report → convergence check.'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python seismic_cli.py evidence-geo-agent \\
+      --question "Why are M>4 earthquakes near the Molingchang fault?" \\
+      --study-area "Weiyuan, Sichuan Basin" \\
+      --workspace-root ./examples/weiyuan \\
+      --literature-root ./papers/weiyuan \\
+      --max-iterations 3
+
+  python seismic_cli.py evidence-geo-agent \\
+      --question "Is the seismicity depth controlled by a detachment fault?" \\
+      --workspace-root /data/sichuan/ \\
+      --allow-python \\
+      --output results/sichuan_interpretation.md \\
+      --verbose
+        """,
+    )
+    p.add_argument('--question', '-q', required=True,
+                   help='Scientific question to investigate')
+    p.add_argument('--study-area', '-a', default='',
+                   help='Geographic/geological study area (improves search focus)')
+    p.add_argument('--workspace-root', '-w', default='.',
+                   help='Local project workspace directory (sandboxed; default: .)')
+    p.add_argument('--literature-root', '-l', default='',
+                   help='PDF / BibTeX library root directory')
+    p.add_argument('--output-dir', default='outputs/evidence_driven_geo_agent',
+                   help='Directory for figures, reports, and state files')
+    p.add_argument('--max-iterations', '-n', type=int, default=3,
+                   help='Maximum reasoning loop iterations (default: 3)')
+    p.add_argument('--max-tool-calls', type=int, default=8,
+                   help='Maximum tool calls per iteration (default: 8)')
+    p.add_argument('--rag-top-k', type=int, default=8,
+                   help='RAG chunks retrieved per query (default: 8)')
+    p.add_argument('--score-threshold', type=float, default=0.35,
+                   help='Minimum RAG similarity score (default: 0.35)')
+    p.add_argument('--allow-python', action='store_true',
+                   help='Enable Python code execution for validation analyses')
+    p.add_argument('--allow-shell', action='store_true',
+                   help='Enable shell command execution (use with caution)')
+    p.add_argument('--allow-web-search', action='store_true',
+                   help='Enable optional web / scholar search for missing information')
+    p.add_argument('--output', '-o', default=None,
+                   help='Output file for final Markdown report (default: print to stdout)')
+    p.add_argument('--json', action='store_true',
+                   help='Output full result as JSON (evidence table, tool log, etc.)')
+    p.add_argument('--verbose', '-v', action='store_true',
+                   help='Print live progress messages')
+    return p
+
+
+def _run_evidence_geo_agent(args):
+    """Execute the evidence-driven geo agent from the CLI."""
+    import json as _json
+
+    print("=" * 72)
+    print("SeismicX — Evidence-Driven Geoscience Interpretation Agent")
+    print("=" * 72)
+    print(f"  Question      : {args.question}")
+    print(f"  Study area    : {args.study_area or '(not specified)'}")
+    print(f"  Workspace     : {args.workspace_root}")
+    print(f"  Literature    : {args.literature_root or '(not specified)'}")
+    print(f"  Max iterations: {args.max_iterations}")
+    print(f"  Max tool calls: {args.max_tool_calls}")
+    print(f"  Python exec   : {'enabled' if args.allow_python else 'disabled'}")
+    print(f"  Web search    : {'enabled' if args.allow_web_search else 'disabled'}")
+    print()
+
+    _root = os.path.dirname(os.path.abspath(__file__))
+    if _root not in sys.path:
+        sys.path.insert(0, _root)
+
+    try:
+        from sage_agents import EvidenceDrivenGeoAgent, AgentConfig
+    except ImportError as e:
+        print(f"✗ Could not import EvidenceDrivenGeoAgent: {e}")
+        sys.exit(1)
+
+    llm_cfg = get_config_manager().get_llm_config()
+    if not llm_cfg.get("api_base"):
+        print("✗ LLM backend not configured.  Run:  python seismic_cli.py llm setup")
+        sys.exit(1)
+
+    cfg = AgentConfig(
+        workspace_root=args.workspace_root,
+        literature_root=args.literature_root,
+        output_dir=args.output_dir,
+        allow_python=args.allow_python,
+        allow_shell=args.allow_shell,
+        allow_web_search=args.allow_web_search,
+        max_iterations=args.max_iterations,
+        max_tool_calls_per_iter=args.max_tool_calls,
+        rag_top_k=args.rag_top_k,
+        score_threshold=args.score_threshold,
+    )
+
+    def _prog(d):
+        if args.verbose:
+            phase = d.get("phase", "")
+            msg   = d.get("message") or d.get("msg", "")
+            print(f"  [{phase:>18}]  {msg}")
+
+    print("Running…  (this may take several minutes)\n")
+    start = __import__('time').time()
+
+    try:
+        agent  = EvidenceDrivenGeoAgent(config=cfg, llm_cfg=llm_cfg)
+        result = agent.run(
+            question=args.question,
+            study_area=args.study_area,
+            on_progress=_prog,
+        )
+    except Exception as e:
+        print(f"✗ Agent failed: {e}")
+        sys.exit(1)
+
+    elapsed = __import__('time').time() - start
+    n_ev    = len(result.get("evidence_table", []))
+    n_hyp   = len(result.get("hypotheses", []))
+    n_calls = len(result.get("tool_log", []))
+    n_figs  = len(result.get("generated_figures", []))
+
+    print(f"\n✓ Done in {elapsed:.1f}s")
+    print(f"  Iterations     : {result.get('iterations_run', '?')}")
+    print(f"  Evidence records: {n_ev}")
+    print(f"  Hypotheses     : {n_hyp}")
+    print(f"  Tool calls     : {n_calls}")
+    print(f"  Figures        : {n_figs}")
+    print(f"  Convergence    : {result.get('convergence_reason', '?')}")
+    if result.get("retrieved_sources"):
+        print(f"  Sources        : {', '.join(result['retrieved_sources'][:5])}")
+    if result.get("generated_figures"):
+        print(f"  Figures saved  : {', '.join(result['generated_figures'][:3])}")
+    print()
+
+    # Output
+    if args.json:
+        out_text = _json.dumps(result, ensure_ascii=False, indent=2)
+    else:
+        out_text = result.get("final_report", "(no report generated)")
+
+    if args.output:
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.output).write_text(out_text, encoding='utf-8')
+        print(f"  Report saved → {args.output}")
+    else:
+        print("-" * 72)
+        print(out_text)
+
+
+def _run_literature_loop(args):
+    """Execute the literature-loop agent from the CLI."""
+    import json as _json
+
+    print("=" * 72)
+    print("SeismicX — Literature Loop Interpretation Agent")
+    print("=" * 72)
+    print(f"  Question      : {args.question}")
+    print(f"  Study area    : {args.study_area or '(not specified)'}")
+    print(f"  Max iterations: {args.max_iterations}")
+    print(f"  RAG top-k     : {args.top_k}")
+    print()
+
+    # Import agent
+    _root = os.path.dirname(os.path.abspath(__file__))
+    if _root not in sys.path:
+        sys.path.insert(0, _root)
+
+    try:
+        from sage_agents import LiteratureLoopAgent
+    except ImportError as e:
+        print(f"✗ Could not import LiteratureLoopAgent: {e}")
+        sys.exit(1)
+
+    # Progress callback
+    def _prog(d):
+        if args.verbose:
+            phase = d.get("phase", "")
+            msg   = d.get("message") or d.get("msg", "")
+            print(f"  [{phase:>14}]  {msg}")
+
+    # Load LLM config
+    llm_cfg = get_config_manager().get_llm_config()
+    if not llm_cfg.get("api_base"):
+        print("✗ LLM backend not configured. Run:  python seismic_cli.py llm setup")
+        sys.exit(1)
+
+    print("Running…  (this may take several minutes)\n")
+    start = __import__('time').time()
+
+    try:
+        agent  = LiteratureLoopAgent(
+            llm_cfg=llm_cfg,
+            top_k=args.top_k,
+            score_threshold=args.score_threshold,
+        )
+        result = agent.run(
+            question=args.question,
+            study_area=args.study_area,
+            max_iterations=args.max_iterations,
+            on_progress=_prog,
+        )
+    except Exception as e:
+        print(f"✗ Agent failed: {e}")
+        sys.exit(1)
+
+    elapsed = __import__('time').time() - start
+    print(f"\n✓ Done in {elapsed:.1f}s  "
+          f"({result.iterations_run} iteration(s), "
+          f"{len(result.evidence_table)} evidence record(s), "
+          f"{len(result.hypotheses)} hypothesis(es)).")
+    print(f"  Convergence: {result.convergence_reason}")
+    print(f"  Sources    : {', '.join(result.retrieved_sources) or '(none — knowledge base may be empty)'}")
+    print()
+
+    # Output
+    if args.json:
+        out_text = _json.dumps(agent.result_to_dict(result), ensure_ascii=False, indent=2)
+    else:
+        out_text = result.final_report
+
+    if args.output:
+        Path(args.output).write_text(out_text, encoding='utf-8')
+        print(f"  Report saved → {args.output}")
+    else:
+        print("-" * 72)
+        print(out_text)
+
+
 def main():
     # Check for first run and LLM configuration
     config = get_config_manager()
@@ -1642,6 +1941,8 @@ For more information, see the skill documentation in .lingma/skills/
     setup_tool_parser(subparsers)
     setup_agent_parser(subparsers)
     setup_skill_parser(subparsers)
+    _setup_literature_loop_parser(subparsers)
+    _setup_evidence_geo_agent_parser(subparsers)
 
     args = parser.parse_args()
 
@@ -1670,6 +1971,10 @@ For more information, see the skill documentation in .lingma/skills/
         run_agent(args)
     elif args.command == 'skill':
         handle_skill_command(args)
+    elif args.command == 'literature-loop':
+        _run_literature_loop(args)
+    elif args.command == 'evidence-geo-agent':
+        _run_evidence_geo_agent(args)
 
 
 if __name__ == '__main__':
