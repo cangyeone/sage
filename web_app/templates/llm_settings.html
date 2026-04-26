@@ -132,7 +132,7 @@ body { background: #f5f7fa; min-height: 100vh; }
               <i class="bi bi-stars text-primary fs-5"></i>
               <div>
                 <div class="fw-bold">DeepSeek</div>
-                <div class="text-muted" style="font-size:.85rem" data-i18n="deepseek_sub">deepseek-chat / deepseek-reasoner，需要 API Key</div>
+                <div class="text-muted" style="font-size:.85rem" data-i18n="deepseek_sub">deepseek-v4-flash / deepseek-v4-pro，需要 API Key</div>
               </div>
             </div>
           </div>
@@ -214,18 +214,18 @@ body { background: #f5f7fa; min-height: 100vh; }
               <label class="form-label fw-bold" data-i18n="label_model_name">模型名称</label>
               <div class="d-flex flex-wrap gap-2 mb-2">
                 <button type="button" class="btn btn-sm btn-outline-primary"
-                  onclick="setOnlineModel('deepseek-chat','https://api.deepseek.com/v1')">
-                  deepseek-chat
+                  onclick="setOnlineModel('deepseek-v4-flash','https://api.deepseek.com/v1')">
+                  deepseek-v4-flash
                   <span class="badge bg-primary ms-1" style="font-size:.65rem" data-i18n="badge_recommend">推荐</span>
                 </button>
                 <button type="button" class="btn btn-sm btn-outline-secondary"
-                  onclick="setOnlineModel('deepseek-reasoner','https://api.deepseek.com/v1')">
-                  deepseek-reasoner
+                  onclick="setOnlineModel('deepseek-v4-pro','https://api.deepseek.com/v1')">
+                  deepseek-v4-pro
                   <span class="badge bg-secondary ms-1" style="font-size:.65rem" data-i18n="badge_reasoning">推理</span>
                 </button>
               </div>
               <input type="text" class="form-control" id="onlineModel"
-                     placeholder="deepseek-chat">
+                     placeholder="deepseek-v4-flash">
             </div>
           </div>
 
@@ -319,7 +319,7 @@ const I18N = {
     ollama_title: 'Ollama（本地）',
     ollama_sub: '本地运行，保护隐私，支持离线使用',
     openai_sub: 'GPT-4o / GPT-4o-mini，需要 API Key',
-    deepseek_sub: 'deepseek-chat / deepseek-reasoner，需要 API Key',
+    deepseek_sub: 'deepseek-v4-flash / deepseek-v4-pro，需要 API Key',
     deepseek_hint: '在 <a href="https://platform.deepseek.com" target="_blank">platform.deepseek.com</a> 注册并获取 API Key',
     badge_recommend: '推荐',
     badge_reasoning: '推理',
@@ -374,7 +374,7 @@ const I18N = {
     ollama_title: 'Ollama (Local)',
     ollama_sub: 'Runs locally — private, works offline',
     openai_sub: 'GPT-4o / GPT-4o-mini — requires an API Key',
-    deepseek_sub: 'deepseek-chat / deepseek-reasoner — requires an API Key',
+    deepseek_sub: 'deepseek-v4-flash / deepseek-v4-pro — requires an API Key',
     deepseek_hint: 'Sign up at <a href="https://platform.deepseek.com" target="_blank">platform.deepseek.com</a> to get your API Key',
     badge_recommend: 'Recommended',
     badge_reasoning: 'Reasoning',
@@ -506,7 +506,7 @@ function selectProvider(el) {
       document.getElementById('onlineModelGeneric').value = PRESETS.openai.model;
     }
     if (isDeepseek && !document.getElementById('onlineModel').value) {
-      document.getElementById('onlineModel').value = 'deepseek-chat';
+      document.getElementById('onlineModel').value = 'deepseek-v4-flash';
       document.getElementById('apiBase').value     = 'https://api.deepseek.com/v1';
     }
   }
@@ -532,7 +532,7 @@ async function loadConfig() {
       document.getElementById('ollamaCustomModel').value = currentConfig.model || '';
       loadOllamaModels();
     } else if (provider === 'deepseek') {
-      document.getElementById('onlineModel').value = currentConfig.model    || 'deepseek-chat';
+      document.getElementById('onlineModel').value = currentConfig.model    || 'deepseek-v4-flash';
       document.getElementById('apiBase').value     = currentConfig.api_base || 'https://api.deepseek.com/v1';
     } else {
       document.getElementById('apiBase').value            = currentConfig.api_base || '';
@@ -552,8 +552,12 @@ function updateCurrentBadge() {
     badge.textContent = T('unconfigured');
     badge.style.background = '#fce4e4'; badge.style.color = '#c62828';
   } else {
-    const provLabel = currentConfig.provider === 'ollama' ? 'Ollama' : currentConfig.provider;
-    badge.textContent = `${provLabel} · ${currentConfig.model}`;
+    const provLabel = currentConfig.provider === 'ollama'
+      ? 'Ollama'
+      : currentConfig.provider === 'deepseek'
+        ? 'DeepSeek'
+        : currentConfig.provider;
+    badge.textContent = `${provLabel} / ${currentConfig.model}`;
     badge.style.background = '#e8f5e9'; badge.style.color = '#2e7d32';
   }
 }
@@ -700,7 +704,7 @@ document.getElementById('llmForm').addEventListener('submit', async e => {
     payload.api_base = 'http://localhost:11434';
   } else if (provider === 'deepseek') {
     payload.api_base = 'https://api.deepseek.com/v1';
-    payload.model    = document.getElementById('onlineModel').value.trim() || 'deepseek-chat';
+    payload.model    = document.getElementById('onlineModel').value.trim() || 'deepseek-v4-flash';
     const key = document.getElementById('apiKey').value.trim();
     if (key) payload.api_key = key;
     if (!payload.model) { showToast(T('save_validate_model'), 'warning'); return; }

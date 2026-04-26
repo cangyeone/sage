@@ -49,9 +49,9 @@ ONLINE_PROVIDERS: Dict[str, Dict] = {
         "need_key": True,
     },
     "deepseek": {
-        "display": "DeepSeek (deepseek-chat / deepseek-coder)",
+        "display": "DeepSeek (deepseek-v4-flash / deepseek-v4-pro)",
         "api_base": "https://api.deepseek.com/v1",
-        "default_model": "deepseek-chat",
+        "default_model": "deepseek-v4-flash",
         "need_key": True,
     },
     "siliconflow": {
