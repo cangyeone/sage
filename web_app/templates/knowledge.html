@@ -41,6 +41,28 @@ body { background: #f5f7fa; min-height: 100vh; }
   padding: .2rem .5rem; border-radius: 6px; transition: all .2s; }
 .btn-del:hover { color: #e53935; background: #fce4e4; }
 
+/* Folder group card */
+.folder-group {
+  background: #fff; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.06);
+  margin-bottom: .75rem; overflow: hidden; border: 1.5px solid #e8eaf6;
+}
+.folder-group-header {
+  display: flex; align-items: center; gap: .75rem;
+  padding: .75rem 1.25rem; cursor: pointer; user-select: none;
+  transition: background .15s;
+}
+.folder-group-header:hover { background: #f5f6ff; }
+.folder-group-header .folder-icon { font-size: 1.4rem; color: var(--accent); flex-shrink: 0; }
+.folder-group-header .folder-name { font-weight: 600; color: #333; flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.folder-group-header .folder-meta { font-size: .78rem; color: #888; white-space: nowrap; }
+.folder-group-header .folder-toggle { font-size: .9rem; color: #aaa; transition: transform .2s; }
+.folder-group-header.open .folder-toggle { transform: rotate(90deg); }
+.folder-group-body { display: none; padding: .5rem .75rem .75rem; border-top: 1px solid #f0f0f0; background: #fafbff; }
+.folder-group-body.show { display: block; }
+.folder-group-body .doc-card { margin-bottom: .5rem; box-shadow: none; border: 1px solid #eee; }
+.folder-group-body .doc-card:last-child { margin-bottom: 0; }
+
 /* Status bar */
 .stat-pill { background: linear-gradient(135deg,var(--accent),var(--accent2));
   color:#fff; border-radius:20px; padding:.35rem 1rem;
@@ -51,6 +73,28 @@ body { background: #f5f7fa; min-height: 100vh; }
   border-bottom:1px solid #f0f0f0; }
 .upload-item:last-child { border-bottom:none; }
 .progress-sm { height:6px; border-radius:3px; }
+
+/* Dir indexer — project cards */
+.proj-card {
+  background:#f8f9ff; border:1.5px solid #e8eaf6; border-radius:12px;
+  padding:.75rem 1rem; margin-bottom:.6rem; transition: border-color .2s;
+}
+.proj-card.status-new     { border-left:4px solid #667eea; }
+.proj-card.status-indexed { border-left:4px solid #43a047; }
+.proj-card.status-modified{ border-left:4px solid #fb8c00; }
+.proj-card.status-partial { border-left:4px solid #fb8c00; }
+.proj-card.status-failed  { border-left:4px solid #e53935; }
+.proj-icon { font-size:1.4rem; flex-shrink:0; }
+.proj-name { font-weight:700; color:#333; font-size:.92rem;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.proj-meta { font-size:.76rem; color:#888; margin-top:.15rem; }
+.proj-skill { font-size:.73rem; color:#667eea; margin-top:.2rem;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.build-log { background:#1a1a2e; color:#a8f0a0; font-size:.75rem; border-radius:10px;
+  padding:.75rem 1rem; max-height:200px; overflow-y:auto; font-family:monospace;
+  line-height:1.5; white-space:pre-wrap; }
+.build-log .log-err { color:#ff8080; }
+.build-log .log-warn { color:#ffd080; }
 </style>
 </head>
 <body>
@@ -98,7 +142,7 @@ body { background: #f5f7fa; min-height: 100vh; }
       <div class="card border-0 shadow-sm mb-3">
         <div class="card-body py-3">
           <div class="d-flex align-items-center justify-content-between mb-2">
-            <h6 class="mb-0 fw-bold text-muted">知识库状态</h6>
+            <h6 class="mb-0 fw-bold text-muted" data-i18n="status_title">知识库状态</h6>
             <button class="btn btn-sm btn-outline-secondary" onclick="refreshStatus()">
               <i class="bi bi-arrow-clockwise"></i>
             </button>
@@ -108,6 +152,102 @@ body { background: #f5f7fa; min-height: 100vh; }
             <span class="stat-pill" id="pillChunks">0 个片段</span>
           </div>
           <div class="mt-2" id="embStatus" style="font-size:.8rem;color:#888;">检查中…</div>
+        </div>
+      </div>
+
+      <!-- Dir indexer card -->
+      <div class="card border-0 shadow-sm mb-3" id="dirIndexCard">
+        <div class="card-body py-3">
+          <div class="d-flex align-items-center justify-content-between mb-2">
+            <h6 class="mb-0 fw-bold text-muted">
+              <i class="bi bi-folder2-open me-1 text-primary"></i>
+              <span data-i18n="dir_title">技能文档目录</span>
+            </h6>
+            <button class="btn btn-sm btn-outline-secondary" onclick="checkDirStatus()" title="刷新">
+              <i class="bi bi-arrow-clockwise"></i>
+            </button>
+          </div>
+
+          <!-- dir path hint -->
+          <div id="dirPathHint" style="font-size:.73rem;color:#aaa;margin-bottom:.6rem;word-break:break-all;"></div>
+
+          <!-- project cards list -->
+          <div id="projCardList">
+            <div class="text-muted text-center py-3" style="font-size:.83rem;">
+              <i class="bi bi-hourglass-split opacity-50"></i>
+              <span data-i18n="dir_checking"> 检查中…</span>
+            </div>
+          </div>
+
+          <!-- build button -->
+          <button class="btn btn-sm w-100 mt-2" id="buildDirBtn"
+            style="background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border:none;border-radius:8px;"
+            onclick="buildFromDir()" disabled>
+            <i class="bi bi-lightning-charge-fill me-1"></i>
+            <span id="buildDirBtnLabel" data-i18n="dir_build_btn">构建技能</span>
+          </button>
+
+          <!-- build progress -->
+          <div id="buildProgressWrap" style="display:none;margin-top:.75rem;">
+            <div class="d-flex align-items-center justify-content-between mb-1">
+              <span style="font-size:.8rem;font-weight:600;color:#555" data-i18n="dir_progress">构建进度</span>
+              <button class="btn btn-link btn-sm p-0 text-danger" style="font-size:.75rem"
+                onclick="stopBuild()" id="stopBuildBtn">
+                <i class="bi bi-stop-circle"></i> <span data-i18n="dir_stop">中断</span>
+              </button>
+            </div>
+            <div class="progress progress-sm mb-1">
+              <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary"
+                   id="buildProgressBar" style="width:0%"></div>
+            </div>
+            <div class="build-log" id="buildLog"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Reference Library card (seismo_knowledge/) -->
+      <div class="card border-0 shadow-sm mb-3" id="refKbCard">
+        <div class="card-body py-3">
+          <div class="d-flex align-items-center justify-content-between mb-2">
+            <h6 class="mb-0 fw-bold text-muted">
+              <i class="bi bi-journal-text me-1 text-success"></i>
+              <span data-i18n="ref_title">参考文献库</span>
+            </h6>
+            <button class="btn btn-sm btn-outline-secondary" onclick="checkRefStatus()" title="刷新">
+              <i class="bi bi-arrow-clockwise"></i>
+            </button>
+          </div>
+
+          <div id="refPathHint" style="font-size:.73rem;color:#aaa;margin-bottom:.6rem;word-break:break-all;"></div>
+
+          <div id="refCardList">
+            <div class="text-muted text-center py-3" style="font-size:.83rem;">
+              <i class="bi bi-hourglass-split opacity-50"></i>
+              <span data-i18n="ref_checking"> 检查中…</span>
+            </div>
+          </div>
+
+          <button class="btn btn-sm w-100 mt-2" id="buildRefBtn"
+            style="background:linear-gradient(135deg,#43a047,#1b5e20);color:#fff;border:none;border-radius:8px;"
+            onclick="buildRefFromDir()" disabled>
+            <i class="bi bi-database-fill-add me-1"></i>
+            <span id="buildRefBtnLabel" data-i18n="ref_build_btn">构建索引</span>
+          </button>
+
+          <div id="refProgressWrap" style="display:none;margin-top:.75rem;">
+            <div class="d-flex align-items-center justify-content-between mb-1">
+              <span style="font-size:.8rem;font-weight:600;color:#555" data-i18n="ref_progress">构建进度</span>
+              <button class="btn btn-link btn-sm p-0 text-danger" style="font-size:.75rem"
+                onclick="stopRefBuild()" id="stopRefBuildBtn">
+                <i class="bi bi-stop-circle"></i> <span data-i18n="ref_stop">中断</span>
+              </button>
+            </div>
+            <div class="progress progress-sm mb-1">
+              <div class="progress-bar progress-bar-striped progress-bar-animated bg-success"
+                   id="refProgressBar" style="width:0%"></div>
+            </div>
+            <div class="build-log" id="refBuildLog"></div>
+          </div>
         </div>
       </div>
 
@@ -123,6 +263,50 @@ body { background: #f5f7fa; min-height: 100vh; }
           <div id="uploadQueue" class="mt-3" style="display:none">
             <div class="fw-semibold mb-2" style="font-size:.85rem;">上传队列</div>
             <div id="uploadList"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Embedding model settings -->
+      <div class="card border-0 shadow-sm mb-3" id="embModelCard">
+        <div class="card-body py-3">
+          <div class="d-flex align-items-center justify-content-between mb-2">
+            <h6 class="mb-0 fw-bold text-muted">
+              <i class="bi bi-cpu me-1 text-primary"></i>
+              <span data-i18n="emb_title">嵌入模型</span>
+            </h6>
+            <button class="btn btn-sm btn-link p-0 text-muted" style="font-size:.8rem;"
+              onclick="toggleEmbSettings()" id="embToggleBtn">
+              <i class="bi bi-gear"></i>
+            </button>
+          </div>
+          <!-- active model display -->
+          <div id="embModelDisplay" style="font-size:.8rem;color:#555;">
+            <i class="bi bi-circle-fill me-1" style="font-size:.5rem;color:#43a047;"></i>
+            <span id="embModelName">BAAI/bge-m3 (HuggingFace)</span>
+          </div>
+          <!-- settings panel (hidden by default) -->
+          <div id="embSettingsPanel" style="display:none;margin-top:.75rem;">
+            <label style="font-size:.8rem;color:#666;margin-bottom:.3rem;display:block;" data-i18n="emb_path_label">
+              本地模型路径（留空则从 HuggingFace 下载）
+            </label>
+            <div class="d-flex gap-1">
+              <input type="text" id="embModelPathInput" class="form-control form-control-sm"
+                placeholder="/Users/you/open_models/bge-m3"
+                style="font-size:.8rem;font-family:monospace;">
+              <button class="btn btn-sm btn-primary" onclick="saveEmbeddingConfig()"
+                style="white-space:nowrap;font-size:.8rem;" data-i18n="emb_save">保存</button>
+            </div>
+            <div id="embConfigHint" style="font-size:.75rem;color:#888;margin-top:.4rem;" data-i18n="emb_hint">
+              支持本地路径或 ModelScope 下载路径。更改后下次构建时生效。
+            </div>
+            <!-- modelscope tip -->
+            <div style="margin-top:.5rem;padding:.5rem .75rem;background:#f0f4ff;border-radius:8px;font-size:.76rem;color:#555;line-height:1.5;">
+              <strong data-i18n="emb_ms_title">国内用户 — 使用 ModelScope 下载：</strong><br>
+              <code style="font-size:.73rem;color:#333;">pip install modelscope</code><br>
+              <code style="font-size:.73rem;color:#333;">python -c "from modelscope import snapshot_download; snapshot_download('AI-ModelScope/bge-m3', local_dir='open_models/bge-m3')"</code><br>
+              <span data-i18n="emb_ms_then">然后将绝对路径填入上方输入框并保存。</span>
+            </div>
           </div>
         </div>
       </div>
@@ -168,18 +352,54 @@ const I18N = {
   zh: {
     nav_chat: '对话', nav_geo: '地学解译', nav_knowledge: '知识库', nav_skills: '技能',
     page_title: '知识库管理', page_sub: '上传论文 PDF，建立可检索的知识库',
+    status_title: '知识库状态',
     drop_title: '拖拽 PDF 到此处', drop_sub: '或点击选择文件（支持批量上传）',
     docs_section: '已索引文献', btn_clear: '清空知识库',
     no_docs: '知识库为空', no_docs_sub: '上传 PDF 后，文献将自动向量化并可用于问答',
-    loading: '加载中…'
+    loading: '加载中…',
+    dir_title: '技能文档目录', dir_checking: '检查中…',
+    dir_build_btn: '构建技能', dir_progress: '构建进度', dir_stop: '中断',
+    dir_no_projects: '暂无文档文件夹', dir_indexed: '已构建', dir_new: '待构建',
+    dir_modified: '有更新', dir_failed: '失败', dir_partial: '部分完成',
+    dir_files: '个文件', dir_selected: '个已选', dir_skill: 'Skill',
+    dir_hint: '每个子文件夹 = 一个技能',
+    emb_title: '嵌入模型', emb_path_label: '本地模型路径（留空则从 HuggingFace 下载）',
+    emb_save: '保存', emb_hint: '支持本地路径或 ModelScope 下载路径。更改后下次构建时生效。',
+    emb_ms_title: '国内用户 — 使用 ModelScope 下载：',
+    emb_ms_then: '然后将绝对路径填入上方输入框并保存。',
+    ref_title: '参考文献库', ref_hint: '每个子文件夹 = 一个文献集合',
+    ref_checking: '检查中…', ref_no_collections: '暂无文献子目录',
+    ref_build_btn: '构建索引', ref_progress: '构建进度', ref_stop: '中断',
+    ref_indexed: '已索引', ref_new: '待索引', ref_modified: '有更新',
+    ref_failed: '失败', ref_partial: '部分完成',
+    ref_files: '个文件', ref_selected: '个已选',
+    docs_group_skill: 'Skill 文档', docs_group_ref: '参考文献', docs_group_upload: '手动上传',
   },
   en: {
     nav_chat: 'Chat', nav_geo: 'Geo Agent', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
     page_title: 'Knowledge Base', page_sub: 'Upload research PDFs to build a searchable knowledge base',
+    status_title: 'Knowledge Base Status',
     drop_title: 'Drag PDF files here', drop_sub: 'or click to select files (batch upload supported)',
     docs_section: 'Indexed Documents', btn_clear: 'Clear Knowledge Base',
     no_docs: 'Knowledge base is empty', no_docs_sub: 'Upload PDFs to index them for Q&A',
-    loading: 'Loading…'
+    loading: 'Loading…',
+    dir_title: 'Skill Docs Library', dir_checking: 'Checking…',
+    dir_build_btn: 'Build Skills', dir_progress: 'Build Progress', dir_stop: 'Stop',
+    dir_no_projects: 'No doc folders found', dir_indexed: 'Built', dir_new: 'Pending',
+    dir_modified: 'Updated', dir_failed: 'Failed', dir_partial: 'Partial',
+    dir_files: 'files', dir_selected: 'selected', dir_skill: 'Skill',
+    dir_hint: 'Each subfolder = one skill',
+    emb_title: 'Embedding Model', emb_path_label: 'Local model path (leave empty to download from HuggingFace)',
+    emb_save: 'Save', emb_hint: 'Accepts a local path or ModelScope download path. Takes effect on next build.',
+    emb_ms_title: 'China users — download via ModelScope:',
+    emb_ms_then: 'Then enter the absolute path above and save.',
+    ref_title: 'Reference Library', ref_hint: 'Each subfolder = one paper collection',
+    ref_checking: 'Checking…', ref_no_collections: 'No collection subfolders found',
+    ref_build_btn: 'Build Index', ref_progress: 'Build Progress', ref_stop: 'Stop',
+    ref_indexed: 'Indexed', ref_new: 'Pending', ref_modified: 'Updated',
+    ref_failed: 'Failed', ref_partial: 'Partial',
+    ref_files: 'files', ref_selected: 'selected',
+    docs_group_skill: 'Skill Docs', docs_group_ref: 'References', docs_group_upload: 'Uploaded',
   }
 };
 
@@ -204,6 +424,11 @@ function toggleLang() {
   currentLang = currentLang === 'zh' ? 'en' : 'zh';
   localStorage.setItem('sage_lang', currentLang);
   applyLang();
+  // Re-render dynamic content that contains hardcoded language strings
+  refreshStatus();
+  loadDocs();
+  checkDirStatus();
+  checkRefStatus();
 }
 
 document.addEventListener('DOMContentLoaded', applyLang);
@@ -232,44 +457,162 @@ async function refreshStatus() {
   try {
     const r = await fetch('/api/knowledge/status');
     const d = await r.json();
-    document.getElementById('pillDocs').textContent   = `${d.n_docs} 篇文献`;
-    document.getElementById('pillChunks').textContent = `${d.n_vectors || d.n_chunks} 个片段`;
+    const nDocs   = d.n_docs   || 0;
+    const nChunks = d.n_vectors || d.n_chunks || 0;
+    const isZh    = currentLang === 'zh';
+    document.getElementById('pillDocs').textContent   = isZh
+      ? `${nDocs} 篇文献` : `${nDocs} docs`;
+    document.getElementById('pillChunks').textContent = isZh
+      ? `${nChunks} 个片段` : `${nChunks} chunks`;
     document.getElementById('embStatus').textContent  = d.ok
-      ? `存储路径：${d.kb_dir}`
+      ? (isZh ? `存储路径：${d.kb_dir}` : `Storage: ${d.kb_dir}`)
       : `⚠ ${d.error}`;
   } catch(e) {
-    document.getElementById('embStatus').textContent = '无法连接后端';
+    document.getElementById('embStatus').textContent = currentLang === 'zh'
+      ? '无法连接后端' : 'Cannot connect to backend';
   }
 }
 
-async function loadDocs() {
-  const r = await fetch('/api/knowledge/list');
-  const d = await r.json();
-  document.getElementById('docCount').textContent = `${(d.docs||[]).length} 篇`;
-
-  if (!d.docs || d.docs.length === 0) {
-    docList.innerHTML = `<div class="text-center text-muted py-5" id="emptyHint">
-      <i class="bi bi-inbox" style="font-size:2.5rem;opacity:.3;"></i>
-      <div class="mt-2">知识库为空，上传 PDF 文献开始构建</div></div>`;
-    return;
-  }
-
-  docList.innerHTML = d.docs.map(doc => `
-    <div class="doc-card" id="doc-${doc.doc_id}">
-      <div class="doc-icon"><i class="bi bi-file-earmark-pdf-fill"></i></div>
-      <div class="doc-info">
-        <div class="doc-name" title="${doc.doc_name}">${doc.doc_name}</div>
-        <div class="doc-meta">
-          ${doc.n_pages} 页 &nbsp;·&nbsp; ${doc.n_chunks} 片段 &nbsp;·&nbsp;
-          ${doc.size_kb} KB &nbsp;·&nbsp;
-          ${new Date(doc.added_at).toLocaleDateString('zh-CN')}
-        </div>
+// ── 渲染单张文档卡片（供独立文档和文件夹内子项共用）───────────────────────
+function renderDocCard(doc, isZh) {
+  const TYPE_BADGE = {
+    skill_docs:    { cls: 'bg-primary',   label_zh: 'Skill文档', label_en: 'Skill Doc' },
+    ref_knowledge: { cls: 'bg-success',   label_zh: '参考文献',  label_en: 'Reference' },
+    upload:        { cls: 'bg-secondary', label_zh: '上传',      label_en: 'Upload' },
+  };
+  const locale   = isZh ? 'zh-CN' : 'en-US';
+  const pageWord = isZh ? '页' : 'p.';
+  const chkWord  = isZh ? '片段' : 'chunks';
+  const st       = doc.source_type || 'upload';
+  const badge    = TYPE_BADGE[st] || TYPE_BADGE.upload;
+  const label    = isZh ? badge.label_zh : badge.label_en;
+  const safeName = doc.doc_name.replace(/'/g, "\\'");
+  return `
+  <div class="doc-card" id="doc-${doc.doc_id}">
+    <div class="doc-icon"><i class="bi bi-file-earmark-pdf-fill"></i></div>
+    <div class="doc-info">
+      <div class="doc-name" title="${doc.doc_name}">${doc.doc_name}</div>
+      <div class="doc-meta">
+        <span class="badge ${badge.cls}" style="font-size:.65rem;">${label}</span>
+        &nbsp; ${doc.n_pages} ${pageWord} &nbsp;·&nbsp; ${doc.n_chunks} ${chkWord}
+        &nbsp;·&nbsp; ${doc.size_kb} KB
+        &nbsp;·&nbsp; ${new Date(doc.added_at).toLocaleDateString(locale)}
       </div>
-      <button class="btn-del" title="删除" onclick="deleteDoc('${doc.doc_id}','${doc.doc_name}')">
-        <i class="bi bi-trash"></i>
-      </button>
     </div>
-  `).join('');
+    <button class="btn-del" title="${isZh ? '删除' : 'Delete'}"
+            onclick="deleteDoc('${doc.doc_id}','${safeName}')">
+      <i class="bi bi-trash"></i>
+    </button>
+  </div>`;
+}
+
+async function loadDocs() {
+  try {
+    const r = await fetch('/api/knowledge/list');
+    const d = await r.json();
+    const isZh = currentLang === 'zh';
+    const docs  = d.docs || [];
+    const cnt   = docs.length;
+    document.getElementById('docCount').textContent = isZh ? `${cnt} 篇` : `${cnt}`;
+
+    if (!d.ok && d.error) {
+      docList.innerHTML = `<div class="text-danger py-3" style="font-size:.82rem;">⚠ ${d.error}</div>`;
+      return;
+    }
+
+    if (cnt === 0) {
+      docList.innerHTML = `<div class="text-center text-muted py-5">
+        <i class="bi bi-inbox" style="font-size:2.5rem;opacity:.3;"></i>
+        <div class="mt-2">${T('no_docs')}</div>
+        <div class="mt-1 opacity-50" style="font-size:.85rem;">${T('no_docs_sub')}</div>
+      </div>`;
+      return;
+    }
+
+    // ── 按 proj_folder 分组：有 folder 的折叠显示，无 folder 的直接列出 ──
+    const groups = {};   // { proj_folder: [doc, ...] }
+    const standalone = [];
+
+    for (const doc of docs) {
+      const pf = (doc.proj_folder || '').trim();
+      if (pf) {
+        if (!groups[pf]) groups[pf] = [];
+        groups[pf].push(doc);
+      } else {
+        standalone.push(doc);
+      }
+    }
+
+    const parts = [];
+
+    // ── 文件夹分组卡片 ─────────────────────────────────────────────────────
+    for (const [folder, fdocs] of Object.entries(groups)) {
+      const totalPages  = fdocs.reduce((s, d) => s + d.n_pages, 0);
+      const totalChunks = fdocs.reduce((s, d) => s + d.n_chunks, 0);
+      const safeFolder  = folder.replace(/'/g, "\\'");
+      const groupId     = 'grp_' + folder.replace(/[^a-zA-Z0-9_]/g, '_');
+      const childCards  = fdocs.map(doc => renderDocCard(doc, isZh)).join('');
+      const delLabel    = isZh ? '删除整个文件夹' : 'Delete folder';
+      const metaLabel   = isZh
+        ? `${fdocs.length} 个文件 · ${totalChunks} 片段`
+        : `${fdocs.length} files · ${totalChunks} chunks`;
+
+      parts.push(`
+      <div class="folder-group" id="${groupId}">
+        <div class="folder-group-header" onclick="toggleFolder('${groupId}')">
+          <span class="folder-icon"><i class="bi bi-folder2-open"></i></span>
+          <span class="folder-name" title="${folder}">${folder}</span>
+          <span class="folder-meta">${metaLabel}</span>
+          <button class="btn-del ms-2" title="${delLabel}"
+                  onclick="event.stopPropagation(); deleteFolderFromKB('${safeFolder}','${groupId}')">
+            <i class="bi bi-trash"></i>
+          </button>
+          <span class="folder-toggle ms-2"><i class="bi bi-chevron-right"></i></span>
+        </div>
+        <div class="folder-group-body" id="${groupId}_body">
+          ${childCards}
+        </div>
+      </div>`);
+    }
+
+    // ── 独立文档（无 proj_folder）────────────────────────────────────────
+    for (const doc of standalone) {
+      parts.push(renderDocCard(doc, isZh));
+    }
+
+    docList.innerHTML = parts.join('');
+  } catch(e) {
+    docList.innerHTML = `<div class="text-danger py-3" style="font-size:.82rem;">⚠ ${e.message}</div>`;
+  }
+}
+
+function toggleFolder(groupId) {
+  const header = document.querySelector(`#${groupId} .folder-group-header`);
+  const body   = document.getElementById(groupId + '_body');
+  if (!body) return;
+  const isOpen = body.classList.toggle('show');
+  header.classList.toggle('open', isOpen);
+}
+
+async function deleteFolderFromKB(folderName, groupId) {
+  const isZh = currentLang === 'zh';
+  const msg  = isZh
+    ? `确认删除文件夹「${folderName}」的所有文档？此操作不可恢复。`
+    : `Delete all documents in folder "${folderName}"? This cannot be undone.`;
+  if (!confirm(msg)) return;
+  try {
+    const r = await fetch(`/api/knowledge/project/${encodeURIComponent(folderName)}`, { method: 'DELETE' });
+    const d = await r.json();
+    if (d.ok) {
+      document.getElementById(groupId)?.remove();
+      showToast(isZh ? `已删除文件夹：${folderName}（${d.removed_docs ?? 0} 个文档）` : `Deleted folder: ${folderName}`);
+      refreshStatus();
+    } else {
+      showToast(`${isZh ? '删除失败' : 'Delete failed'}：${d.error}`, 'danger');
+    }
+  } catch(e) {
+    showToast(`${isZh ? '请求错误' : 'Request error'}：${e.message}`, 'danger');
+  }
 }
 
 // ── Upload ─────────────────────────────────────────────────────────────────
@@ -380,9 +723,532 @@ function showToast(msg, type='success') {
   new bootstrap.Toast(t, {delay:3000}).show();
 }
 
+// ── Embedding model config ─────────────────────────────────────────────────
+let _embSettingsOpen = false;
+
+function toggleEmbSettings() {
+  _embSettingsOpen = !_embSettingsOpen;
+  document.getElementById('embSettingsPanel').style.display = _embSettingsOpen ? 'block' : 'none';
+  document.getElementById('embToggleBtn').innerHTML =
+    _embSettingsOpen ? '<i class="bi bi-x-lg"></i>' : '<i class="bi bi-gear"></i>';
+}
+
+async function loadEmbeddingConfig() {
+  try {
+    const r = await fetch('/api/knowledge/embedding_config');
+    const d = await r.json();
+    const path = d.model_path || '';
+    const display = path || 'BAAI/bge-m3 (HuggingFace)';
+    document.getElementById('embModelName').textContent = display;
+    document.getElementById('embModelPathInput').value = path;
+  } catch(e) {}
+}
+
+async function saveEmbeddingConfig() {
+  const path = document.getElementById('embModelPathInput').value.trim();
+  try {
+    const r = await fetch('/api/knowledge/embedding_config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({model_path: path})
+    });
+    const d = await r.json();
+    if (d.ok) {
+      const display = path || 'BAAI/bge-m3 (HuggingFace)';
+      document.getElementById('embModelName').textContent = display;
+      showToast(currentLang === 'zh' ? '嵌入模型路径已保存，下次构建生效' : 'Embedding model path saved', 'success');
+      toggleEmbSettings();
+    } else {
+      showToast((currentLang === 'zh' ? '保存失败：' : 'Save failed: ') + d.error, 'danger');
+    }
+  } catch(e) {
+    showToast(currentLang === 'zh' ? '网络错误' : 'Network error', 'danger');
+  }
+}
+
 // Init
 refreshStatus();
 loadDocs();
+loadEmbeddingConfig();
+</script>
+
+<!-- ── Knowledge Directory Indexer ──────────────────────────────────────── -->
+<script>
+let _buildJobId     = null;
+let _buildPollTimer = null;
+
+// status → badge class + label key
+const PROJ_STATUS = {
+  new:      { cls: 'bg-primary',              key: 'dir_new'      },
+  partial:  { cls: 'bg-warning text-dark',    key: 'dir_partial'  },
+  modified: { cls: 'bg-warning text-dark',    key: 'dir_modified' },
+  indexed:  { cls: 'bg-success',              key: 'dir_indexed'  },
+  failed:   { cls: 'bg-danger',               key: 'dir_failed'   },
+};
+
+// ── Dir status ────────────────────────────────────────────────────────────
+async function checkDirStatus() {
+  document.getElementById('buildDirBtn').disabled = true;
+  document.getElementById('projCardList').innerHTML =
+    `<div class="text-muted text-center py-2" style="font-size:.82rem;">
+       <i class="bi bi-hourglass-split opacity-50"></i> ${T('dir_checking')}
+     </div>`;
+  try {
+    const r = await fetch('/api/knowledge/dir_status');
+    const d = await r.json();
+    renderProjectCards(d);
+  } catch(e) {
+    document.getElementById('projCardList').innerHTML =
+      `<div class="text-danger" style="font-size:.8rem;">连接失败</div>`;
+  }
+}
+
+function renderProjectCards(d) {
+  const list     = document.getElementById('projCardList');
+  const pathHint = document.getElementById('dirPathHint');
+  const buildBtn = document.getElementById('buildDirBtn');
+  const btnLabel = document.getElementById('buildDirBtnLabel');
+
+  if (d.knowledge_dir) {
+    pathHint.innerHTML =
+      `<i class="bi bi-folder2 me-1"></i>${d.knowledge_dir}` +
+      `<span class="ms-2 opacity-50" style="font-size:.7rem;">${T('dir_hint')}</span>`;
+  }
+
+  const projects = d.projects || [];
+  if (projects.length === 0) {
+    list.innerHTML = `<div class="text-muted text-center py-3" style="font-size:.83rem;">
+      <i class="bi bi-inbox opacity-40"></i><br>${T('dir_no_projects')}</div>`;
+    buildBtn.disabled = true;
+    return;
+  }
+
+  list.innerHTML = projects.map(p => {
+    const st    = PROJ_STATUS[p.status] || PROJ_STATUS.new;
+    const icon  = p.is_folder ? 'bi-folder-fill text-warning' : 'bi-file-earmark-text text-secondary';
+    const meta  = p.is_folder
+      ? `${p.total_files} ${T('dir_files')}，选取 ${p.selected_files} ${T('dir_selected')}`
+      : `1 ${T('dir_files')}`;
+    const skill = p.skill_name
+      ? `<div class="proj-skill"><i class="bi bi-lightning-charge-fill me-1"></i>Skill: ${p.skill_name}</div>`
+      : '';
+    // Show delete button only for indexed/partial projects (have RAG data to remove)
+    const canDelete = p.status === 'indexed' || p.status === 'partial' || p.status === 'modified';
+    const delBtn = canDelete
+      ? `<button class="btn btn-sm btn-outline-danger ms-1" style="font-size:.72rem;padding:.1rem .45rem;border-radius:6px;"
+           onclick="event.stopPropagation();deleteProject('${p.name.replace(/'/g,"\\'")}',${p.is_folder})"
+           title="删除索引和 Skill"><i class="bi bi-trash"></i></button>`
+      : '';
+    return `
+    <div class="proj-card status-${p.status}">
+      <div class="d-flex align-items-center gap-2">
+        <i class="bi ${icon} proj-icon"></i>
+        <div style="flex:1;min-width:0;">
+          <div class="proj-name" title="${p.name}">${p.name}</div>
+          <div class="proj-meta">${meta}${p.indexed_files > 0 ? `，已索引 ${p.indexed_files}` : ''}</div>
+          ${skill}
+        </div>
+        <div class="d-flex align-items-center gap-1">
+          <span class="badge ${st.cls}" style="white-space:nowrap;">${T(st.key)}</span>
+          ${delBtn}
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  const hasPending = projects.some(p => p.status !== 'indexed');
+  buildBtn.disabled = !hasPending;
+
+  const pendingCount = projects.filter(p => p.status !== 'indexed').length;
+  if (pendingCount > 0) {
+    btnLabel.textContent = `${T('dir_build_btn')} (${pendingCount})`;
+  } else {
+    btnLabel.textContent = T('dir_build_btn');
+  }
+}
+
+// ── Build ─────────────────────────────────────────────────────────────────
+async function buildFromDir() {
+  const btn      = document.getElementById('buildDirBtn');
+  const progWrap = document.getElementById('buildProgressWrap');
+  const log      = document.getElementById('buildLog');
+  const bar      = document.getElementById('buildProgressBar');
+  const stopBtn  = document.getElementById('stopBuildBtn');
+
+  btn.disabled = true;
+  progWrap.style.display = 'block';
+  log.innerHTML = '';
+  bar.style.width = '5%';
+  bar.className = 'progress-bar progress-bar-striped progress-bar-animated bg-primary';
+  stopBtn.style.display = 'inline-block';
+
+  try {
+    const r  = await fetch('/api/knowledge/build_from_dir', {method: 'POST'});
+    const d  = await r.json();
+    if (!d.job_id) throw new Error(d.error || 'No job_id');
+    _buildJobId = d.job_id;
+    appendLog(log, '▶ 开始构建技能…');
+    _buildPollTimer = setInterval(() => pollBuildJob(log, bar, btn, stopBtn), 1500);
+  } catch(e) {
+    appendLog(log, `✗ 启动失败：${e.message}`, 'err');
+    bar.style.width = '100%';
+    bar.className = 'progress-bar bg-danger';
+    btn.disabled = false;
+    stopBtn.style.display = 'none';
+  }
+}
+
+async function pollBuildJob(log, bar, btn, stopBtn) {
+  if (!_buildJobId) return;
+  try {
+    const r = await fetch(`/api/knowledge/build_from_dir/${_buildJobId}`);
+    const d = await r.json();
+
+    // Append only new log lines
+    const lines = d.log || [];
+    const already = log.querySelectorAll('.log-line').length;
+    lines.slice(already).forEach(line => {
+      const cls = line.includes('❌') || line.includes('✗') ? 'log-err'
+                : line.includes('⚠')                        ? 'log-warn' : '';
+      appendLog(log, line, cls);
+    });
+
+    if (d.progress !== undefined) {
+      bar.style.width = Math.max(5, Math.min(95, d.progress)) + '%';
+    }
+
+    if (d.status === 'done' || d.status === 'error' || d.status === 'stopped') {
+      clearInterval(_buildPollTimer);
+      _buildPollTimer = null;
+      _buildJobId     = null;
+      stopBtn.style.display = 'none';
+      btn.disabled = false;
+
+      if (d.status === 'done') {
+        bar.style.width = '100%';
+        bar.className = 'progress-bar bg-success';
+        const res = d.result || {};
+        const skillList = (res.skills_generated || []).join(', ') || '—';
+        appendLog(log, `✅ ${T('dir_build_btn')} — Skill: ${skillList}`);
+        showToast(currentLang === 'zh' ? '技能构建完成' : 'Skills built successfully', 'success');
+      } else if (d.status === 'stopped') {
+        bar.className = 'progress-bar bg-warning';
+        appendLog(log, currentLang === 'zh' ? '⏸ 已中断（进度已保存，下次继续）' : '⏸ Interrupted (progress saved)', 'warn');
+        showToast(currentLang === 'zh' ? '构建已中断，进度已保存' : 'Build interrupted', 'warning');
+      } else {
+        bar.style.width = '100%';
+        bar.className = 'progress-bar bg-danger';
+        appendLog(log, `✗ ${(d.result||{}).error || (currentLang === 'zh' ? '构建失败' : 'Build failed')}`, 'err');
+        showToast(currentLang === 'zh' ? '构建失败，请查看日志' : 'Build failed — see log', 'danger');
+      }
+
+      // Delay slightly to ensure backend has committed all state before re-fetching
+      setTimeout(() => {
+        refreshStatus();
+        loadDocs();
+        checkDirStatus();
+      }, 600);
+    }
+  } catch(e) {
+    // transient network error — keep polling
+  }
+}
+
+async function stopBuild() {
+  if (!_buildJobId) return;
+  try {
+    await fetch(`/api/knowledge/build_from_dir/${_buildJobId}`, {method: 'DELETE'});
+  } catch(e) {}
+}
+
+async function deleteProject(projName, isFolder) {
+  const isZh  = currentLang === 'zh';
+  const label = isFolder
+    ? (isZh ? `文件夹「${projName}」` : `folder "${projName}"`)
+    : (isZh ? `文件「${projName}」`   : `file "${projName}"`);
+  const confirmMsg = isZh
+    ? `确认删除 ${label} 的 RAG 索引和生成的 Skill？\n（原始文件不会被删除）`
+    : `Delete RAG index and generated Skill for ${label}?\n(Original files are NOT deleted)`;
+  if (!confirm(confirmMsg)) return;
+  try {
+    const r = await fetch(`/api/knowledge/project/${encodeURIComponent(projName)}`, {method: 'DELETE'});
+    const d = await r.json();
+    if (!d.ok) {
+      showToast((isZh ? '删除失败：' : 'Delete failed: ') + d.error, 'danger');
+      return;
+    }
+    const skillMsg = d.skill_deleted
+      ? (isZh ? '，Skill 已移除' : ', skill removed')
+      : '';
+    showToast(
+      isZh
+        ? `已删除 ${d.removed_files} 个文件的索引${skillMsg}`
+        : `Removed index for ${d.removed_files} file(s)${skillMsg}`,
+      'success'
+    );
+    // Sync all three: status pills + Indexed Documents list + dir project cards
+    refreshStatus();
+    loadDocs();
+    checkDirStatus();
+  } catch(e) {
+    showToast(isZh ? '网络错误' : 'Network error', 'danger');
+  }
+}
+
+function appendLog(container, text, extraClass='') {
+  const div = document.createElement('div');
+  div.className = 'log-line' + (extraClass ? ' ' + extraClass : '');
+  div.textContent = text;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  checkDirStatus();
+});
+</script>
+
+<!-- ── Reference Library (seismo_knowledge/) ────────────────────────────── -->
+<script>
+let _refBuildJobId     = null;
+let _refBuildPollTimer = null;
+
+const REF_PROJ_STATUS = {
+  new:      { cls: 'bg-primary',           key: 'ref_new'      },
+  partial:  { cls: 'bg-warning text-dark', key: 'ref_partial'  },
+  modified: { cls: 'bg-warning text-dark', key: 'ref_modified' },
+  indexed:  { cls: 'bg-success',           key: 'ref_indexed'  },
+  failed:   { cls: 'bg-danger',            key: 'ref_failed'   },
+};
+
+async function checkRefStatus() {
+  document.getElementById('buildRefBtn').disabled = true;
+  document.getElementById('refCardList').innerHTML =
+    `<div class="text-muted text-center py-2" style="font-size:.82rem;">
+       <i class="bi bi-hourglass-split opacity-50"></i> ${T('ref_checking')}
+     </div>`;
+  try {
+    const r = await fetch('/api/ref_knowledge/dir_status');
+    const d = await r.json();
+    renderRefCards(d);
+  } catch(e) {
+    document.getElementById('refCardList').innerHTML =
+      `<div class="text-danger" style="font-size:.8rem;">连接失败</div>`;
+  }
+}
+
+function renderRefCards(d) {
+  const list     = document.getElementById('refCardList');
+  const pathHint = document.getElementById('refPathHint');
+  const buildBtn = document.getElementById('buildRefBtn');
+  const btnLabel = document.getElementById('buildRefBtnLabel');
+
+  if (d.knowledge_dir) {
+    pathHint.innerHTML =
+      `<i class="bi bi-folder2 me-1"></i>${d.knowledge_dir}` +
+      `<span class="ms-2 opacity-50" style="font-size:.7rem;">${T('ref_hint')}</span>`;
+  }
+
+  const projects = d.projects || [];
+  if (projects.length === 0) {
+    list.innerHTML = `<div class="text-muted text-center py-3" style="font-size:.83rem;">
+      <i class="bi bi-inbox opacity-40"></i><br>${T('ref_no_collections')}</div>`;
+    buildBtn.disabled = true;
+    return;
+  }
+
+  list.innerHTML = projects.map(p => {
+    const st       = REF_PROJ_STATUS[p.status] || REF_PROJ_STATUS.new;
+    const canDelete = p.status === 'indexed' || p.status === 'partial' || p.status === 'modified';
+    const safeName  = p.name.replace(/'/g, "\\'");
+    const delBtn    = canDelete
+      ? `<button class="btn-del ms-1" style="font-size:.95rem;"
+           onclick="event.stopPropagation();deleteRefCollection('${safeName}',${p.is_folder})"
+           title="${currentLang === 'zh' ? '删除索引' : 'Delete index'}">
+           <i class="bi bi-trash"></i></button>`
+      : '';
+
+    const files    = p.files || [];
+    const groupId  = 'refgrp_' + p.name.replace(/[^a-zA-Z0-9_]/g, '_');
+
+    // 文件状态图标映射
+    const FILE_ST_ICON = {
+      indexed:  '<i class="bi bi-check-circle-fill text-success" style="font-size:.75rem;"></i>',
+      new:      '<i class="bi bi-circle text-muted" style="font-size:.75rem;"></i>',
+      modified: '<i class="bi bi-arrow-repeat text-warning" style="font-size:.75rem;"></i>',
+      failed:   '<i class="bi bi-x-circle-fill text-danger" style="font-size:.75rem;"></i>',
+    };
+
+    const fileRows = files.map(f => {
+      const fIcon = FILE_ST_ICON[f.status] || FILE_ST_ICON.new;
+      return `<div style="display:flex;align-items:center;gap:.5rem;padding:.3rem .4rem;
+                          border-radius:6px;font-size:.8rem;color:#555;">
+        <i class="bi bi-file-earmark-pdf-fill" style="color:#e53935;font-size:.9rem;flex-shrink:0;"></i>
+        <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
+              title="${f.name}">${f.name}</span>
+        ${fIcon}
+      </div>`;
+    }).join('');
+
+    const metaStr = p.is_folder
+      ? `${p.indexed_files}/${p.selected_files} ${currentLang === 'zh' ? '已索引' : 'indexed'}`
+      : `${p.indexed_files > 0 ? (currentLang === 'zh' ? '已索引' : 'indexed') : (currentLang === 'zh' ? '待索引' : 'pending')}`;
+
+    const hasFiles = files.length > 0;
+    const chevron  = hasFiles
+      ? `<span class="folder-toggle ms-1"><i class="bi bi-chevron-right"></i></span>` : '';
+    const clickAttr = hasFiles ? `onclick="toggleFolder('${groupId}')"` : '';
+
+    return `
+    <div class="folder-group" id="${groupId}" style="border-color:transparent;background:#f8f9ff;">
+      <div class="folder-group-header" style="padding:.6rem 1rem;" ${clickAttr}>
+        <span class="folder-icon" style="font-size:1.2rem;">
+          <i class="bi ${p.is_folder ? 'bi-folder2-open text-success' : 'bi-file-earmark-text text-secondary'}"></i>
+        </span>
+        <span class="folder-name" title="${p.name}">${p.name}</span>
+        <span class="folder-meta">
+          <span class="badge ${st.cls}" style="white-space:nowrap;font-size:.65rem;">${T(st.key)}</span>
+          &nbsp;${metaStr}
+        </span>
+        ${delBtn}
+        ${chevron}
+      </div>
+      ${hasFiles ? `<div class="folder-group-body" id="${groupId}_body"
+                        style="padding:.4rem .6rem .5rem;background:#fff;">${fileRows}</div>` : ''}
+    </div>`;
+  }).join('');
+
+  const hasPending = projects.some(p => p.status !== 'indexed');
+  buildBtn.disabled = !hasPending;
+
+  const pendingCount = projects.filter(p => p.status !== 'indexed').length;
+  btnLabel.textContent = pendingCount > 0
+    ? `${T('ref_build_btn')} (${pendingCount})`
+    : T('ref_build_btn');
+}
+
+async function buildRefFromDir() {
+  const btn      = document.getElementById('buildRefBtn');
+  const progWrap = document.getElementById('refProgressWrap');
+  const log      = document.getElementById('refBuildLog');
+  const bar      = document.getElementById('refProgressBar');
+  const stopBtn  = document.getElementById('stopRefBuildBtn');
+
+  btn.disabled = true;
+  progWrap.style.display = 'block';
+  log.innerHTML = '';
+  bar.style.width = '5%';
+  bar.className = 'progress-bar progress-bar-striped progress-bar-animated bg-success';
+  stopBtn.style.display = 'inline-block';
+
+  try {
+    const r  = await fetch('/api/ref_knowledge/build_from_dir', {method: 'POST'});
+    const d  = await r.json();
+    if (!d.job_id) throw new Error(d.error || 'No job_id');
+    _refBuildJobId = d.job_id;
+    appendLog(log, currentLang === 'zh' ? '▶ 开始构建参考文献索引…' : '▶ Building reference index…');
+    _refBuildPollTimer = setInterval(() => pollRefBuildJob(log, bar, btn, stopBtn), 1500);
+  } catch(e) {
+    appendLog(log, `✗ ${e.message}`, 'err');
+    bar.style.width = '100%';
+    bar.className = 'progress-bar bg-danger';
+    btn.disabled = false;
+    stopBtn.style.display = 'none';
+  }
+}
+
+async function pollRefBuildJob(log, bar, btn, stopBtn) {
+  if (!_refBuildJobId) return;
+  try {
+    const r = await fetch(`/api/ref_knowledge/build_from_dir/${_refBuildJobId}`);
+    const d = await r.json();
+
+    const lines = d.log || [];
+    const already = log.querySelectorAll('.log-line').length;
+    lines.slice(already).forEach(line => {
+      const cls = line.includes('❌') || line.includes('✗') ? 'log-err'
+                : line.includes('⚠')                        ? 'log-warn' : '';
+      appendLog(log, line, cls);
+    });
+
+    if (d.progress !== undefined) {
+      bar.style.width = Math.max(5, Math.min(95, d.progress)) + '%';
+    }
+
+    if (d.status === 'done' || d.status === 'error' || d.status === 'stopped') {
+      clearInterval(_refBuildPollTimer);
+      _refBuildPollTimer = null;
+      _refBuildJobId     = null;
+      stopBtn.style.display = 'none';
+      btn.disabled = false;
+
+      if (d.status === 'done') {
+        bar.style.width = '100%';
+        bar.className = 'progress-bar bg-success';
+        const res = d.result || {};
+        appendLog(log, `✅ ${currentLang === 'zh' ? '索引完成' : 'Indexing complete'} — ${(res.indexed||[]).length} ${currentLang === 'zh' ? '个文件' : 'files'}`);
+        showToast(currentLang === 'zh' ? '参考文献索引构建完成' : 'Reference index built', 'success');
+      } else if (d.status === 'stopped') {
+        bar.className = 'progress-bar bg-warning';
+        appendLog(log, currentLang === 'zh' ? '⏸ 已中断（进度已保存）' : '⏸ Interrupted (progress saved)', 'warn');
+        showToast(currentLang === 'zh' ? '构建已中断' : 'Build interrupted', 'warning');
+      } else {
+        bar.style.width = '100%';
+        bar.className = 'progress-bar bg-danger';
+        appendLog(log, `✗ ${(d.result||{}).error || (currentLang === 'zh' ? '构建失败' : 'Build failed')}`, 'err');
+        showToast(currentLang === 'zh' ? '构建失败' : 'Build failed', 'danger');
+      }
+
+      setTimeout(() => {
+        refreshStatus();
+        loadDocs();
+        checkRefStatus();
+      }, 600);
+    }
+  } catch(e) {
+    // transient — keep polling
+  }
+}
+
+async function stopRefBuild() {
+  if (!_refBuildJobId) return;
+  try {
+    await fetch(`/api/ref_knowledge/build_from_dir/${_refBuildJobId}`, {method: 'DELETE'});
+  } catch(e) {}
+}
+
+async function deleteRefCollection(collName, isFolder) {
+  const isZh  = currentLang === 'zh';
+  const label = isFolder
+    ? (isZh ? `文件夹「${collName}」` : `folder "${collName}"`)
+    : (isZh ? `文件「${collName}」`   : `file "${collName}"`);
+  const confirmMsg = isZh
+    ? `确认删除 ${label} 的 RAG 索引？\n（原始文件不会被删除）`
+    : `Delete RAG index for ${label}?\n(Original files are NOT deleted)`;
+  if (!confirm(confirmMsg)) return;
+  try {
+    const r = await fetch(`/api/ref_knowledge/collection/${encodeURIComponent(collName)}`, {method: 'DELETE'});
+    const d = await r.json();
+    if (!d.ok) {
+      showToast((isZh ? '删除失败：' : 'Delete failed: ') + d.error, 'danger');
+      return;
+    }
+    showToast(
+      isZh
+        ? `已删除 ${d.removed_files} 个文件的索引`
+        : `Removed index for ${d.removed_files} file(s)`,
+      'success'
+    );
+    setTimeout(() => { refreshStatus(); loadDocs(); checkRefStatus(); }, 300);
+  } catch(e) {
+    showToast(isZh ? '网络错误' : 'Network error', 'danger');
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  checkRefStatus();
+});
 </script>
 </body>
 </html>

@@ -37,6 +37,7 @@ SAGE is an earthquake science AI platform integrating **natural language interac
 - [Command Line Tools](#command-line-tools)
 - [Conversation Routing Mechanism](#conversation-routing-mechanism)
 - [seismo_skill Skill System](#seismo_skill-skill-system)
+- [seismo_script Workflow System](#seismo_script-workflow-system)
 - [GMT Map Drawing](#gmt-map-drawing)
 - [EvidenceDrivenGeoAgent — Geoscience Interpretation Agent](#evidencedrivengeoagent--geoscience-interpretation-agent)
   - [Design Principles](#design-principles)
@@ -76,6 +77,7 @@ SAGE is an earthquake science AI platform integrating **natural language interac
 | 📖 **Literature Interpretation** | Temporary PDF upload → deep interpretation of methods/formulas/conclusions, multi-round questioning |
 | 🗂 **Local File Access** | After authorizing specified directory, LLM can directly read file lists to assist analysis |
 | ⚡ **Skill System** | Markdown format skill documents (7 built-in + unlimited custom), automatically retrieved and injected during conversation and code generation |
+| 🔄 **Workflow System** | Declarative multi-step analysis pipelines (`.md` + YAML frontmatter); agent dispatches workflows to Code Engine step-by-step with shared execution directory and per-step debug loop |
 | 📈 **Waveform Visualization** | Waveform diagrams embedded in conversation window (with phase annotation overlay), images can be clicked to enlarge or download |
 
 ---
@@ -85,31 +87,37 @@ SAGE is an earthquake science AI platform integrating **natural language interac
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                     Web UI (Flask + JS)                          │
-│        /chat  ·  /knowledge  ·  /skills  ·  /llm-settings       │
-└──────────────────────────┬──────────────────────────────────────┘
-                           │ HTTP REST API
-┌──────────────────────────▼──────────────────────────────────────┐
-│                      /api/chat/route                             │
-│                   LLM Intent Classification Router               │
-│         code ──────────┬────────── qa ──────── chat             │
-└─────────┬──────────────┼──────────────┬────────────────────────┘
-          │              │              │
-  ┌───────▼──────┐  ┌────▼─────┐  ┌────▼──────┐
-  │ CodeEngine   │  │ RAG Q&A   │  │ General Chat │
-  │ + Toolkit    │  │ BGE-M3   │  │           │
-  │ + GMT        │  │ + FAISS  │  │           │
-  └───────┬──────┘  └──────────┘  └───────────┘
-          │
-  ┌───────▼──────────────────────────────────────┐
-  │            seismo_skill Skill Retrieval      │
-  │    7 Built-in Skills  +  User Custom Skills  │
-  │    (~/.seismicx/skills/)                     │
-  └───────┬──────────────────────────────────────┘
-          │ Automatic injection of function descriptions + code examples
-  ┌───────▼──────────────────────────────────────┐
-  │            LLM Backend                       │
-  │   Ollama (local)  ·  vLLM  ·  OpenAI Compatible     │
-  └──────────────────────────────────────────────┘
+│   /chat  ·  /knowledge  ·  /skills  ·  /llm-settings            │
+└──────────────┬──────────────────────────────────────────────────┘
+               │ HTTP REST API
+┌──────────────▼──────────────────────────────────────────────────┐
+│   /api/chat/route (LLM Intent Router)  │  /api/chat/workflow     │
+│      code ──────┬──── qa ──── chat     │   (workflow endpoint)   │
+└────────┬────────┼────────┬─────────────┴──────────┬─────────────┘
+         │        │        │                         │
+  ┌──────▼─────┐ ┌▼──────┐ ┌▼──────────┐    ┌───────▼──────────┐
+  │ CodeEngine │ │RAG Q&A│ │General    │    │ CodeEngine       │
+  │ + Toolkit  │ │BGE-M3 │ │Chat       │    │ .run_workflow()  │
+  │ + GMT      │ │+FAISS │ │           │    └───────┬──────────┘
+  └──────┬─────┘ └───────┘ └───────────┘            │
+         │                                  ┌────────▼──────────────────────┐
+         │                                  │   seismo_script Workflow      │
+         │                                  │   Runner + Step DAG Executor  │
+         │                                  │   builtin + ~/.seismicx/      │
+         │                                  │   workflows/                  │
+         │                                  └────────┬──────────────────────┘
+         └─────────────────┬───────────────────────── ┘
+                           │
+  ┌────────────────────────▼──────────────────────────────────────┐
+  │            seismo_skill Skill Retrieval                        │
+  │    7 Built-in Skills  +  User Custom Skills                    │
+  │    (~/.seismicx/skills/)                                       │
+  └────────────────────────┬──────────────────────────────────────┘
+                           │ Automatic injection of function descriptions + code examples
+  ┌────────────────────────▼──────────────────────────────────────┐
+  │            LLM Backend                                         │
+  │   Ollama (local)  ·  vLLM  ·  OpenAI Compatible               │
+  └───────────────────────────────────────────────────────────────┘
 
   ┌─────────────────────────────────────────────┐
   │           pnsn/ Phase Picking Engine        │
@@ -229,6 +237,38 @@ pip install FlagEmbedding sentence-transformers
 export HF_ENDPOINT=https://hf-mirror.com
 ```
 
+#### Alternative: Download BGE-M3 via ModelScope (recommended for users in China)
+
+If HuggingFace is inaccessible, use ModelScope to download the model locally first:
+
+```bash
+pip install modelscope
+
+python -c "
+from modelscope import snapshot_download
+snapshot_download('AI-ModelScope/bge-m3', local_dir='open_models/bge-m3')
+"
+```
+
+Then configure the local path in SAGE so it uses the downloaded model instead of downloading from the internet. There are two ways:
+
+**Option 1 — Web Interface** (Recommended):
+Open the **Knowledge Base page** (`/knowledge`) → click the ⚙ gear icon next to "Embedding Model" → paste the absolute path (e.g. `/Users/yourname/open_models/bge-m3`) → click Save.
+
+**Option 2 — Edit config directly**:
+Add an `embedding` section to `~/.seismicx/config.json`:
+
+```json
+{
+  "llm": { "...": "..." },
+  "embedding": {
+    "model_path": "/Users/yourname/open_models/bge-m3"
+  }
+}
+```
+
+Leave `model_path` as an empty string or omit the field entirely to revert to HuggingFace auto-download. The setting takes effect on the next document build — no restart required.
+
 ---
 
 ## Configuring LLM Backend
@@ -345,14 +385,23 @@ Main interaction interface. **No mode switching required** — system automatica
 
 ### ⚡ Skill Management Page (/skills)
 
-Expand AI capabilities without restart.
+Expand AI capabilities without restart. The page has two tabs: **Skills** and **Workflows**.
 
+**Skills tab:**
 - Left: Group display of built-in skills (read-only) and user custom skills (editable/deletable)
 - Right: Markdown editor + real-time preview, with syntax highlighting
 - Support creating, editing, deleting custom skills
 - Takes effect immediately for next conversation or code generation after saving
 
 > Custom skill storage path: `~/.seismicx/skills/`
+
+**Workflows tab:**
+- List of built-in and user-defined workflows with title, version, and skill dependency badges
+- Step DAG preview panel: visualizes dependency graph between workflow steps
+- Markdown editor for `.md` workflow files (YAML frontmatter + guide body)
+- Support creating, editing, deleting custom workflows
+
+> Custom workflow storage path: `~/.seismicx/workflows/`
 
 ### ⚙️ LLM Settings Page (/llm-settings)
 
@@ -563,6 +612,10 @@ Create `.md` file under `~/.seismicx/skills/`:
 name: my_skill_name
 category: custom
 keywords: keyword1, keyword2, english_keyword
+related_skills:            # optional — bidirectional skill expansion
+  - waveform_io
+  - tabular_io
+workflow: seismicity_analysis   # optional — linked workflow name
 ---
 
 # Skill Title
@@ -597,6 +650,195 @@ print(result)
 ```
 
 > **Override Rules:** When custom skill has same name as built-in skill, custom version takes priority automatically.
+
+---
+
+## seismo_script Workflow System
+
+The workflow system lets you define multi-step analysis pipelines as declarative `.md` files. Each workflow specifies which skills to load, which steps to execute, and how those steps depend on each other. The Code Engine handles all code generation and execution — the workflow simply acts as the coordination blueprint.
+
+### Role Distribution
+
+| Role | Responsibility |
+|------|---------------|
+| **Workflow** | Process blueprint: what steps to run, which skills to use, in what order |
+| **Skill** | Specialist manual: how to use a specific tool or method |
+| **Agent** | Dispatcher: matches user request to workflow, loads skills, decomposes task |
+| **Code Engine** | Programmer: generates and fixes Python/GMT/Shell code for each step |
+| **Tool** | Executor: Python sandbox, GMT, Shell |
+
+### Workflow File Format
+
+Workflows use `.md` files with YAML frontmatter — the same format as skills:
+
+```markdown
+---
+name: seismicity_analysis
+title: Seismicity Analysis Workflow
+version: "1.0"
+description: Complete seismicity analysis including catalog loading, spatial/temporal distribution, and b-value estimation
+keywords:
+  - seismicity
+  - b-value
+  - epicenter map
+skills:
+  - name: tabular_io
+    role: catalog loading and parsing
+  - name: gmt_plotting
+    role: epicenter map rendering
+  - name: b_value_analysis
+    role: b-value estimation and GR plots
+steps:
+  - id: load_catalog
+    skill: tabular_io
+    description: Load earthquake catalog from file
+  - id: epicenter_map
+    skill: gmt_plotting
+    description: Draw epicenter distribution map
+    depends_on: [load_catalog]
+  - id: b_value
+    skill: b_value_analysis
+    description: Calculate b-value and plot GR distribution
+    depends_on: [load_catalog]
+---
+
+## Seismicity Analysis Workflow Guide
+
+Step 1: Load the catalog using `load_catalog_file()`...
+```
+
+**Frontmatter fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | str | Workflow identifier |
+| `title` | str | Human-readable title |
+| `description` | str | One-line summary |
+| `keywords` | list[str] | Used for relevance search |
+| `skills` | list[{name, role}] | Required skills and their roles in this workflow |
+| `steps` | list[{id, skill, description, depends_on}] | Execution DAG |
+
+The Markdown body is the **workflow guide** — injected into the LLM context to direct code generation at each step.
+
+### Storage
+
+| Location | Contents |
+|----------|----------|
+| `seismo_script/workflows/` | Built-in workflows (shipped with SAGE) |
+| `~/.seismicx/workflows/` | User-defined workflows (higher priority, override built-ins) |
+
+### Built-in Workflows
+
+| Workflow | Description | Skills |
+|----------|-------------|--------|
+| `gmt_terrain_map` | Full GMT terrain map pipeline (7 steps: CPT → DEM cut → render → coast → contours → scale/legend → export) | `gmt_plotting`, `_gen_gmt_docs_6_5` |
+| `seismicity_analysis` | Seismicity analysis (catalog → epicenter map → time series → b-value → cross-section) | `tabular_io`, `gmt_plotting`, `b_value_analysis` |
+
+### `CodeEngine.run_workflow()` API
+
+```python
+result: WorkflowRunResult = engine.run_workflow(
+    workflow_name    = "seismicity_analysis",
+    user_request     = "Analyze the 2024 catalog at /data/catalog.csv",
+    data_hint        = "/data/catalog.csv",   # optional path hint injected into step prompts
+    max_debug_rounds = 3,                     # retries per step on failure
+    timeout          = 120,                   # per-step execution timeout (seconds)
+    skip_on_failure  = False,                 # if True, skip failed steps instead of aborting
+    on_progress      = callback_fn,           # optional: called with progress dicts
+)
+```
+
+`run_workflow()` topo-sorts the step DAG, then for each step:
+1. Checks all `depends_on` predecessors have succeeded
+2. Scans the shared execution directory for available output files
+3. Calls `build_skill_context_with_rag()` for the step's declared skill
+4. Generates code via LLM (skill context + completed-steps summary injected)
+5. Executes code in a shared directory (so step N+1 can read files written by step N)
+6. On failure: re-queries RAG with the error text appended, retries up to `max_debug_rounds`
+7. Records a `StepResult` and appends it to the shared conversation history
+
+**`WorkflowRunResult`:**
+
+```python
+@dataclass
+class WorkflowRunResult:
+    workflow_name: str
+    steps:         List[StepResult]   # one entry per executed step
+    shared_dir:    str                # directory where all step output files live
+    total_time:    float              # total wall-clock time (seconds)
+
+    @property
+    def failed_steps(self)  -> List[StepResult]: ...
+    @property
+    def skipped_steps(self) -> List[StepResult]: ...
+```
+
+**`StepResult`:**
+
+```python
+@dataclass
+class StepResult:
+    step_id:      str
+    skill:        str
+    description:  str
+    success:      bool
+    code:         str
+    stdout:       str = ""
+    stderr:       str = ""
+    figures:      List[str] = field(default_factory=list)
+    output_files: List[str] = field(default_factory=list)
+    attempts:     int = 1
+    diagnosis:    str = ""
+    skipped:      bool = False
+```
+
+### Web API
+
+**Trigger a workflow run:**
+
+```
+POST /api/chat/workflow
+Content-Type: application/json
+
+{
+  "workflow_name":   "seismicity_analysis",
+  "message":         "Analyze the 2024 Sichuan catalog at /data/catalog.csv",
+  "session_id":      "optional-session-id",
+  "data_hint":       "/data/catalog.csv",
+  "skip_on_failure": false
+}
+
+Response: { "ok": true, "job_id": "wf_xxxx" }
+```
+
+**Poll for results** (same endpoint as single-step code jobs):
+
+```
+GET /api/chat/code/poll/<job_id>
+
+Response (completed):
+{
+  "status": "completed",
+  "result": {
+    "step_results": [
+      { "step_id": "load_catalog", "success": true,  "figures": [...], "stdout": "..." },
+      { "step_id": "epicenter_map","success": true,  "figures": ["/path/map.png"], "stdout": "" },
+      { "step_id": "b_value",      "success": false, "diagnosis": "mc too high", "attempts": 3 }
+    ],
+    "shared_dir": "/tmp/sage_wf_xxxxx"
+  }
+}
+```
+
+### Creating Custom Workflows
+
+**Method 1: Web Interface** (Recommended)
+
+Visit `/skills` → **Workflows** tab → Click "New Workflow" → Fill in metadata → Edit the Markdown guide body. The step DAG preview updates live as you edit the frontmatter.
+
+**Method 2: Write `.md` File Directly**
+
+Save to `~/.seismicx/workflows/<name>.md` using the frontmatter format shown above. The file is picked up immediately (no restart needed).
 
 ---
 
@@ -1013,11 +1255,33 @@ class AgentOutput:
 
 ## Core Modules Details
 
+### `seismo_script/` — Workflow System
+
+```
+seismo_script/
+├── workflow_runner.py  # Workflow discovery, search, CRUD, and context building
+├── workflows/          # Built-in workflow .md files (gmt_terrain_map, seismicity_analysis, ...)
+└── __init__.py         # Public API: list_workflows, search_workflows, load_workflow,
+                        #   save_user_workflow, delete_user_workflow, build_workflow_context
+```
+
+**Public API summary:**
+
+| Function | Description |
+|----------|-------------|
+| `list_workflows()` | Return all workflow metadata (no guide body) |
+| `search_workflows(query, top_k)` | Rank workflows by keyword relevance |
+| `load_workflow(name)` | Return full workflow entry including guide text |
+| `save_user_workflow(name, text)` | Save a `.md` file to `~/.seismicx/workflows/` |
+| `delete_user_workflow(name)` | Delete a user-defined workflow |
+| `build_workflow_context(query)` | Return `(context_str, skill_names)` for LLM injection |
+
 ### `seismo_code/` — Code Generation and Execution Engine
 
 ```
 seismo_code/
-├── code_engine.py      # LLM code generation (with skill injection, multi-round history, error retry)
+├── code_engine.py      # LLM code generation (skill injection, multi-round history, error retry,
+│                       #   run_workflow() multi-step DAG execution)
 ├── safe_executor.py    # Sandbox execution (independent subprocess, 120s timeout, automatic image collection)
 ├── toolkit.py          # Built-in seismological utility functions (no import needed, direct call)
 └── doc_parser.py       # Extract context snippets related to code tasks from PDF
@@ -1127,8 +1391,16 @@ sage/
 │   ├── tabular_io.md             # CSV / TXT data reading
 │   └── gmt_plotting.md           # GMT map drawing
 │
+├── seismo_script/                # Workflow system
+│   ├── workflow_runner.py        # Workflow discovery, search, CRUD, context building
+│   ├── workflows/                # Built-in workflow .md files
+│   │   ├── gmt_terrain_map.md    # GMT terrain map 7-step pipeline
+│   │   └── seismicity_analysis.md # Seismicity analysis pipeline
+│   └── __init__.py
+│
 ├── seismo_code/                  # Code generation and execution engine
-│   ├── code_engine.py            # LLM code generation (multi-round history + error retry)
+│   ├── code_engine.py            # LLM code generation (multi-round history + error retry
+│   │                             #   + run_workflow() DAG execution)
 │   ├── safe_executor.py          # Sandbox execution (subprocess + timeout protection)
 │   ├── toolkit.py                # Built-in seismological utility functions
 │   └── doc_parser.py             # PDF content extraction
@@ -1167,8 +1439,10 @@ sage/
 │   ├── faiss_index.bin
 │   ├── metadata.json
 │   └── pdfs/                     # PDF copies
-└── skills/                       # User custom skill documents
-    └── my_custom_skill.md
+├── skills/                       # User custom skill documents
+│   └── my_custom_skill.md
+└── workflows/                    # User custom workflow .md files (override built-ins)
+    └── my_custom_workflow.md
 ```
 
 ---
@@ -1220,6 +1494,8 @@ First run will download BGE-M3 model (~2 GB) from HuggingFace. Speed will be nor
 ```bash
 export HF_ENDPOINT=https://hf-mirror.com
 ```
+
+If HuggingFace is completely inaccessible, use ModelScope to download the model locally (see [Alternative: Download BGE-M3 via ModelScope](#alternative-download-bge-m3-via-modelscope-recommended-for-users-in-china)) and then configure the local path in the Knowledge Base page settings.
 
 **Q: Chinese titles in GMT images show as garbled characters**
 

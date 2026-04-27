@@ -2,6 +2,8 @@
 name: gmt_plotting
 category: visualization
 keywords: GMT, map, seismicity, epicenter distribution, station distribution, fault, topography, terrain, terrain background, 地形底图, focal mechanism, coastline, contour, cross-section, travel time, earthquake catalog, basemap, coast, pscoast, meca, coupe, grdimage, gmt begin, gmt end, run_gmt, 地图, 震中分布, 台站分布, 地形, 地形底图, 震源机制, 海岸线
+related_skills: _gen_gmt_docs_6_5
+workflow: gmt_terrain_map
 ---
 
 # GMT Map Plotting
@@ -16,12 +18,11 @@ Use GMT (Generic Mapping Tools) to create professional seismology maps: epicente
 
 ## ⚠️ Critical Rules
 
-- `run_gmt(script, outname, title)` is pre-injected; **call directly, no import needed**
-- `script` parameter is a **complete GMT6 bash script string** (multi-line string)
-- Script must use `gmt begin <name> PNG` ... `gmt end` structure (GMT6 modern mode)
-- **Write Chinese/non-ASCII titles and labels directly in the script** (e.g., `-BWSne+t"中国地形图"`); `run_gmt` auto-handles CJK characters without conversion needed
-- After execution, automatically generates **PNG image** and **.sh script file**, both downloadable from interface
-- Requires GMT >= 6.0 installed on system
+- **Output a `bash` code block** — the executor runs it directly, no Python wrapper needed
+- Script must `cd "${SAGE_OUTDIR}"` at the top so output files land in the right place
+- Script must use `gmt begin <name> PNG` ... `gmt end` (GMT6 modern mode)
+- For tasks that need Python to prepare data first, call the pre-injected `run_gmt(script_str, outname)` from within Python code
+- Requires GMT >= 6.0 installed on the system
 
 ## ⚠️ TOPOGRAPHY RULES — READ FIRST
 
@@ -36,11 +37,9 @@ The user almost always wants topography. Do NOT skip it.
 
 ### Robust topography snippet (copy-paste this every time):
 ```bash
-# --- Download relief grid (try high→low resolution) ---
+# --- Download relief grid (skip 01m — too slow; chain 02m→05m) ---
 # Note: always check the file was actually created (grdcut may exit 0 without output)
-if gmt grdcut @earth_relief_01m -R${R} -Gtopo.grd 2>/dev/null && [ -f topo.grd ]; then
-  echo "01m OK"
-elif gmt grdcut @earth_relief_02m -R${R} -Gtopo.grd 2>/dev/null && [ -f topo.grd ]; then
+if gmt grdcut @earth_relief_02m -R${R} -Gtopo.grd 2>/dev/null && [ -f topo.grd ]; then
   echo "02m OK"
 else
   gmt grdcut @earth_relief_05m -R${R} -Gtopo.grd
@@ -90,21 +89,52 @@ gmt colorbar -DJBC+w7c/0.35c+o0/0.5c -Ctopo.cpt -Baf+l"Elevation"
 
 ---
 
-## Core Function
+## Core Pattern
 
-### `run_gmt(script, outname="gmt_map", title="GMT Map")`
+### Pure bash output (preferred for all GMT-only tasks)
 
-**Parameters:**
-- `script` : str — Complete GMT6 bash script (multi-line string)
-- `outname` : str — Output file base name, e.g. `"seismicity_map"`
-- `title` : str — Script comment title
+Output a ` ```bash ` code block.  The engine's `execute_bash()` runs it with
+`SAGE_OUTDIR` set to the temp work directory.
 
-**Returns:** str (PNG image path)
+```bash
+#!/bin/bash
+cd "${SAGE_OUTDIR}"      # all output files go here automatically
 
-**Good practice:**
-- If the script is built in a Python f-string, literal bash vars must use `${{VAR}}`.
-- In that case, awk expressions should use doubled braces like `awk '{{print $6}}'`.
-- If the user provides a `.csv` file path, do NOT pass it to `read_stream_from_dir`; use pandas to load tabular CSV data.
+R="73/136/18/54"        # west/east/south/north
+J="M15c"                # Mercator, 15 cm wide
+
+# ... your GMT commands ...
+
+gmt begin mymap PNG
+  gmt grdimage topo.grd -J${J} -R${R} -Ctopo.cpt -I+d
+  gmt coast -R${R} -J${J} -W0.6p,gray30 -N1/0.8p,gray50 -A500 -Baf
+gmt end
+```
+
+Normal bash syntax throughout — `${VAR}`, `$(cmd)`, `awk '{print $6}'` — no escaping needed.
+
+### Mixed Python + GMT (when CSV data prep is required)
+
+Call the pre-injected `run_gmt(script_str, outname)` from Python code:
+
+```python
+import numpy as np, os
+
+pts_file = os.path.join(os.environ.get('SAGE_OUTDIR', '/tmp'), 'points.txt')
+np.savetxt(pts_file, np.column_stack([lon, lat]), fmt='%.6f')
+
+R = f"{lon.min()-1:.2f}/{lon.max()+1:.2f}/{lat.min()-1:.2f}/{lat.max()+1:.2f}"
+J = "M15c"
+
+# Inside f-string: Python vars → {R}, bash vars → ${{Z_MIN}}, awk → {{print $6}}
+script = f"""
+cd "${{SAGE_OUTDIR}}"
+gmt begin mymap PNG
+  gmt plot {pts_file} -R{R} -J{J} -Sc0.2c -Gred -W0.3p,black -Baf
+gmt end
+"""
+run_gmt(script, outname="mymap")
+```
 
 ---
 
@@ -307,41 +337,42 @@ gmt end
 
 ### Complete working example: terrain map with stations + earthquakes + legend
 
-```python
-import pandas as pd, numpy as np, tempfile, os
+```bash
+#!/bin/bash
+cd "${SAGE_OUTDIR}"
 
-stations_file  = "/path/to/stations.txt"   # lon lat name
-catalog_file   = "/path/to/catalog.txt"    # lon lat depth mag
+STATIONS="/path/to/stations.txt"   # lon lat name
+CATALOG="/path/to/catalog.txt"     # lon lat depth mag
 
-R = "95/115/25/42"
-J = "M15c"
+R="95/115/25/42"
+J="M15c"
 
-gmt_script = f"""
+# ── Topography ──────────────────────────────────────────────────────────
+if gmt grdcut @earth_relief_02m -R${R} -Gtopo.grd 2>/dev/null && [ -f topo.grd ]; then
+  echo "02m OK"
+else
+  gmt grdcut @earth_relief_05m -R${R} -Gtopo.grd
+fi
+Z_MIN=$(gmt grdinfo topo.grd -C | awk '{print $6}')
+Z_MAX=$(gmt grdinfo topo.grd -C | awk '{print $7}')
+gmt makecpt -Cgeo -T${Z_MIN}/${Z_MAX} -Z > topo.cpt
+
 gmt begin seismic_map PNG
 
-  # ── Topography ─────────────────────────────────────────────────────────
-  if gmt grdcut @earth_relief_02m -R{R} -Gtopo.grd 2>/dev/null && [ -f topo.grd ]; then
-    echo "02m OK"
-  else
-    gmt grdcut @earth_relief_05m -R{R} -Gtopo.grd
-  fi
-  Z_MIN=$(gmt grdinfo topo.grd -C | awk '{{print $6}}')
-  Z_MAX=$(gmt grdinfo topo.grd -C | awk '{{print $7}}')
-  gmt makecpt -Cgeo -T${{Z_MIN}}/${{Z_MAX}} -Z > topo.cpt
-  gmt grdimage topo.grd -J{J} -R{R} -Ctopo.cpt -I+d
+  gmt grdimage topo.grd -J${J} -R${R} -Ctopo.cpt -I+d
 
-  # ── Coast + frame ──────────────────────────────────────────────────────
-  gmt coast -R{R} -J{J} -W0.6p,gray30 -N1/0.8p,gray50 -A500 \\
-      -Bxaf+l"Longitude (°E)" -Byaf+l"Latitude (°N)" -BWSne+t"Seismicity Map"
+  # ── Coast + frame ────────────────────────────────────────────────────
+  gmt coast -R${R} -J${J} -W0.6p,gray30 -N1/0.8p,gray50 -A500 \
+      -Bxaf+l"Longitude (E)" -Byaf+l"Latitude (N)" -BWSne+t"Seismicity Map"
 
-  # ── Data layers ────────────────────────────────────────────────────────
-  gmt plot {catalog_file}  -R{R} -J{J} -Sc0.15c -Gblue@40 -W0.3p,gray20
-  gmt plot {stations_file} -R{R} -J{J} -St0.35c -Gred    -W0.6p,black
+  # ── Data layers ──────────────────────────────────────────────────────
+  gmt plot ${CATALOG}   -R${R} -J${J} -Sc0.15c -Gblue@40 -W0.3p,gray20
+  gmt plot ${STATIONS}  -R${R} -J${J} -St0.35c -Gred     -W0.6p,black
 
-  # ── Elevation colorbar ─────────────────────────────────────────────────
+  # ── Elevation colorbar ───────────────────────────────────────────────
   gmt colorbar -DJBC+w7c/0.35c+o0/0.5c -Ctopo.cpt -Baf+l"Elevation (m)"
 
-  # ── Legend (single-quoted heredoc — safe in f-string) ──────────────────
+  # ── Legend ───────────────────────────────────────────────────────────
   cat > legend.txt << 'EOF'
 H 12 Legend
 D 0.1c 0.5p
@@ -351,9 +382,6 @@ EOF
   gmt legend legend.txt -DjBR+w5c+o0.3c/0.3c -F+p0.8p,black+gwhite
 
 gmt end
-"""
-
-run_gmt(gmt_script, outname="seismic_map", title="Seismicity map with legend")
 ```
 
 ---
@@ -847,150 +875,110 @@ run_gmt(script, outname="location_map", title="Location map from CSV")
 
 ### 1. Epicenter Distribution Map (Most Common) — with topography
 
-```python
-R = "70/140/15/55"
-J = "M15c"
+```bash
+#!/bin/bash
+cd "${SAGE_OUTDIR}"
 
-gmt_script = f"""
+R="70/140/15/55"
+J="M15c"
+
+if gmt grdcut @earth_relief_02m -R${R} -Gtopo.grd 2>/dev/null && [ -f topo.grd ]; then
+  echo "02m OK"
+else
+  gmt grdcut @earth_relief_05m -R${R} -Gtopo.grd
+fi
+Z_MIN=$(gmt grdinfo topo.grd -C | awk '{print $6}')
+Z_MAX=$(gmt grdinfo topo.grd -C | awk '{print $7}')
+gmt makecpt -Cgeo -T${Z_MIN}/${Z_MAX} -Z > topo.cpt
+
 gmt begin seismicity PNG
-
-  # ── Topography first ────────────────────────────────────────────────────
-  if gmt grdcut @earth_relief_02m -R{R} -Gtopo.grd 2>/dev/null; then
-    echo "02m OK"
-  else
-    gmt grdcut @earth_relief_05m -R{R} -Gtopo.grd
-  fi
-  Z_MIN=$(gmt grdinfo topo.grd -C | awk '{{print $6}}')
-  Z_MAX=$(gmt grdinfo topo.grd -C | awk '{{print $7}}')
-  gmt makecpt -Cgeo -T${{Z_MIN}}/${{Z_MAX}} -Z > topo.cpt
-  gmt grdimage topo.grd -J{J} -R{R} -Ctopo.cpt -I+d
-
-  # ── Coast on top (no -G — would hide terrain) ───────────────────────────
-  gmt coast -R{R} -J{J} -W0.5p,gray40 -N1/0.8p,gray60 -Slightblue@60 \\
+  gmt grdimage topo.grd -J${J} -R${R} -Ctopo.cpt -I+d
+  gmt coast -R${R} -J${J} -W0.5p,gray40 -N1/0.8p,gray60 -A500 \
       -Baf -BWSne+t"Seismicity Map"
-
-  # ── Plot epicenters ─────────────────────────────────────────────────────
-  # CSV format: lon lat [depth [mag]]
-  # gmt plot catalog.csv -i0,1 -Sc0.2c -Gred -W0.3p,black -t30
-
+  # gmt plot catalog.txt -i0,1 -Sc0.2c -Gred -W0.3p,black -t30
 gmt end
-"""
-
-run_gmt(gmt_script, outname="seismicity_map", title="Epicenter distribution map")
 ```
 
 ---
 
 ### 2. Station Location Map
 
-```python
-gmt_script = """
+```bash
+#!/bin/bash
+cd "${SAGE_OUTDIR}"
+
 gmt begin station_map PNG
   gmt basemap -R100/115/25/42 -JM14c -Baf -BWSne+t"Station Map"
   gmt coast -Gwheat -Slightblue -W0.5p -N1/0.8p,gray
-
-  # Plot stations (triangles), data file: lon lat sta_name
+  # Plot stations (triangles): data file lon lat sta_name
   gmt plot stations.txt -i0,1 -St0.5c -Gred -W1p,black
-
-  # Station name annotation
   gmt text stations.txt -i0,1,2 -F+f7p,Helvetica,black+jBL -D0.1c/0.1c
-
 gmt end
-"""
-
-run_gmt(gmt_script, outname="station_map", title="Station distribution map")
 ```
 
 ---
 
 ### 3. Focal Mechanism Beachballs
 
-```python
-gmt_script = """
+```bash
+#!/bin/bash
+cd "${SAGE_OUTDIR}"
+
 gmt begin focal_map PNG
   gmt basemap -R95/105/28/38 -JM12c -Baf -BWSne+t"Focal Mechanisms"
   gmt coast -Gtan -Slightblue -W0.5p -N1/0.5p
-
-  # Focal mechanism data: lon lat depth strike dip rake mag [event_name]
-  # Use meca to plot (requires GMT seismology module)
   cat << 'EOF' | gmt meca -Sa1c -Gred -W0.5p,black
   100.5 33.2 15 120 60 -90 5.8 1 1
   102.1 30.5 20  45 75  30 4.9 1 1
   103.4 31.8 10  90 45 180 5.2 1 1
 EOF
-
 gmt end
-"""
-
-run_gmt(gmt_script, outname="focal_map", title="Focal mechanism map")
 ```
 
 ---
 
 ### 4. Topographic Map (ETOPO / SRTM) — Robust Version
 
-```python
-R = "100/115/25/40"
-J = "M14c"
+```bash
+#!/bin/bash
+cd "${SAGE_OUTDIR}"
 
-gmt_script = f"""
+R="100/115/25/40"
+J="M14c"
+
+if gmt grdcut @earth_relief_02m -R${R} -Gtopo.grd 2>/dev/null && [ -f topo.grd ]; then
+  echo "02m OK"
+else
+  gmt grdcut @earth_relief_05m -R${R} -Gtopo.grd
+fi
+Z_MIN=$(gmt grdinfo topo.grd -C | awk '{print $6}')
+Z_MAX=$(gmt grdinfo topo.grd -C | awk '{print $7}')
+gmt makecpt -Cgeo -T${Z_MIN}/${Z_MAX} -Z > topo.cpt
+
 gmt begin topo_map PNG
-
-  # --- Download relief (fallback resolutions) ---
-  if gmt grdcut @earth_relief_01m -R{R} -Gtopo.grd 2>/dev/null; then
-    echo "01m OK"
-  elif gmt grdcut @earth_relief_02m -R{R} -Gtopo.grd 2>/dev/null; then
-    echo "02m OK"
-  else
-    gmt grdcut @earth_relief_05m -R{R} -Gtopo.grd
-  fi
-
-  # REQUIRED: build CPT from actual data range (avoids black-terrain bug)
-  Z_MIN=$(gmt grdinfo topo.grd -C | awk '{{print $6}}')
-  Z_MAX=$(gmt grdinfo topo.grd -C | awk '{{print $7}}')
-  gmt makecpt -Cgeo -T${{Z_MIN}}/${{Z_MAX}} -Z > topo.cpt
-
-  # Render terrain with hillshading
-  gmt grdimage topo.grd -J{J} -R{R} -Ctopo.cpt -I+d
-
-  # Coastlines + borders (NO -G fill)
-  gmt coast -R{R} -J{J} -W0.6p,gray30 -N1/0.8p,gray50 -A500 \\
+  gmt grdimage topo.grd -J${J} -R${R} -Ctopo.cpt -I+d
+  gmt coast -R${R} -J${J} -W0.6p,gray30 -N1/0.8p,gray50 -A500 \
       -Bxaf+l"Longitude" -Byaf+l"Latitude" -BWSne+t"Topographic Map"
-
   gmt colorbar -DJBC+w8c/0.4c+e -Ctopo.cpt -Baf+l"Elevation (m)"
-
 gmt end
-"""
-
-run_gmt(gmt_script, outname="topo_map", title="Topographic map")
 ```
 
 ---
 
 ### 5. Cross-Section
 
-```python
-gmt_script = """
+```bash
+#!/bin/bash
+cd "${SAGE_OUTDIR}"
+
+# gmt project catalog.csv -C100/30 -E110/35 -W-50/50 -Fxyzpqrs > proj.txt
+
 gmt begin cross_section PNG
-  # Cross-section parameters: Point A (lon1, lat1) to Point B (lon2, lat2), depth 0-100 km, width ±50 km
-  # First extract earthquakes within projection range
-  # gmt project catalog.csv -C100/30 -E110/35 -W-50/50 -Fxyzpqrs > proj.txt
-
-  gmt basemap -R0/1200/0/100 -JX15c/-8c -Bxaf+l"Distance (km)" -Byaf+l"Depth (km)" -BWSne+t"Cross Section A-B"
-
-  # Plot projected epicenters (distance, depth)
+  gmt basemap -R0/1200/0/100 -JX15c/-8c \
+      -Bxaf+l"Distance (km)" -Byaf+l"Depth (km)" -BWSne+t"Cross Section A-B"
   # gmt plot proj.txt -i4,2 -Sc0.15c -Cjet -W0.2p
-
-  # Reference line
-  gmt plot -W1p,red,- << 'EOF'
-0 35
-1200 35
-EOF
-
+  printf '0 35\n1200 35\n' | gmt plot -W1p,red,-
 gmt end
-"""
-
-run_gmt(gmt_script, outname="cross_section", title="Earthquake cross-section")
 ```
 
 ---

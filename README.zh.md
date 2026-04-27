@@ -37,6 +37,7 @@ SAGE 是集**自然语言交互**、**智能震相拾取**、**统计分析**、
 - [命令行工具](#命令行工具)
 - [对话路由机制](#对话路由机制)
 - [seismo_skill 技能系统](#seismo_skill-技能系统)
+- [seismo_script 工作流系统](#seismo_script-工作流系统)
 - [GMT 地图绘制](#gmt-地图绘制)
 - [EvidenceDrivenGeoAgent — 地学解译 Agent](#evidencedrivengeoagent--地学解译-agent)
   - [设计原则](#设计原则)
@@ -77,6 +78,7 @@ SAGE 是集**自然语言交互**、**智能震相拾取**、**统计分析**、
 | 📖 **文献解读** | 临时上传 PDF → 深度解读方法/公式/结论，多轮追问 |
 | 🗂 **本地文件访问** | 授权指定目录后，LLM 可直接读取文件列表辅助分析 |
 | ⚡ **技能系统** | Markdown 格式技能文档（7 个内置 + 无限自定义），对话和代码生成时自动检索注入 |
+| 🔄 **工作流系统** | 声明式多步分析流水线（`.md` + YAML frontmatter）；Agent 按步 DAG 调度 Code Engine 逐步执行，共享工作目录，每步独立 debug 循环 |
 | 📈 **波形可视化** | 对话窗口内嵌波形图（震相标注叠加），图像可点击放大或下载 |
 
 ---
@@ -86,31 +88,37 @@ SAGE 是集**自然语言交互**、**智能震相拾取**、**统计分析**、
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                     Web UI (Flask + JS)                          │
-│        /chat  ·  /knowledge  ·  /skills  ·  /llm-settings       │
-└──────────────────────────┬──────────────────────────────────────┘
-                           │ HTTP REST API
-┌──────────────────────────▼──────────────────────────────────────┐
-│                      /api/chat/route                             │
-│                   LLM 意图分类路由器                              │
-│         code ──────────┬────────── qa ──────── chat             │
-└─────────┬──────────────┼──────────────┬────────────────────────┘
-          │              │              │
-  ┌───────▼──────┐  ┌────▼─────┐  ┌────▼──────┐
-  │ CodeEngine   │  │ RAG 问答  │  │ 通用对话  │
-  │ + Toolkit    │  │ BGE-M3   │  │           │
-  │ + GMT        │  │ + FAISS  │  │           │
-  └───────┬──────┘  └──────────┘  └───────────┘
-          │
-  ┌───────▼──────────────────────────────────────┐
-  │            seismo_skill 技能检索              │
-  │    内置 7 个技能  +  用户自定义技能            │
-  │    (~/.seismicx/skills/)                     │
-  └───────┬──────────────────────────────────────┘
-          │ 自动注入函数说明 + 代码示例
-  ┌───────▼──────────────────────────────────────┐
-  │            LLM Backend                       │
-  │   Ollama (本地)  ·  vLLM  ·  OpenAI 兼容     │
-  └──────────────────────────────────────────────┘
+│   /chat  ·  /knowledge  ·  /skills  ·  /llm-settings            │
+└──────────────┬──────────────────────────────────────────────────┘
+               │ HTTP REST API
+┌──────────────▼───────────────────────────────────────────────────┐
+│   /api/chat/route（LLM 意图路由）  │  /api/chat/workflow          │
+│      code ──────┬── qa ── chat    │   （工作流专用端点）           │
+└────────┬────────┼────────┬────────┴────────────┬─────────────────┘
+         │        │        │                      │
+  ┌──────▼──────┐ ┌▼──────┐ ┌▼───────┐   ┌───────▼──────────┐
+  │ CodeEngine  │ │RAG问答│ │通用对话│   │ CodeEngine       │
+  │ + Toolkit   │ │BGE-M3 │ │        │   │ .run_workflow()  │
+  │ + GMT       │ │+FAISS │ │        │   └───────┬──────────┘
+  └──────┬──────┘ └───────┘ └────────┘           │
+         │                               ┌────────▼───────────────────────┐
+         │                               │  seismo_script 工作流调度器    │
+         │                               │  步骤 DAG 拓扑排序 + 执行引擎  │
+         │                               │  内置工作流 + ~/.seismicx/     │
+         │                               │  workflows/                    │
+         │                               └────────┬───────────────────────┘
+         └──────────────────┬──────────────────────┘
+                            │
+  ┌─────────────────────────▼──────────────────────────────────────┐
+  │            seismo_skill 技能检索                                │
+  │    内置 7 个技能  +  用户自定义技能                              │
+  │    (~/.seismicx/skills/)                                        │
+  └─────────────────────────┬──────────────────────────────────────┘
+                            │ 自动注入函数说明 + 代码示例
+  ┌─────────────────────────▼──────────────────────────────────────┐
+  │            LLM Backend                                          │
+  │   Ollama（本地）  ·  vLLM  ·  OpenAI 兼容                      │
+  └────────────────────────────────────────────────────────────────┘
 
   ┌─────────────────────────────────────────────┐
   │           pnsn/ 震相拾取引擎                 │
@@ -230,6 +238,38 @@ pip install FlagEmbedding sentence-transformers
 export HF_ENDPOINT=https://hf-mirror.com
 ```
 
+#### 国内用户推荐：使用 ModelScope 下载 BGE-M3
+
+若 HuggingFace 无法访问，可先通过 ModelScope 将模型下载到本地：
+
+```bash
+pip install modelscope
+
+python -c "
+from modelscope import snapshot_download
+snapshot_download('AI-ModelScope/bge-m3', local_dir='open_models/bge-m3')
+"
+```
+
+下载完成后，在 SAGE 中配置本地路径，使其直接读取本地模型而不联网下载。有两种方式：
+
+**方式一 — Web 界面**（推荐）：  
+打开**知识库页面**（`/knowledge`）→ 点击「嵌入模型」旁的 ⚙ 齿轮图标 → 粘贴绝对路径（如 `/Users/yourname/open_models/bge-m3`）→ 点击「保存」。
+
+**方式二 — 直接编辑配置文件**：  
+在 `~/.seismicx/config.json` 中添加 `embedding` 字段：
+
+```json
+{
+  "llm": { "...": "..." },
+  "embedding": {
+    "model_path": "/Users/yourname/open_models/bge-m3"
+  }
+}
+```
+
+将 `model_path` 置为空字符串或删除该字段即可恢复为 HuggingFace 自动下载。该配置在下次文档构建时生效，**无需重启服务**。
+
 ---
 
 ## 配置 LLM 后端
@@ -346,14 +386,23 @@ python seismic_cli.py backend auto
 
 ### ⚡ 技能管理页（/skills）
 
-无需重启即可扩展 AI 能力。
+无需重启即可扩展 AI 能力。页面包含**技能**和**工作流**两个标签页。
 
+**技能标签页：**
 - 左侧：内置技能（只读）与用户自定义技能（可编辑/删除）分组展示
 - 右侧：Markdown 编辑器 + 实时预览，含语法高亮
 - 支持新建、编辑、删除自定义技能
 - 保存后下一次对话或代码生成立即生效
 
 > 自定义技能存储路径：`~/.seismicx/skills/`
+
+**工作流标签页：**
+- 列出内置和用户自定义工作流，显示标题、版本和技能依赖徽章
+- 步骤 DAG 预览面板：以节点 + 箭头图形可视化步骤依赖关系
+- Markdown 编辑器，用于编辑 `.md` 工作流文件（YAML frontmatter + 流程说明体）
+- 支持新建、编辑、删除自定义工作流
+
+> 自定义工作流存储路径：`~/.seismicx/workflows/`
 
 ### ⚙️ LLM 设置页（/llm-settings）
 
@@ -564,6 +613,10 @@ python seismic_cli.py skill new my_hypodd_tool \
 name: my_skill_name
 category: custom
 keywords: 关键词1, 关键词2, english_keyword
+related_skills:            # 可选 — 双向技能展开
+  - waveform_io
+  - tabular_io
+workflow: seismicity_analysis   # 可选 — 关联的工作流名称
 ---
 
 # 技能标题
@@ -598,6 +651,195 @@ print(result)
 ```
 
 > **覆盖规则：** 自定义技能与内置技能同名时，自定义版本自动优先生效。
+
+---
+
+## seismo_script 工作流系统
+
+工作流系统让你以声明式的 `.md` 文件定义多步分析流水线。每个工作流指定需要加载哪些技能、执行哪些步骤、步骤之间的依赖关系，由 Code Engine 负责代码生成与执行——工作流本身只充当调度蓝图。
+
+### 角色分工
+
+| 角色 | 职责 |
+|------|------|
+| **workflow（工作流）** | 作业流程书：执行哪些步骤、调用哪些技能、以何种顺序执行 |
+| **skill（技能）** | 专项操作手册：如何使用某个具体工具或方法 |
+| **agent（调度员）** | 匹配用户请求 → 加载对应工作流和技能 → 分解任务 |
+| **code engine（程序员）** | 为每个步骤生成并修复 Python / GMT / Shell 代码 |
+| **tool（工具）** | 执行器：Python 沙箱、GMT、Shell |
+
+### 工作流文件格式
+
+工作流使用与技能相同的 `.md` + YAML frontmatter 格式：
+
+```markdown
+---
+name: seismicity_analysis
+title: 地震活动性分析工作流
+version: "1.0"
+description: 完整的地震活动性分析，包括目录加载、时空分布和 b 值估算
+keywords:
+  - 地震活动性
+  - b 值
+  - 震中分布图
+skills:
+  - name: tabular_io
+    role: 地震目录加载与解析
+  - name: gmt_plotting
+    role: 震中图绘制
+  - name: b_value_analysis
+    role: b 值估算与 GR 图绘制
+steps:
+  - id: load_catalog
+    skill: tabular_io
+    description: 从文件加载地震目录
+  - id: epicenter_map
+    skill: gmt_plotting
+    description: 绘制震中分布图
+    depends_on: [load_catalog]
+  - id: b_value
+    skill: b_value_analysis
+    description: 计算 b 值并绘制 GR 分布
+    depends_on: [load_catalog]
+---
+
+## 地震活动性分析流程说明
+
+步骤一：使用 `load_catalog_file()` 加载目录...
+```
+
+**Frontmatter 字段说明：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `name` | str | 工作流标识符 |
+| `title` | str | 人类可读标题 |
+| `description` | str | 单行摘要 |
+| `keywords` | list[str] | 用于相关性搜索匹配 |
+| `skills` | list[{name, role}] | 所需技能及各自的角色 |
+| `steps` | list[{id, skill, description, depends_on}] | 执行 DAG |
+
+Markdown 正文是**工作流指南**，在每个步骤的代码生成时注入到 LLM 上下文。
+
+### 存储路径
+
+| 位置 | 内容 |
+|------|------|
+| `seismo_script/workflows/` | 内置工作流（随 SAGE 发布） |
+| `~/.seismicx/workflows/` | 用户自定义工作流（优先级更高，覆盖同名内置） |
+
+### 内置工作流
+
+| 工作流 | 说明 | 依赖技能 |
+|--------|------|---------|
+| `gmt_terrain_map` | GMT 地形图完整流水线（7 步：CPT → 裁剪 DEM → 渲染 → 海岸线 → 等高线 → 比例尺/图例 → 导出） | `gmt_plotting`, `_gen_gmt_docs_6_5` |
+| `seismicity_analysis` | 地震活动性分析（目录 → 震中图 → 时序图 → b 值 → 剖面图） | `tabular_io`, `gmt_plotting`, `b_value_analysis` |
+
+### `CodeEngine.run_workflow()` API
+
+```python
+result: WorkflowRunResult = engine.run_workflow(
+    workflow_name    = "seismicity_analysis",
+    user_request     = "分析 /data/catalog.csv 中的 2024 年地震目录",
+    data_hint        = "/data/catalog.csv",   # 可选：注入步骤提示的路径提示
+    max_debug_rounds = 3,                     # 每步失败时的最大重试次数
+    timeout          = 120,                   # 每步执行超时（秒）
+    skip_on_failure  = False,                 # True 时跳过失败步骤而非终止
+    on_progress      = callback_fn,           # 可选：进度回调函数
+)
+```
+
+`run_workflow()` 对步骤 DAG 进行拓扑排序，然后对每个步骤：
+1. 检查所有 `depends_on` 前置步骤已成功完成
+2. 扫描共享执行目录中已有的输出文件
+3. 调用 `build_skill_context_with_rag()` 获取该步骤声明技能的上下文
+4. 通过 LLM 生成代码（注入技能上下文 + 已完成步骤摘要）
+5. 在共享目录中执行代码（步骤 N+1 可读取步骤 N 写入的文件）
+6. 失败时：将错误文本追加到 RAG 查询并重试，最多 `max_debug_rounds` 次
+7. 记录 `StepResult` 并追加到共享对话历史
+
+**`WorkflowRunResult`：**
+
+```python
+@dataclass
+class WorkflowRunResult:
+    workflow_name: str
+    steps:         List[StepResult]   # 每个执行步骤对应一条记录
+    shared_dir:    str                # 所有步骤输出文件所在目录
+    total_time:    float              # 总耗时（秒）
+
+    @property
+    def failed_steps(self)  -> List[StepResult]: ...
+    @property
+    def skipped_steps(self) -> List[StepResult]: ...
+```
+
+**`StepResult`：**
+
+```python
+@dataclass
+class StepResult:
+    step_id:      str
+    skill:        str
+    description:  str
+    success:      bool
+    code:         str
+    stdout:       str = ""
+    stderr:       str = ""
+    figures:      List[str] = field(default_factory=list)
+    output_files: List[str] = field(default_factory=list)
+    attempts:     int = 1
+    diagnosis:    str = ""
+    skipped:      bool = False
+```
+
+### Web API
+
+**触发工作流运行：**
+
+```
+POST /api/chat/workflow
+Content-Type: application/json
+
+{
+  "workflow_name":   "seismicity_analysis",
+  "message":         "分析 /data/catalog.csv 中的 2024 年四川地震目录",
+  "session_id":      "可选会话ID",
+  "data_hint":       "/data/catalog.csv",
+  "skip_on_failure": false
+}
+
+响应：{ "ok": true, "job_id": "wf_xxxx" }
+```
+
+**轮询结果**（与单步代码任务共用同一端点）：
+
+```
+GET /api/chat/code/poll/<job_id>
+
+响应（已完成）：
+{
+  "status": "completed",
+  "result": {
+    "step_results": [
+      { "step_id": "load_catalog",  "success": true,  "figures": [...], "stdout": "..." },
+      { "step_id": "epicenter_map", "success": true,  "figures": ["/path/map.png"] },
+      { "step_id": "b_value",       "success": false, "diagnosis": "Mc 过高", "attempts": 3 }
+    ],
+    "shared_dir": "/tmp/sage_wf_xxxxx"
+  }
+}
+```
+
+### 创建自定义工作流
+
+**方式一：Web 界面**（推荐）
+
+访问 `/skills` → **工作流**标签页 → 点击「新建工作流」→ 填写元数据 → 在编辑器中完善 Markdown 流程说明。步骤 DAG 预览会随 frontmatter 编辑实时更新。
+
+**方式二：直接编写 `.md` 文件**
+
+将文件保存到 `~/.seismicx/workflows/<name>.md`，使用上面展示的 frontmatter 格式。无需重启，文件立即被加载。
 
 ---
 
@@ -1014,11 +1256,33 @@ class AgentOutput:
 
 ## 核心模块详解
 
+### `seismo_script/` — 工作流系统
+
+```
+seismo_script/
+├── workflow_runner.py  # 工作流发现、搜索、CRUD 与上下文构建
+├── workflows/          # 内置工作流 .md 文件（gmt_terrain_map、seismicity_analysis 等）
+└── __init__.py         # 公开 API：list_workflows, search_workflows, load_workflow,
+                        #   save_user_workflow, delete_user_workflow, build_workflow_context
+```
+
+**公开 API 一览：**
+
+| 函数 | 说明 |
+|------|------|
+| `list_workflows()` | 返回所有工作流元数据（不含指南正文） |
+| `search_workflows(query, top_k)` | 按关键词相关性对工作流排序 |
+| `load_workflow(name)` | 返回完整工作流条目（含指南文本） |
+| `save_user_workflow(name, text)` | 将 `.md` 文件保存到 `~/.seismicx/workflows/` |
+| `delete_user_workflow(name)` | 删除用户自定义工作流 |
+| `build_workflow_context(query)` | 返回 `(context_str, skill_names)` 供 LLM 注入 |
+
 ### `seismo_code/` — 代码生成与执行引擎
 
 ```
 seismo_code/
-├── code_engine.py      # LLM 代码生成（含技能注入、多轮历史、错误重试）
+├── code_engine.py      # LLM 代码生成（含技能注入、多轮历史、错误重试、
+│                       #   run_workflow() 多步 DAG 执行）
 ├── safe_executor.py    # 沙箱执行（独立子进程、120s 超时、自动收集图像）
 ├── toolkit.py          # 内置地震学工具函数（无需 import，直接调用）
 └── doc_parser.py       # 从 PDF 提取与代码任务相关的上下文片段
@@ -1128,8 +1392,16 @@ sage/
 │   ├── tabular_io.md             # CSV / TXT 数据读取
 │   └── gmt_plotting.md           # GMT 地图绘制
 │
+├── seismo_script/                # 工作流系统
+│   ├── workflow_runner.py        # 工作流发现、搜索、CRUD、上下文构建
+│   ├── workflows/                # 内置工作流 .md 文件
+│   │   ├── gmt_terrain_map.md    # GMT 地形图 7 步流水线
+│   │   └── seismicity_analysis.md # 地震活动性分析流水线
+│   └── __init__.py
+│
 ├── seismo_code/                  # 代码生成与执行引擎
-│   ├── code_engine.py            # LLM 代码生成（多轮历史 + 错误重试）
+│   ├── code_engine.py            # LLM 代码生成（多轮历史 + 错误重试
+│   │                             #   + run_workflow() DAG 执行）
 │   ├── safe_executor.py          # 沙箱执行（子进程 + 超时保护）
 │   ├── toolkit.py                # 内置地震学工具函数
 │   └── doc_parser.py             # PDF 内容提取
@@ -1168,8 +1440,10 @@ sage/
 │   ├── faiss_index.bin
 │   ├── metadata.json
 │   └── pdfs/                     # PDF 副本
-└── skills/                       # 用户自定义技能文档
-    └── my_custom_skill.md
+├── skills/                       # 用户自定义技能文档
+│   └── my_custom_skill.md
+└── workflows/                    # 用户自定义工作流 .md 文件（覆盖同名内置工作流）
+    └── my_custom_workflow.md
 ```
 
 ---
@@ -1221,6 +1495,8 @@ sage/
 ```bash
 export HF_ENDPOINT=https://hf-mirror.com
 ```
+
+如果 HuggingFace 完全无法访问，可使用 ModelScope 将模型下载到本地（参见[国内用户推荐：使用 ModelScope 下载 BGE-M3](#国内用户推荐使用-modelscope-下载-bge-m3)），然后在知识库页面的嵌入模型设置中配置本地路径。
 
 **Q: GMT 图中的中文标题显示乱码**
 

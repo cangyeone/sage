@@ -7,6 +7,7 @@
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
 <style>
 :root {
   --accent:#667eea; --accent2:#764ba2;
@@ -72,6 +73,42 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
 .copy-btn:hover { opacity:1; }
 .msg-time { font-size:.72rem; color:#bbb; margin-top:.35rem; }
 .msg-user .msg-time { text-align:right; }
+
+/* KaTeX block math */
+.bubble .katex-display { margin:.5rem 0; overflow-x:auto; }
+.bubble .katex { font-size:1.05em; }
+
+/* Source chips (inline references footer) */
+.src-chips { display:flex; flex-wrap:wrap; gap:.3rem; margin-top:.6rem; padding-top:.5rem;
+  border-top:1px solid #eee; }
+.src-chip { display:inline-flex; align-items:center; gap:.25rem; font-size:.72rem;
+  background:#f0f2ff; color:#3949ab; border-radius:8px; padding:.1rem .5rem;
+  white-space:nowrap; max-width:220px; overflow:hidden; text-overflow:ellipsis; }
+.src-chip .src-num { font-weight:700; flex-shrink:0; }
+
+/* Think block */
+.think-block { margin-bottom:.55rem; border:1.5px solid #e0e7ff; border-radius:10px; overflow:hidden; font-size:.83rem; }
+.think-header { display:flex; align-items:center; gap:.45rem; padding:.35rem .75rem;
+  background:linear-gradient(90deg,#f0f4ff,#f8f0ff); cursor:pointer; user-select:none;
+  color:#5c35c5; font-weight:600; }
+.think-header:hover { background:linear-gradient(90deg,#e8eeff,#f0e8ff); }
+.think-toggle-icon { transition:transform .2s; display:inline-block; font-style:normal; }
+.think-block.open .think-toggle-icon { transform:rotate(90deg); }
+.think-body { display:none; padding:.55rem .85rem; background:#fafbff;
+  border-top:1px solid #e0e7ff; color:#555; line-height:1.6; white-space:pre-wrap;
+  word-break:break-word; max-height:380px; overflow-y:auto; font-family:inherit; }
+.think-block.open .think-body { display:block; }
+.think-cursor { display:inline-block; width:2px; height:1em; background:#9c6fe4;
+  margin-left:1px; vertical-align:text-bottom; animation:tkcursor .8s step-end infinite; }
+@keyframes tkcursor { 0%,100%{opacity:1} 50%{opacity:0} }
+
+/* Think toggle pill */
+.think-pill { display:inline-flex; align-items:center; gap:.3rem; padding:.22rem .65rem;
+  border-radius:14px; font-size:.78rem; cursor:pointer; transition:all .2s; border:1.5px solid #dde;
+  background:#fff; color:#555; user-select:none; }
+.think-pill.active { background:#f0e8ff; border-color:#9c6fe4; color:#5c35c5; }
+.think-pill .pill-dot { width:7px; height:7px; border-radius:50%; background:#ccc; transition:background .2s; }
+.think-pill.active .pill-dot { background:#9c6fe4; }
 
 /* Source badge */
 .source-badge { display:inline-block; background:#f0f2ff; color:var(--accent); border-radius:10px;
@@ -254,7 +291,11 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
         <button class="qbtn" id="qbtn_summary" onclick="sendQuick(T('qbtn_summary_msg'))">📖 <span data-i18n="qbtn_summary">总结文献</span></button>
         <button class="qbtn" id="qbtn_formula" onclick="sendQuick(T('qbtn_formula_msg'))">🔢 <span data-i18n="qbtn_formula">解读公式</span></button>
         <button class="qbtn" id="qbtn_pick" onclick="sendQuick(T('qbtn_pick_msg'))">🔍 <span data-i18n="qbtn_pick">拾取震相</span></button>
-        <button class="qbtn" onclick="clearChat()" style="margin-left:auto">🗑 <span data-i18n="qbtn_clear">清空</span></button>
+        <div class="think-pill" id="thinkPill" onclick="toggleThink()" title="启用思考模式：模型会先推理再回答" style="margin-left:auto">
+          <span class="pill-dot"></span>
+          <span id="thinkPillLabel">🧠 <span data-i18n="think_off">思考：关</span></span>
+        </div>
+        <button class="qbtn" onclick="clearChat()">🗑 <span data-i18n="qbtn_clear">清空</span></button>
       </div>
       <div class="input-row">
         <div class="input-box">
@@ -276,6 +317,7 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
 <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked@4.3.0/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/highlight.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
 
 <!-- ── i18n / Language toggle ─────────────────────────────────────────── -->
 <script>
@@ -307,8 +349,11 @@ const I18N = {
     gen_code_label: '生成的代码：', dl_image: '⬇ 图像', dl_script: '⬇ GMT脚本',
     ctx_ref: '引用上下文：',
     // Typing indicators
-    typing_thinking: '正在思考中...', typing_routing: '正在分析意图...', 
+    typing_thinking: '正在思考中...', typing_routing: '正在分析意图...',
     typing_code: '正在生成代码...', typing_rag: '正在检索知识...', typing_chat: '正在对话中...',
+    // Think toggle
+    think_off: '思考：关', think_on: '思考：开',
+    think_label: '思考过程',
   },
   en: {
     nav_chat: 'Chat', nav_geo: 'Geo Agent', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
@@ -337,8 +382,11 @@ const I18N = {
     gen_code_label: 'Generated code:', dl_image: '⬇ Image', dl_script: '⬇ GMT Script',
     ctx_ref: 'Context:',
     // Typing indicators
-    typing_thinking: 'Thinking...', typing_routing: 'Analyzing intent...', 
+    typing_thinking: 'Thinking...', typing_routing: 'Analyzing intent...',
     typing_code: 'Generating code...', typing_rag: 'Searching knowledge...', typing_chat: 'Chatting...',
+    // Think toggle
+    think_off: 'Think: Off', think_on: 'Think: On',
+    think_label: 'Reasoning',
   }
 };
 
@@ -398,9 +446,14 @@ async function loadKbStatus() {
     const r = await fetch('/api/knowledge/status');
     const d = await r.json();
     kbHasDocs = d.n_docs > 0;
-    document.getElementById('kbInfo').innerHTML = d.n_docs > 0
-      ? `<span style="color:#3949ab;font-weight:600">${d.n_docs} 篇</span> 文献 · ${d.n_vectors||d.n_chunks} 个片段`
-      : '知识库为空';
+    const _isZh   = (localStorage.getItem('sage_lang') || 'zh') === 'zh';
+    const _nDocs  = d.n_docs || 0;
+    const _nChunk = d.n_vectors || d.n_chunks || 0;
+    document.getElementById('kbInfo').innerHTML = _nDocs > 0
+      ? (_isZh
+          ? `<span style="color:#3949ab;font-weight:600">${_nDocs} 篇</span> 文献 · ${_nChunk} 个片段`
+          : `<span style="color:#3949ab;font-weight:600">${_nDocs}</span> docs · ${_nChunk} chunks`)
+      : (_isZh ? '知识库为空' : 'Knowledge base is empty');
   } catch { document.getElementById('kbInfo').textContent = '无法连接'; }
 }
 
@@ -472,14 +525,7 @@ function addMsg(role, content, sources=[]) {
   const bubble = document.createElement('div');
   bubble.className = 'bubble';
 
-  // 将参考文献作为文本追加到回答末尾
-  let fullContent = content;
-  if (sources && sources.length) {
-    const srcLabel = currentLang === 'en' ? 'References' : '参考文献';
-    fullContent += '\n\n---\n**' + srcLabel + '**\n' +
-      sources.map((s, i) => `[${i + 1}] ${s}`).join('\n');
-  }
-  bubble.innerHTML = formatText(fullContent);
+  bubble.innerHTML = formatText(content) + _renderSourceChips(sources);
 
   div.appendChild(bubble);
 
@@ -493,9 +539,7 @@ function addMsg(role, content, sources=[]) {
   return div;
 }
 
-// ── Markdown rendering ────────────────────────────────────────────────────
-// marked v4 API: configure globally with marked.use(), then call marked.parse(text).
-// Passing renderer inline to marked.parse(src, opts) is silently ignored in v4.
+// ── Markdown + Math rendering ─────────────────────────────────────────────
 
 function _hlCode(code, lang) {
   if (typeof hljs === 'undefined') return String(code).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -509,7 +553,6 @@ function _hlCode(code, lang) {
 (function _setupMarked() {
   if (typeof marked === 'undefined') return;
   const r = new marked.Renderer();
-
   r.code = function(code, lang) {
     const hl  = _hlCode(code, lang || '');
     const lbl = lang
@@ -525,29 +568,98 @@ function _hlCode(code, lang) {
       '</div>'
     ].join('\n');
   };
-
   r.codespan = function(code) { return `<code>${code}</code>`; };
-
-  // marked.use() is the correct v4 API for registering renderer globally
   marked.use({ renderer: r, breaks: true, gfm: true });
 })();
 
+// ── Math pre-processing ──────────────────────────────────────────────────────
+// Normalise various LLM math-delimiter styles to $$…$$ / $…$ before
+// feeding into marked, so KaTeX can render them.
+function _preprocessMath(text) {
+  // 1. LLM "bracket block" style:   [\n  formula  \n]   on their own lines
+  text = text.replace(/^(\[)\s*\n([\s\S]*?)\n\s*(\])\s*$/gm, (m, _o, inner) => {
+    if (/[\\^_{}]/.test(inner) || /\b(?:log|sin|cos|frac|sum|int|lim|sqrt|bar|hat)\b/.test(inner))
+      return '$$\n' + inner.trim() + '\n$$';
+    return m;
+  });
+  // 2. LaTeX \[ … \]  and \( … \)
+  text = text.replace(/\\\[([\s\S]*?)\\\]/g, (_m, c) => '$$\n' + c.trim() + '\n$$');
+  text = text.replace(/\\\(([\s\S]*?)\\\)/g, (_m, c) => '$' + c.trim() + '$');
+  return text;
+}
+
+// ── Bold normalisation ────────────────────────────────────────────────────────
+// Marked won't bold "** word**" (space after opening **). Normalise it.
+function _normaliseBold(text) {
+  return text
+    .replace(/\*\* +([^*\n]+?)\*\*/g, '**$1**')   // ** word** → **word**
+    .replace(/\*\*([^*\n]+?) +\*\*/g, '**$1**');   // **word ** → **word**
+}
+
+// ── KaTeX render helper ───────────────────────────────────────────────────────
+function _renderMath(expr, display) {
+  if (typeof katex === 'undefined') return display ? `<pre><code>${expr}</code></pre>` : `<code>${expr}</code>`;
+  try {
+    return katex.renderToString(expr, {
+      displayMode:  display,
+      throwOnError: false,
+      trust:        false,
+    });
+  } catch(e) {
+    return display ? `<pre><code>${expr}</code></pre>` : `<code>${expr}</code>`;
+  }
+}
+
 function formatText(text) {
   if (!text) return '';
+
+  // Step 1: normalise LLM bold + math delimiters
+  text = _normaliseBold(_preprocessMath(String(text)));
+
+  // Step 2: extract and protect math regions (prevents marked from mangling them)
+  const mathStore = [];
+  // Block math  $$…$$
+  text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_m, expr) => {
+    mathStore.push({ expr: expr.trim(), display: true });
+    return `\x02MATH${mathStore.length - 1}\x03`;
+  });
+  // Inline math  $…$  (single $, non-empty, no newline inside)
+  text = text.replace(/\$([^$\n]{1,300}?)\$/g, (_m, expr) => {
+    mathStore.push({ expr: expr.trim(), display: false });
+    return `\x02MATH${mathStore.length - 1}\x03`;
+  });
+
+  // Step 3: markdown → HTML
+  let html;
   if (typeof marked === 'undefined') {
-    // marked not loaded — plain text fallback
-    return String(text)
-      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-      .replace(/\n/g,'<br>');
+    html = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+  } else {
+    try { html = marked.parse(text); }
+    catch(e) {
+      html = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+    }
   }
-  try {
-    return marked.parse(String(text));
-  } catch(e) {
-    console.warn('marked.parse error:', e);
-    return String(text)
-      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-      .replace(/\n/g,'<br>');
-  }
+
+  // Step 4: restore math, rendered by KaTeX
+  html = html.replace(/\x02MATH(\d+)\x03/g, (_m, idx) => {
+    const { expr, display } = mathStore[+idx];
+    return _renderMath(expr, display);
+  });
+
+  return html;
+}
+
+// ── Source chips renderer ─────────────────────────────────────────────────────
+// Returns an HTML string: small coloured pills for each source, NO separate heading.
+function _renderSourceChips(sources) {
+  if (!sources || !sources.length) return '';
+  const chips = sources.map((s, i) =>
+    `<span class="src-chip"><span class="src-num">[${i+1}]</span>${_esc(s)}</span>`
+  ).join('');
+  return `<div class="src-chips">${chips}</div>`;
+}
+function _esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 function copyCode(btn) {
@@ -647,12 +759,6 @@ async function classifyIntent(text) {
   // 快速路径 A3：有文献上下文，且要求复现/实现 → chain（先 RAG 提取方法，再 Code 生成）
   const reproducingRe = /复现|实现一下|用.{0,5}实现|帮我写|帮我实现|编程实现|代码实现|写代码|写个程序|写出来|用Python|用代码|reproduce|implement|code it|write.*code/i;
   if ((sessionDocs.length > 0 || lastIntentWasPaper) && reproducingRe.test(t) && !endsQ) return 'chain';
-
-  // 快速路径 B：典型问句开头 且 无操作动词 → qa（不调 LLM，直接返回）
-  if (questionStartRe.test(t) && !actionRe.test(t)) return 'qa';
-
-  // 快速路径 C：以问号结尾 且 无路径、无操作动词 → qa
-  if (endsQ && !hasPath && !actionRe.test(t)) return 'qa';
 
   // 其余情况：交给后端 LLM 判断（传入最近对话历史帮助消歧）
   try {
@@ -868,14 +974,37 @@ async function sendCode(text, phase2Badge = false) {
   }
   bubble.appendChild(status);
 
-  // 2b. Debug trace (collapsible, only shown when retries happened)
+  // 2a. 失败时显示错误详情（从 d.response 提取 Last error: 段落）
+  if (!d.success && d.response) {
+    // 提取 "Last error:" 之后的部分，如果没有则显示完整 response（去掉首行）
+    let errDetail = '';
+    const lastErrIdx = d.response.indexOf('Last error:');
+    if (lastErrIdx !== -1) {
+      errDetail = d.response.slice(lastErrIdx + 'Last error:'.length).trim();
+    } else {
+      // 去掉 "✗ Execution failed..." 首行，显示其余内容
+      const lines = d.response.split('\n');
+      errDetail = lines.slice(1).join('\n').trim();
+    }
+    if (errDetail) {
+      const errBox = document.createElement('pre');
+      errBox.style.cssText = 'background:#fff8f8;border:1px solid #fcc;border-radius:6px;padding:.5rem .75rem;margin:.3rem 0 .5rem;font-size:.8em;overflow-x:auto;white-space:pre-wrap;word-break:break-all;color:#b71c1c;max-height:200px;overflow-y:auto;';
+      errBox.textContent = errDetail;
+      bubble.appendChild(errBox);
+    }
+  }
+
+  // 2b. Debug trace (失败时自动展开，成功时折叠)
   if (d.debug_trace && d.debug_trace.length > 0) {
     const traceWrap = document.createElement('details');
     traceWrap.style.cssText = 'margin:.4rem 0 .6rem;font-size:.8rem;border:1px solid #e0e7ff;border-radius:8px;overflow:hidden;';
+    // 执行失败时自动展开，方便用户直接看到调试过程
+    if (!d.success) traceWrap.open = true;
 
     const traceSummary = document.createElement('summary');
     traceSummary.style.cssText = 'padding:.35rem .75rem;background:#f0f4ff;cursor:pointer;color:#3949ab;font-weight:600;list-style:none;display:flex;align-items:center;gap:.4rem;';
-    traceSummary.innerHTML = `🔄 ${attempts - 1} debug round${attempts > 2 ? 's' : ''} — click to inspect`;
+    const roundCount = attempts - 1;
+    traceSummary.innerHTML = `🔄 ${roundCount} debug round${roundCount !== 1 ? 's' : ''} — ${d.success ? 'click to inspect' : 'auto-debug log'}`;
     traceWrap.appendChild(traceSummary);
 
     d.debug_trace.forEach(t => {
@@ -892,7 +1021,7 @@ async function sendCode(text, phase2Badge = false) {
       }
       if (t.error && !t.success) {
         const errEl = document.createElement('pre');
-        errEl.style.cssText = 'background:#fff8f8;border:1px solid #fcc;border-radius:4px;padding:.3rem .5rem;margin:.25rem 0 0;font-size:.76em;overflow-x:auto;white-space:pre-wrap;';
+        errEl.style.cssText = 'background:#fff8f8;border:1px solid #fcc;border-radius:4px;padding:.3rem .5rem;margin:.25rem 0 0;font-size:.76em;overflow-x:auto;white-space:pre-wrap;max-height:150px;overflow-y:auto;';
         errEl.textContent = t.error;
         row.appendChild(errEl);
       }
@@ -1079,30 +1208,256 @@ async function sendCode(text, phase2Badge = false) {
   }
 }
 
+// ── Think mode toggle ──────────────────────────────────────────────────────
+let thinkEnabled = localStorage.getItem('sage_think') === '1';
+
+function toggleThink() {
+  thinkEnabled = !thinkEnabled;
+  localStorage.setItem('sage_think', thinkEnabled ? '1' : '0');
+  _applyThinkPill();
+}
+
+function _applyThinkPill() {
+  const pill  = document.getElementById('thinkPill');
+  const label = document.getElementById('thinkPillLabel');
+  if (!pill || !label) return;
+  if (thinkEnabled) {
+    pill.classList.add('active');
+    label.innerHTML = `🧠 <span>${T('think_on')}</span>`;
+  } else {
+    pill.classList.remove('active');
+    label.innerHTML = `🧠 <span>${T('think_off')}</span>`;
+  }
+}
+
+document.addEventListener('DOMContentLoaded', _applyThinkPill);
+
+// ── Think parser (state machine for <think>…</think> tags) ────────────────
+class ThinkParser {
+  constructor() {
+    this._inThink   = false;
+    this._buf       = '';       // partial-tag lookahead buffer
+    this.thinkText   = '';
+    this.contentText = '';
+  }
+
+  push(chunk) {
+    this._buf += chunk;
+    const OPEN  = '<think>';
+    const CLOSE = '</think>';
+    while (true) {
+      if (!this._inThink) {
+        const idx = this._buf.indexOf(OPEN);
+        if (idx === -1) {
+          const safe = this._buf.length - (OPEN.length - 1);
+          if (safe > 0) { this.contentText += this._buf.slice(0, safe); this._buf = this._buf.slice(safe); }
+          break;
+        }
+        this.contentText += this._buf.slice(0, idx);
+        this._buf   = this._buf.slice(idx + OPEN.length);
+        this._inThink = true;
+      } else {
+        const idx = this._buf.indexOf(CLOSE);
+        if (idx === -1) {
+          const safe = this._buf.length - (CLOSE.length - 1);
+          if (safe > 0) { this.thinkText += this._buf.slice(0, safe); this._buf = this._buf.slice(safe); }
+          break;
+        }
+        this.thinkText += this._buf.slice(0, idx);
+        this._buf   = this._buf.slice(idx + CLOSE.length);
+        this._inThink = false;
+      }
+    }
+  }
+
+  flush() {
+    if (this._inThink) this.thinkText   += this._buf;
+    else               this.contentText += this._buf;
+    this._buf = '';
+  }
+}
+
+// ── Streaming response renderer ────────────────────────────────────────────
+// Creates a live assistant bubble and streams text/think chunks into it.
+// Returns a Promise that resolves to {answer, sources} when streaming completes.
+function createStreamingBubble() {
+  const welcome = document.getElementById('welcomePanel');
+  if (welcome) welcome.remove();
+
+  const msgDiv  = document.createElement('div');
+  msgDiv.className = 'msg msg-assistant';
+
+  const bubble  = document.createElement('div');
+  bubble.className = 'bubble';
+
+  // Think block (hidden until we get <think> content)
+  const thinkBlock = document.createElement('div');
+  thinkBlock.className = 'think-block';
+  thinkBlock.style.display = 'none';
+
+  const thinkHeader = document.createElement('div');
+  thinkHeader.className = 'think-header';
+  thinkHeader.innerHTML = `<i class="think-toggle-icon">▶</i> <span>${T('think_label') || '思考过程'}</span>`;
+  thinkHeader.onclick = () => thinkBlock.classList.toggle('open');
+
+  const thinkBody = document.createElement('div');
+  thinkBody.className = 'think-body';
+  thinkBlock.appendChild(thinkHeader);
+  thinkBlock.appendChild(thinkBody);
+
+  // Content area
+  const contentDiv = document.createElement('div');
+
+  bubble.appendChild(thinkBlock);
+  bubble.appendChild(contentDiv);
+
+  const timeEl = document.createElement('div');
+  timeEl.className = 'msg-time';
+  timeEl.textContent = new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});
+
+  msgDiv.appendChild(bubble);
+  msgDiv.appendChild(timeEl);
+  chatMessages.appendChild(msgDiv);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+
+  // Cursors
+  const thinkCursor   = document.createElement('span');
+  thinkCursor.className = 'think-cursor';
+  const contentCursor = document.createElement('span');
+  contentCursor.className = 'think-cursor';
+
+  let lastThinkLen = 0;
+  let lastContentLen = 0;
+  let prevContentMd = '';
+
+  return {
+    msgDiv,
+    hideThink() { thinkBlock.style.display = 'none'; thinkBlock.classList.remove('open'); },
+    updateThink(text) {
+      if (text.length === lastThinkLen) return;
+      lastThinkLen = text.length;
+      // Show block, default open while streaming
+      if (thinkBlock.style.display === 'none') {
+        thinkBlock.style.display = '';
+        thinkBlock.classList.add('open');
+      }
+      thinkBody.textContent = text;
+      thinkBody.appendChild(thinkCursor);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+    },
+    updateContent(text) {
+      if (text === prevContentMd) return;
+      prevContentMd = text;
+      if (!text.trim()) {
+        // Nothing outside <think> yet — show faint hint so user sees progress
+        contentDiv.innerHTML =
+          '<span style="color:#bbb;font-style:italic;font-size:.85rem">' +
+          (currentLang === 'zh' ? '正在推理，结果即将显示…' : 'Reasoning, answer coming…') +
+          '</span>';
+      } else {
+        contentDiv.innerHTML = formatText(text);
+        contentDiv.appendChild(contentCursor);
+      }
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+    },
+    finalise(text, sources) {
+      thinkCursor.remove();
+      contentCursor.remove();
+      // Collapse think block after streaming
+      thinkBlock.classList.remove('open');
+      contentDiv.innerHTML = formatText(text) + _renderSourceChips(sources);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+    },
+  };
+}
+
+async function streamToMsg(url, body) {
+  const streamer = createStreamingBubble();
+  const parser   = new ThinkParser();
+  let   sources  = [];
+  let   errored  = false;
+
+  try {
+    const resp = await fetch(url, {
+      method:  'POST',
+      headers: {'Content-Type': 'application/json'},
+      body:    JSON.stringify(body),
+    });
+
+    const reader  = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let   buffer  = '';
+
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, {stream: true});
+
+      const lines = buffer.split('\n');
+      buffer = lines.pop();   // keep incomplete tail
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const payload = line.slice(6).trim();
+        if (payload === '[DONE]') break;
+        try {
+          const obj = JSON.parse(payload);
+          if (obj.type === 'sources') {
+            sources = obj.sources || [];
+          } else if (obj.type === 'chunk') {
+            parser.push(obj.text || '');
+            streamer.updateThink(parser.thinkText);
+            streamer.updateContent(parser.contentText);
+          } else if (obj.type === 'error') {
+            errored = true;
+            parser.push(`\n✗ 错误：${obj.message}`);
+            streamer.updateContent(parser.contentText);
+          }
+        } catch(e) { /* ignore malformed SSE line */ }
+      }
+    }
+  } catch(e) {
+    parser.push(`\n✗ 请求失败：${e.message}`);
+    streamer.updateContent(parser.contentText);
+    errored = true;
+  }
+
+  parser.flush();
+
+  // Guard: some models emit the entire reply inside <think>…</think> with nothing
+  // outside (especially when think mode is on but the model ignores the instruction).
+  // In that case promote thinkText → contentText so the user sees the answer.
+  if (!parser.contentText.trim() && parser.thinkText.trim()) {
+    parser.contentText = parser.thinkText;
+    parser.thinkText   = '';
+    // Hide the (now-empty) think block
+    streamer.hideThink && streamer.hideThink();
+  }
+
+  streamer.finalise(parser.contentText, sources);
+
+  const answer = parser.contentText;
+  return {answer, sources, errored};
+}
+
 async function sendRag(text) {
   // 自动判断是否为文献解读请求
   const paperKeywords = ['总结', '解读', '摘要', '结论', '方法', '论文', '文献', '这篇', '本文', '作者'];
   const isPaperMode = paperKeywords.some(k => text.includes(k)) && sessionDocs.length > 0;
   const mode = isPaperMode ? 'paper_read' : 'rag';
 
-  const r = await fetch('/api/chat/rag', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({
-      message:    text,
-      session_id: SESSION_ID,
-      mode:       mode,
-      history:    chatHistory.slice(-8),
-      workspace:  wsEnabled ? wsPath : '',
-    }),
-  });
-  const d = await r.json();
   hideTyping();
 
-  const answer  = d.response || '（无回复）';
-  const sources = d.sources  || [];
-  addMsg('assistant', answer, sources);
-  chatHistory.push({role:'assistant', content:answer});
+  const {answer, sources} = await streamToMsg('/api/chat/rag/stream', {
+    message:      text,
+    session_id:   SESSION_ID,
+    mode,
+    history:      chatHistory.slice(-8),
+    workspace:    wsEnabled ? wsPath : '',
+    enable_think: thinkEnabled,
+  });
+
+  chatHistory.push({role:'assistant', content: answer || '（无回复）'});
 
   // 论文解读模式：标记状态，并显示"复现方法"提示卡
   if (isPaperMode) {
@@ -1150,40 +1505,37 @@ async function sendChainRagCode(originalText) {
   lastIntentWasCode  = false;
   lastIntentWasPaper = false;
 
-  // ── Phase 1：RAG — 提取论文方法 ─────────────────────────────────────────
+  // ── Phase 1：RAG — 提取论文方法 (streaming) ──────────────────────────────
   showTyping(currentLang === 'zh' ? '📄 提取论文方法…' : '📄 Extracting paper methods…');
 
-  let ragAnswer = '';
+  let ragAnswer  = '';
   let ragSources = [];
   try {
-    const r1 = await fetch('/api/chat/rag', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({
-        message:    originalText,
-        session_id: SESSION_ID,
-        mode:       'paper_read',
-        history:    chatHistory.slice(-8),
-        workspace:  wsEnabled ? wsPath : '',
-      }),
+    hideTyping();
+    const {answer: _ra, sources: _rs} = await streamToMsg('/api/chat/rag/stream', {
+      message:      originalText,
+      session_id:   SESSION_ID,
+      mode:         'paper_read',
+      history:      chatHistory.slice(-8),
+      workspace:    wsEnabled ? wsPath : '',
+      enable_think: thinkEnabled,
     });
-    const d1 = await r1.json();
-    ragAnswer  = d1.response || '';
-    ragSources = d1.sources  || [];
+    ragAnswer  = _ra || '';
+    ragSources = _rs || [];
   } catch(e) {
     // RAG 失败不致命，直接用原始文本去 code
   }
 
-  // 展示论文解读结果（Phase 1 的回复）
+  // 在最后一个 assistant 气泡顶部插入阶段标签
   if (ragAnswer) {
-    hideTyping();
-    const msgDiv = addMsg('assistant', ragAnswer, ragSources);
-    // 在气泡顶部插入阶段标签
-    const badge1 = document.createElement('div');
-    badge1.style.cssText = 'display:inline-block;font-size:.72rem;padding:.08rem .5rem;background:#fff8e1;border:1px solid #ffe082;border-radius:10px;color:#e65100;margin-bottom:.45rem;';
-    badge1.textContent = currentLang === 'zh' ? '📄 步骤 1 — 论文方法解读' : '📄 Step 1 — Paper Analysis';
-    const bbl = msgDiv.querySelector('.bubble');
-    if (bbl) bbl.prepend(badge1);
+    const lastMsg = chatMessages.querySelector('.msg-assistant:last-of-type');
+    if (lastMsg) {
+      const badge1 = document.createElement('div');
+      badge1.style.cssText = 'display:inline-block;font-size:.72rem;padding:.08rem .5rem;background:#fff8e1;border:1px solid #ffe082;border-radius:10px;color:#e65100;margin-bottom:.45rem;';
+      badge1.textContent = currentLang === 'zh' ? '📄 步骤 1 — 论文方法解读' : '📄 Step 1 — Paper Analysis';
+      const bbl = lastMsg.querySelector('.bubble');
+      if (bbl) bbl.prepend(badge1);
+    }
     chatHistory.push({role:'assistant', content: ragAnswer});
   }
 
@@ -1221,29 +1573,16 @@ async function sendChainRagCode(originalText) {
 }
 
 async function sendNormal(text) {
-  const r = await fetch('/api/chat', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({message: text, workspace: wsEnabled ? wsPath : ''}),
-  });
-  const d = await r.json();
   hideTyping();
 
-  const answer = d.response || '（无回复）';
-  addMsg('assistant', answer);
-  chatHistory.push({role:'assistant', content:answer});
+  const {answer} = await streamToMsg('/api/chat/stream', {
+    message:      text,
+    history:      chatHistory.slice(-8),
+    workspace:    wsEnabled ? wsPath : '',
+    enable_think: thinkEnabled,
+  });
 
-  // Waveform rendering (existing functionality)
-  if (d.waveform_data?.length) {
-    renderWaveform(chatMessages.lastElementChild, d.waveform_data,
-      d.waveform_title || '', d.picks_data || []);
-  }
-  if (d.pick_task_id && d.waveform_data) {
-    pollPickTask(d.pick_task_id, chatMessages.lastElementChild, d.waveform_data, d.waveform_title || '');
-  }
-  if (d.pick_task_id && !d.waveform_data) {
-    pollBatchTask(d.pick_task_id, chatMessages.lastElementChild, d.picks_file || '');
-  }
+  chatHistory.push({role:'assistant', content: answer || '（无回复）'});
 }
 
 function sendQuick(msg) {

@@ -1858,6 +1858,72 @@ def _run_literature_loop(args):
         print(out_text)
 
 
+def _check_knowledge_dir():
+    """
+    启动时检测 seismo_skill/knowledge/ 目录。
+    若有新增或修改的文档，提示用户构建 Skill 和 RAG 索引。
+    支持 Ctrl+C 中断（中断后进度已保存，下次可继续）。
+    仅在有 pending 文档时弹出提示，不影响正常启动流程。
+    """
+    try:
+        from seismo_skill.knowledge_indexer import KnowledgeIndexer
+        indexer = KnowledgeIndexer()
+        scan = indexer.scan()
+    except Exception:
+        return  # 扫描失败静默退出，不影响正常启动
+
+    if scan.pending_count == 0 and not scan.deleted:
+        return  # 无待处理文档，跳过
+
+    print()
+    print("─" * 60)
+    print("📚  检测到 seismo_skill/knowledge/ 目录有更新：")
+    if scan.new:
+        print(f"    ＋ {len(scan.new)} 个新文档")
+        for p in scan.new[:5]:
+            print(f"        {p.relative_to(indexer.knowledge_dir)}")
+        if len(scan.new) > 5:
+            print(f"        … 共 {len(scan.new)} 个")
+    if scan.modified:
+        print(f"    ～ {len(scan.modified)} 个已修改")
+    if scan.failed:
+        print(f"    ✗  {len(scan.failed)} 个上次失败，等待重试")
+    if scan.deleted:
+        print(f"    －  {len(scan.deleted)} 个文件已删除（索引将同步清理）")
+    print("─" * 60)
+
+    try:
+        answer = input("是否现在构建/更新 Skill 和 RAG 索引？[Y/n] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("\n跳过索引构建。（再次运行时仍会提示）")
+        return
+
+    if answer in ("", "y", "yes"):
+        import threading
+        stop_evt = threading.Event()
+
+        def _run():
+            try:
+                result = indexer.build(progress_cb=print, stop_event=stop_evt)
+                print(f"\n✅  {result.summary()}")
+                if result.skills_generated:
+                    print(f"    生成的 Skill：{', '.join(result.skills_generated)}")
+            except Exception as exc:
+                print(f"\n❌  构建失败：{exc}")
+
+        build_thread = threading.Thread(target=_run, daemon=True)
+        build_thread.start()
+        try:
+            build_thread.join()
+        except KeyboardInterrupt:
+            print("\n⚠  已中断构建。已完成的文档进度已保存。")
+            stop_evt.set()
+            build_thread.join(timeout=5)
+    else:
+        print("跳过。（文档将在下次启动时再次提示）")
+    print()
+
+
 def main():
     # Check for first run and LLM configuration
     config = get_config_manager()
@@ -1886,6 +1952,9 @@ def main():
         print()
         print("=" * 80)
         print()
+
+    # 检测 knowledge/ 目录，提示构建 Skill/RAG 索引
+    _check_knowledge_dir()
 
     parser = argparse.ArgumentParser(
         description='SeismicX CLI - Unified interface for seismic analysis',

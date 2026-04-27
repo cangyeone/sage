@@ -34,16 +34,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from .safe_executor import ExecutionResult, execute_code
+from .safe_executor import ExecutionResult, execute_code, execute_bash
 
 # seismo_skill context (optional)
 try:
     import sys as _sys
     _sys.path.insert(0, str(Path(__file__).parent.parent))
     from seismo_skill import build_skill_context as _build_skill_context
+    from seismo_skill import build_skill_context_with_rag as _build_skill_context_with_rag
 except Exception:
     def _build_skill_context(query: str, **_kw) -> str:  # type: ignore
         return ""
+    def _build_skill_context_with_rag(query: str, **_kw):  # type: ignore
+        return "", ""
 
 
 # ---------------------------------------------------------------------------
@@ -99,7 +102,9 @@ _TOOLKIT_SUMMARY = """
 - `picks_to_dict(picks_file)` → list of dict
 
 ### GMT Mapping
-- `run_gmt(script, outname='gmt_map', title='GMT Map')` → str (PNG path)
+- For **pure GMT tasks** → output a ```bash script (see GMT section below).
+- For **mixed Python+GMT** (data prep in Python then GMT map) → call
+  `run_gmt(bash_script_string, outname='map')` as a last resort only.
 
 ### Image Saving
 - All `plot_*` functions auto-save; manual: `savefig('filename.png')`
@@ -224,69 +229,52 @@ Multi-panel map+cross-section: use `subplot_kw` only on the map axes
 
 ### GMT: ONLY when user explicitly says "GMT" or "gmt绘图"
 
-Rules:
-1. ALWAYS use `run_gmt(script, outname)` — NEVER `subprocess.run(['gmt', ...])`
-2. Write data files in Python FIRST with `np.savetxt()`, then reference the path in script
-3. Use f-string with single-triple-quotes; Python vars: `{R}`, bash vars: `${{Z_MIN}}`, awk: `{{print $6}}`
-4. Skip @earth_relief_01m (timeout) — chain 02m→05m
-5. Use `-G<color>` for marker fill and `gmt legend` to create a legend block after plot layers
+| Situation | Output format |
+|-----------|--------------|
+| Pure GMT mapping (no user data) | **```bash** script — always preferred |
+| Needs Python data prep first (load CSV / compute arrays) | **```python** calling `run_gmt(script_str, outname)` |
 
-```python
-import numpy as np, os
-
-pts_file = os.path.join(os.environ.get('SAGE_OUTDIR', '/tmp'), 'points.txt')
-np.savetxt(pts_file, np.column_stack([lon, lat]), fmt='%.6f')
-
-R = f"{lon.min()-1:.2f}/{lon.max()+1:.2f}/{lat.min()-1:.2f}/{lat.max()+1:.2f}"
-J = "M15c"
-
-script = f'''
-# --- Download terrain grid with fallback resolution ---
-if gmt grdcut @earth_relief_02m -R{R} -Gtopo.grd 2>/dev/null && [ -f topo.grd ]; then
-  echo "02m OK"
-elif gmt grdcut @earth_relief_05m -R{R} -Gtopo.grd 2>/dev/null && [ -f topo.grd ]; then
-  echo "05m OK"
-else
-  echo "Terrain download failed" >&2; exit 1
-fi
-Z_MIN=$(gmt grdinfo topo.grd -C 2>/dev/null | awk '{{print $6}}')
-Z_MAX=$(gmt grdinfo topo.grd -C 2>/dev/null | awk '{{print $7}}')
-if [ -z "${{Z_MIN}}" ] || [ -z "${{Z_MAX}}" ]; then
-  Z_MIN=0
-  Z_MAX=3000
-fi
-gmt makecpt -Cgeo -T${{Z_MIN}}/${{Z_MAX}}/100 > topo.cpt
-if [ ! -s topo.cpt ]; then
-  echo "ERROR: topo.cpt empty" >&2
-  exit 1
-fi
-
-gmt begin location_map PNG
-  gmt grdimage topo.grd -J{J} -R{R} -Ctopo.cpt -I+d
-  gmt coast -R{R} -J{J} -W0.6p,gray30 -N1/0.8p,gray50 -A500 -Baf -BWSne+t"Map"
-  gmt plot {pts_file} -R{R} -J{J} -Sc0.2c -Gred -W0.3p,black
-  gmt colorbar -DJBC+w7c/0.35c -Ctopo.cpt -Baf+l"Elevation"
-gmt end
-'''
-run_gmt(script, outname="location_map", title="Location Map")
-```
-
-GMT DON'Ts:
-- ❌ bash array loops in f-string (`${arr[$i]}`, `<<EOF`) — SyntaxError
-- ❌ `subprocess.run(['gmt', ...])` — always crashes (no begin/end)
-- ❌ `@earth_relief_01m` — timeout
-- ❌ `gmt coast -Gtan/-Gwhite` — solid fill HIDES terrain under grdimage
-- ❌ `gmt basemap` before `gmt grdimage` — gets buried
-
-GMT layer order: grdimage → coast (NO -G) → plot → colorbar
+- In bash: normal `${VAR}`, `$(cmd)`, `awk '{print $6}'` — no escaping needed
+- In Python f-strings: bash vars → `${{Z_MIN}}`, awk → `{{print $6}}`, Python vars → `{var}`
+- Script must `cd "${SAGE_OUTDIR}"` at the top; use `gmt begin <name> PNG` ... `gmt end`
+- Always include terrain: `gmt grdimage` → `gmt coast` (no `-G` fill) → data → `gmt colorbar`
+- ❌ `@earth_relief_01m` — timeout; chain 02m→05m fallback instead
+- See the **`gmt_plotting` skill** for complete templates, topography snippet, and all GMT rules
 
 ## Available libraries
 obspy, numpy, scipy, matplotlib (Agg backend), cartopy, pandas, sklearn (if installed)
 
 """ + _TOOLKIT_SUMMARY
 
+# ── Bash / GMT error pattern helpers ─────────────────────────────────────────
+_BASH_ERROR_HINTS = """
+## Bash / Shell Script Debugging Rules
+
+### Exit-code errors (non-zero return from subprocess / run_gmt)
+- Check the last line of stderr for the actual error message.
+- `exit 1` usually means a preceding command failed — trace up to find it.
+- `Permission denied` → file/dir permissions; add `chmod +x` or change path.
+- `command not found` → package not installed or PATH issue; check with `which <cmd>`.
+
+### GMT-specific errors
+- `Option -B: Unrecognized modifier` → wrong annotation syntax; check GMT 6 docs.
+- `grdimage: Cannot find file` → DEM path wrong or download failed; check grid exists.
+- `makecpt: No color table` → wrong CPT name; use `geo`, `topo`, `hot`, `jet`, etc.
+- `psxy: Ambiguous option` → mixed classic/modern flags; stay in modern mode.
+- Silent blank output → wrong layer order; see `gmt_plotting` skill for correct sequence.
+- For mixed Python+GMT: f-string bash vars → `${{VAR}}`, awk → `{{print $1}}`, Python vars → `{var}`
+- See **`gmt_plotting` skill** for complete GMT scripting guidance and templates.
+
+### Python + Bash mixed debugging
+- If a subprocess call exits with code 1 and stderr is empty, add `check=False` and
+  print stderr to diagnose.
+- For `CalledProcessError`: capture output with `capture_output=True, text=True` and
+  print `result.stderr` for details.
+- For timeout errors: increase timeout or split into smaller sub-calls.
+"""
+
 # ── Debugger System Prompt ──────────────────────────────────────────────────
-_DEBUG_SYSTEM = """You are an expert Python debugger specializing in scientific computing.
+_DEBUG_SYSTEM = """You are an expert Python and Bash debugger specializing in scientific computing.
 
 You will receive:
 - A failing Python script
@@ -315,18 +303,11 @@ Rules:
 - If the error is `NameError: name 'lon' is not defined` (or 'lat', 'depth', etc.),
   check the [Data file context] block for EXACT column names and use df['col_name'].values.
   NEVER reference bare variable names like `lon`, `lat` unless they were explicitly assigned.
-- If the error contains `SAGE_HINT: do NOT call gmt via subprocess directly`, OR any GMT
-  syntax/IndentationError involving `gmt`, `<<EOF`, or `${...}` in Python code:
-  Rewrite using the f-string pattern:
-    1. Write data to file: `np.savetxt(pts_file, np.column_stack([lon, lat]), fmt='%.6f')`
-    2. Set region: `R = f"{lon.min()-1:.2f}/{lon.max()+1:.2f}/{lat.min()-1:.2f}/{lat.max()+1:.2f}"`
-    3. Build script as f-string: bash vars use `${{Z_MIN}}`, awk braces use `{{print $6}}`
-    4. Call: `run_gmt(script, outname="map")`
-    5. Use @earth_relief_02m → @earth_relief_05m chain (skip 01m to avoid timeout)
-    6. Always check `[ -f topo.grd ]` after grdcut before calling grdinfo/makecpt.
-- If the error is `SyntaxError: f-string: expecting ...` near GMT bash content:
-  The GMT script must NOT contain `${arr[$i]}`, `<<EOF`, or bash loops in an f-string.
-  Write data to a file in Python first; use only simple `{python_var}` substitutions in the f-string.
+- If the script uses `subprocess.run(['gmt', ...])` or has a GMT SyntaxError/IndentationError:
+  For pure GMT tasks, rewrite as a **```bash** code block (the engine runs it directly).
+  For mixed Python+GMT, call `run_gmt(script_str, outname)` with an f-string script where
+  bash vars use `${{Z_MIN}}`, awk uses `{{print $6}}`, and Python vars use `{var}`.
+  Use @earth_relief_02m → @earth_relief_05m chain (never 01m); check `[ -f topo.grd ]` exists.
 - If the error is `ModuleNotFoundError: No module named 'sage'` or similar:
   The toolkit functions (run_gmt, savefig, read_stream_from_dir, etc.) are PRE-INJECTED.
   NEVER write `from sage import ...` or `import sage`. Call them directly: `run_gmt(script)`.
@@ -346,7 +327,7 @@ Rules:
   Add `transform=ccrs.PlateCarree()` to every scatter/plot call on a GeoAxes.
 - NEVER use plt.show(). NEVER re-import toolkit functions. NEVER import from sage.
 - The output code block must be complete and self-contained.
-"""
+""" + _BASH_ERROR_HINTS
 
 # ── Verifier System Prompt ──────────────────────────────────────────────────
 _VERIFY_SYSTEM = """You are a code output verifier for seismological Python scripts.
@@ -421,12 +402,37 @@ def _call_llm(messages: List[Dict], llm_config: Dict, max_tokens: int = 4096) ->
 
 
 def _extract_code(text: str) -> str:
-    """Extract Python source from LLM response."""
+    """Extract Python or bash source from LLM response.
+
+    Preference order: ```python  >  ```bash/sh  >  bare ``` block  >  raw text.
+    The language tag is preserved as the first line (``# lang:python`` /
+    ``# lang:bash``) so the engine can detect which executor to use.
+    """
     m = re.search(r"```python\s*(.*?)```", text, re.DOTALL)
-    if m: return m.group(1).strip()
+    if m:
+        return "# lang:python\n" + m.group(1).strip()
+    m = re.search(r"```(?:bash|sh)\s*(.*?)```", text, re.DOTALL)
+    if m:
+        return "# lang:bash\n" + m.group(1).strip()
     m = re.search(r"```\s*(.*?)```", text, re.DOTALL)
-    if m: return m.group(1).strip()
+    if m:
+        return m.group(1).strip()
     return text.strip()
+
+
+def _is_bash_code(code: str) -> bool:
+    """Return True when *code* should be executed as a bash script."""
+    stripped = code.strip()
+    if stripped.startswith("# lang:bash"):
+        return True
+    # Heuristic fallback: shebang or bare `gmt begin` at the top
+    first_line = stripped.splitlines()[0] if stripped else ""
+    return (
+        first_line.startswith("#!/bin/bash")
+        or first_line.startswith("#!/usr/bin/env bash")
+        or first_line.startswith("#!/bin/sh")
+        or bool(re.match(r"^gmt\s+begin\b", stripped, re.I))
+    )
 
 
 def _extract_diagnosis(text: str) -> str:
@@ -622,7 +628,13 @@ def _extract_plan(text: str) -> List[str]:
 
 
 def _pre_sanitize(code: str) -> str:
-    """Fix obvious LLM mistakes before execution (fast, no LLM call)."""
+    """Fix obvious LLM mistakes before execution (fast, no LLM call).
+
+    Only applies to Python code — bash scripts are passed through unchanged.
+    """
+    if _is_bash_code(code):
+        return code   # bash: nothing to sanitize here
+
     # Neutralise plt.show() / fig.show() calls (server has no display)
     code = re.sub(r"\bplt\.show\(\s*\)", "pass  # display suppressed", code)
     code = re.sub(r"\bfig\.show\(\s*\)", "pass  # display suppressed", code)
@@ -690,6 +702,46 @@ def _pre_sanitize(code: str) -> str:
 # ---------------------------------------------------------------------------
 # ── Data classes ─────────────────────────────────────────────────────────────
 # ---------------------------------------------------------------------------
+
+@dataclass
+class StepResult:
+    """Result of executing a single workflow step."""
+    step_id:      str
+    skill:        str
+    description:  str
+    success:      bool
+    code:         str
+    stdout:       str = ""
+    stderr:       str = ""
+    figures:      List[str] = field(default_factory=list)
+    output_files: List[str] = field(default_factory=list)
+    attempts:     int = 1
+    diagnosis:    str = ""   # last debug diagnosis, or "" on first-try success
+    skipped:      bool = False   # True when a required dependency failed
+
+
+@dataclass
+class WorkflowRunResult:
+    """Aggregate result of a multi-step workflow run."""
+    workflow_name:  str
+    workflow_title: str
+    success:        bool           # True only if ALL steps succeeded
+    steps_total:    int
+    steps_done:     int            # steps that completed successfully
+    step_results:   List[StepResult]
+    all_figures:    List[str]      # union of figures across steps
+    all_output_files: List[str]    # union of non-figure outputs
+    response:       str            # human-readable summary
+    exec_dir:       str = ""       # shared working directory
+
+    @property
+    def failed_steps(self) -> List[StepResult]:
+        return [s for s in self.step_results if not s.success and not s.skipped]
+
+    @property
+    def skipped_steps(self) -> List[StepResult]:
+        return [s for s in self.step_results if s.skipped]
+
 
 @dataclass
 class DebugAttempt:
@@ -771,17 +823,11 @@ class CodeEngine:
             sys.path.insert(0, str(Path(__file__).parent.parent))
             from config_manager import LLMConfigManager
             config = LLMConfigManager().get_llm_config()
-            # Auto-detect Python executable with pandas
+            # Use current Python executable (same environment as Flask app)
+            # This avoids segfaults from using a different Python with incompatible BLAS
             if 'python_executable' not in config:
-                import subprocess
-                try:
-                    # Try conda python first
-                    result = subprocess.run(['/Users/anaconda3/bin/python3', '-c', 'import pandas; print("ok")'], 
-                                          capture_output=True, text=True, timeout=5)
-                    if result.returncode == 0:
-                        config['python_executable'] = '/Users/anaconda3/bin/python3'
-                except:
-                    pass
+                import sys as _sys
+                config['python_executable'] = _sys.executable
             return config
         except Exception:
             return {"provider": "ollama", "model": "",
@@ -812,7 +858,17 @@ class CodeEngine:
                 pass
 
     def _run_code(self, code: str, timeout: int) -> ExecutionResult:
-        """Execute code and return result."""
+        """Execute code (Python or bash) and return result."""
+        if _is_bash_code(code):
+            # Strip the lang tag before passing to the shell
+            clean = re.sub(r"^#\s*lang:bash\s*\n", "", code, count=1)
+            return execute_bash(
+                clean,
+                project_root=self.project_root,
+                timeout=timeout,
+                keep_dir=True,
+            )
+        # Python path — apply sanitizer first
         clean = _pre_sanitize(code)
         return execute_code(
             clean,
@@ -840,17 +896,52 @@ class CodeEngine:
         return True
 
     def _build_error_context(self, code: str, exec_res: ExecutionResult) -> str:
-        """Build a compact error context string for the debugger."""
+        """Build a compact error context string for the debugger.
+
+        Detects whether the failure is Python-side or Bash/GMT-side and
+        annotates accordingly so the debugger can apply the right fix strategy.
+        """
         parts = []
-        if exec_res.stdout.strip():
-            # Only last 1500 chars of stdout (partial output is useful)
-            parts.append("=== Partial stdout (last 1500 chars) ===\n" +
-                         exec_res.stdout.strip()[-1500:])
+
         stderr = (exec_res.stderr or "").strip()
+        stdout = exec_res.stdout.strip()
+
+        # ── Classify error type ──────────────────────────────────────────────
+        is_bash_error = bool(re.search(
+            r"(gmt |command not found|exit status \d|CalledProcessError|"
+            r"run_gmt|GMT warning|GMT error|bash:|/bin/sh:)",
+            stderr + stdout, re.I
+        ))
+        is_python_error = bool(re.search(
+            r"(Traceback \(most recent call last\)|Error:|Exception:|"
+            r"SyntaxError|IndentationError|NameError|TypeError|ValueError)",
+            stderr
+        ))
+
+        if is_bash_error and not is_python_error:
+            parts.append("=== ERROR TYPE: Bash/GMT script failure ===")
+        elif is_python_error:
+            parts.append("=== ERROR TYPE: Python runtime error ===")
+
+        if stdout:
+            parts.append("=== Partial stdout (last 1500 chars) ===\n" +
+                         stdout[-1500:])
+
         if stderr:
-            parts.append("=== Traceback ===\n" + stderr[-3000:])
+            parts.append("=== Traceback / stderr ===\n" + stderr[-3000:])
+
         if exec_res.error:
             parts.append("=== Error summary ===\n" + exec_res.error)
+
+        # ── Extract GMT-specific last error line for quick diagnosis ─────────
+        if is_bash_error:
+            gmt_errors = re.findall(
+                r"(?:GMT (?:Error|Warning)|error|Error).*", stderr, re.I
+            )
+            if gmt_errors:
+                parts.append("=== GMT/Bash key error lines ===\n" +
+                             "\n".join(gmt_errors[-5:]))
+
         return "\n\n".join(parts) if parts else "No error details captured."
 
     # ── Debug + Fix ───────────────────────────────────────────────────────────
@@ -863,6 +954,7 @@ class CodeEngine:
         timeout: int,
         on_progress: Optional[Callable],
         file_contexts: Optional[List[str]] = None,
+        extra_rag_ctx: str = "",
     ) -> tuple[str, ExecutionResult, str]:
         """
         Ask the LLM debugger to fix the failing code.
@@ -877,8 +969,18 @@ class CodeEngine:
             file_ctx_str = "\n\n## Data file context (use EXACT column names shown here)\n" + \
                            "\n\n".join(file_contexts)
 
+        # Build debug system prompt — optionally enriched with error-targeted RAG docs
+        debug_system = _DEBUG_SYSTEM
+        if extra_rag_ctx:
+            debug_system += (
+                "\n\n## Error-targeted documentation (retrieved for this specific error)\n"
+                + extra_rag_ctx
+                + "\n\nConsult the documentation above to resolve API misuse, "
+                "wrong parameter names, or version-specific syntax errors."
+            )
+
         debug_messages = [
-            {"role": "system", "content": _DEBUG_SYSTEM},
+            {"role": "system", "content": debug_system},
             {"role": "user", "content": (
                 f"## Original user request\n{original_request}"
                 f"{file_ctx_str}\n\n"
@@ -991,15 +1093,39 @@ class CodeEngine:
 
         self._history.append({"role": "user", "content": msg_content})
 
-        # Inject relevant skill docs into the system prompt for this turn
-        # Bias skill retrieval: prefer cartopy docs for non-GMT map requests.
-        # Appending "cartopy matplotlib" boosts cartopy_plotting score in keyword search.
-        _gmt_explicit = bool(re.search(r'\bgmt\b', user_request, re.I))
-        _skill_query = user_request if _gmt_explicit else (user_request + " cartopy matplotlib")
-        skill_ctx = _build_skill_context(_skill_query, max_chars=8000, top_k=2)
+        # ── Inject multi-skill + RAG context into system prompt ─────────────
+        # Use the raw user request as-is — no cartopy bias. Let keyword scores
+        # decide which skills are most relevant.
+        try:
+            skill_ctx, rag_ctx = _build_skill_context_with_rag(
+                user_request, max_skill_chars=12000, max_rag_chars=4000, top_k=5
+            )
+        except Exception:
+            skill_ctx, rag_ctx = "", ""   # graceful degradation — skill context unavailable
         system_content = _CODEGEN_SYSTEM
         if skill_ctx:
-            system_content += "\n\n## Relevant skill docs\n" + skill_ctx
+            # Count how many skill sections were injected
+            _n_skills = skill_ctx.count("### 技能：")
+            if _n_skills > 1:
+                system_content += (
+                    "\n\n## Relevant skill docs\n"
+                    + skill_ctx
+                    + "\n\n## How to combine these skills\n"
+                    "The docs above may cover different aspects of the task. "
+                    "Identify which functions/patterns from each skill apply, "
+                    "then integrate them into a single coherent script. "
+                    "Import only what is needed; resolve any API conflicts by "
+                    "preferring the most specific skill for each sub-task."
+                )
+            else:
+                system_content += "\n\n## Relevant skill docs\n" + skill_ctx
+        if rag_ctx:
+            system_content += (
+                "\n\n## Knowledge Base (RAG) — relevant documentation excerpts\n"
+                + rag_ctx
+                + "\n\nUse the above documentation to verify correct API usage, "
+                "parameter names, and version-specific syntax before writing code."
+            )
         messages = [{"role": "system", "content": system_content}] + \
                    [m for m in self._history if m["role"] != "system"]
 
@@ -1055,6 +1181,16 @@ class CodeEngine:
                 success=False,
             ))
 
+            # Re-query RAG with error context to retrieve docs relevant to the
+            # specific failure (e.g. wrong GMT module name, bad API call, etc.)
+            _err_query = f"{user_request} {error_summary[:400]}"
+            try:
+                _, _debug_rag_ctx = _build_skill_context_with_rag(
+                    _err_query, max_skill_chars=1, max_rag_chars=3000, top_k=3
+                )
+            except Exception:
+                _debug_rag_ctx = ""
+
             fixed_code, new_exec, diagnosis = self._debug_and_fix(
                 original_request=user_request,
                 failed_code=code,
@@ -1063,6 +1199,7 @@ class CodeEngine:
                 timeout=timeout,
                 on_progress=on_progress,
                 file_contexts=file_contexts,
+                extra_rag_ctx=_debug_rag_ctx,
             )
 
             # Record diagnosis in the trace
@@ -1155,6 +1292,463 @@ class CodeEngine:
             verify_note=verify_note,
             plan=plan,
             script_path=script_path,
+        )
+
+    # ── Shared-directory execution helper ────────────────────────────────────
+    def _run_code_in_dir(
+        self,
+        code: str,
+        timeout: int,
+        shared_dir: Optional[str] = None,
+    ) -> ExecutionResult:
+        """
+        Execute code, optionally inside a pre-existing shared directory.
+
+        When *shared_dir* is set every step's code starts with:
+          os.chdir(shared_dir)
+          os.environ['SAGE_OUTDIR'] = shared_dir
+        so file I/O from all steps lands in the same place.
+        """
+        clean = _pre_sanitize(code)
+        extra_env: Optional[Dict[str, str]] = None
+        if shared_dir:
+            chdir_preamble = (
+                f"import os as _wf_os\n"
+                f"_wf_os.chdir({shared_dir!r})\n"
+                f"_wf_os.environ['SAGE_OUTDIR'] = {shared_dir!r}\n"
+            )
+            clean = chdir_preamble + clean
+            extra_env = {"SAGE_OUTDIR": shared_dir}
+        return execute_code(
+            clean,
+            project_root=self.project_root,
+            timeout=timeout,
+            keep_dir=True,
+            extra_env=extra_env,
+            python_executable=self.python_executable,
+        )
+
+    # ── Workflow helpers ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def _topo_sort(steps: List[Dict]) -> List[Dict]:
+        """
+        Return steps in a valid topological order based on `depends_on` lists.
+        Preserves original order for steps at the same depth.
+        Falls back to original order on cyclic / broken deps.
+        """
+        order:     List[Dict] = []
+        remaining: Dict[str, Dict] = {s["id"]: s for s in steps}
+        done:      set = set()
+
+        while remaining:
+            ready = [
+                sid for sid, s in remaining.items()
+                if all(d in done for d in s.get("depends_on", []))
+            ]
+            if not ready:
+                # Cycle or broken ref — append the rest in file order
+                order.extend(remaining[s["id"]] for s in steps if s["id"] in remaining)
+                break
+            # Among ready steps, preserve original list order
+            for s in steps:
+                if s["id"] in ready and s["id"] in remaining:
+                    order.append(remaining.pop(s["id"]))
+                    done.add(s["id"])
+
+        return order
+
+    def _build_step_prompt(
+        self,
+        step:          Dict,
+        workflow:      Dict,
+        step_index:    int,
+        steps_total:   int,
+        available_files: List[str],
+        completed_steps: List[StepResult],
+        user_request:  str,
+    ) -> tuple[str, str]:
+        """
+        Build (system_content, user_message) for a single workflow step.
+
+        Returns
+        -------
+        (system_content, user_message)
+        """
+        step_id  = step["id"]
+        skill_nm = step.get("skill", "")
+        desc     = step["description"]
+
+        # ── Skill context for this specific step ─────────────────────────────
+        step_query = f"{skill_nm} {desc} {user_request}"
+        skill_ctx, rag_ctx = _build_skill_context_with_rag(
+            step_query, max_skill_chars=8000, max_rag_chars=2000, top_k=3
+        )
+
+        system_content = _CODEGEN_SYSTEM
+        if skill_ctx:
+            system_content += f"\n\n## 当前步骤技能文档\n{skill_ctx}"
+        if rag_ctx:
+            system_content += (
+                f"\n\n## Knowledge Base (RAG)\n{rag_ctx}\n\n"
+                "Use the above documentation for correct API and parameter usage."
+            )
+
+        # ── Workflow context (guide trimmed to ~2000 chars) ───────────────────
+        guide_excerpt = workflow.get("guide", "")[:2000]
+        if len(workflow.get("guide", "")) > 2000:
+            guide_excerpt += "\n...(截断)"
+
+        # ── Previous step summary ─────────────────────────────────────────────
+        prev_summary = ""
+        if completed_steps:
+            lines = []
+            for sr in completed_steps:
+                status = "✓" if sr.success else "✗"
+                files  = ", ".join(Path(f).name for f in sr.figures + sr.output_files)
+                files  = f" → 输出: {files}" if files else ""
+                lines.append(f"  {status} {sr.step_id} [{sr.skill}]: {sr.description}{files}")
+            prev_summary = "## 已完成步骤\n" + "\n".join(lines)
+
+        # ── Available files ───────────────────────────────────────────────────
+        files_str = ""
+        if available_files:
+            files_str = "## 工作目录中的文件（可直接读取）\n" + \
+                        "\n".join(f"  {f}" for f in available_files[:20])
+
+        # ── User message ──────────────────────────────────────────────────────
+        user_msg = (
+            f"# 工作流：{workflow['name']} — {workflow['title']}\n"
+            f"# 当前步骤 {step_index+1}/{steps_total}: [{step_id}] {desc}\n"
+            f"# 使用技能：{skill_nm or '(通用)'}\n\n"
+        )
+        if user_request:
+            user_msg += f"## 用户原始需求\n{user_request}\n\n"
+        if prev_summary:
+            user_msg += prev_summary + "\n\n"
+        if files_str:
+            user_msg += files_str + "\n\n"
+        if guide_excerpt:
+            user_msg += f"## 工作流参考指南（节选）\n{guide_excerpt}\n\n"
+        user_msg += (
+            f"## 当前任务\n"
+            f"请为步骤 `{step_id}` 生成并执行 Python/Bash 代码：{desc}\n\n"
+            "输出代码块，不需要解释。"
+        )
+
+        return system_content, user_msg
+
+    # ── Workflow runner ───────────────────────────────────────────────────────
+    def run_workflow(
+        self,
+        workflow_name: str,
+        user_request: str = "",
+        data_hint: Optional[str] = None,
+        max_debug_rounds: int = 3,
+        timeout: int = 120,
+        skip_on_failure: bool = False,
+        on_progress: Optional[Callable[[Dict], None]] = None,
+    ) -> WorkflowRunResult:
+        """
+        Execute a workflow step-by-step in topological order.
+
+        Roles
+        -----
+        workflow   — declares steps, skills, order (the .md file)
+        skill      — per-step operation manual (injected into system prompt)
+        code engine — generates & debugs code for each step (this method)
+        tool       — Python / GMT / Shell executed by safe_executor
+
+        Each step shares a single working directory so files written in
+        earlier steps (e.g. ``epicenter.txt``) are readable by later ones.
+
+        Parameters
+        ----------
+        workflow_name : str
+            Workflow name as declared in the .md frontmatter ``name:`` field.
+        user_request : str, optional
+            Original user task (provides extra context for code generation).
+        data_hint : str, optional
+            Data directory / file path forwarded to each step.
+        max_debug_rounds : int
+            Max debug attempts per step (default 3).
+        timeout : int
+            Execution timeout per step in seconds (default 120).
+        skip_on_failure : bool
+            If True, skip steps whose dependencies failed instead of aborting
+            the entire workflow (default False).
+        on_progress : callable, optional
+            Called with dicts:
+              { "phase": "workflow_step" | "step_done" | "workflow_done",
+                "step_id": str, "step_n": int, "total": int, "message": str }
+
+        Returns
+        -------
+        WorkflowRunResult
+        """
+        # ── 0. Load workflow ─────────────────────────────────────────────────
+        try:
+            _sys_path = str(Path(__file__).parent.parent)
+            import sys as _sys
+            if _sys_path not in _sys.path:
+                _sys.path.insert(0, _sys_path)
+            from seismo_skill.workflow_runner import load_workflow
+            workflow = load_workflow(workflow_name)
+        except Exception as e:
+            return WorkflowRunResult(
+                workflow_name=workflow_name, workflow_title="",
+                success=False, steps_total=0, steps_done=0,
+                step_results=[], all_figures=[], all_output_files=[],
+                response=f"无法加载工作流 '{workflow_name}': {e}",
+            )
+
+        if workflow is None:
+            return WorkflowRunResult(
+                workflow_name=workflow_name, workflow_title="",
+                success=False, steps_total=0, steps_done=0,
+                step_results=[], all_figures=[], all_output_files=[],
+                response=f"工作流 '{workflow_name}' 不存在",
+            )
+
+        steps_raw: List[Dict] = workflow.get("steps", [])
+        if not steps_raw:
+            return WorkflowRunResult(
+                workflow_name=workflow_name,
+                workflow_title=workflow["title"],
+                success=True, steps_total=0, steps_done=0,
+                step_results=[], all_figures=[], all_output_files=[],
+                response=f"工作流 '{workflow_name}' 没有定义步骤",
+            )
+
+        # ── 1. Topological sort ──────────────────────────────────────────────
+        ordered_steps = self._topo_sort(steps_raw)
+        steps_total   = len(ordered_steps)
+
+        # ── 2. State tracking ────────────────────────────────────────────────
+        step_results:  List[StepResult] = []
+        all_figures:   List[str]        = []
+        all_output_files: List[str]     = []
+        failed_step_ids: set            = set()
+        shared_dir:    Optional[str]    = None  # set after first step runs
+        # Per-workflow LLM history — shared across all steps so the model
+        # can reference earlier outputs and variable bindings.
+        wf_history: List[Dict] = []
+
+        def _emit_wf(phase: str, step_id: str, step_n: int, msg: str):
+            if on_progress:
+                try:
+                    on_progress({
+                        "phase": phase, "step_id": step_id,
+                        "step_n": step_n, "total": steps_total,
+                        "message": msg,
+                    })
+                except Exception:
+                    pass
+
+        # ── 3. Execute steps ─────────────────────────────────────────────────
+        for step_n, step in enumerate(ordered_steps):
+            step_id   = step["id"]
+            skill_nm  = step.get("skill", "")
+            desc      = step["description"]
+            deps      = step.get("depends_on", [])
+
+            # ── 3a. Skip if a required dependency failed ─────────────────────
+            failed_deps = [d for d in deps if d in failed_step_ids]
+            if failed_deps:
+                msg = f"跳过步骤 {step_id}（依赖步骤失败: {', '.join(failed_deps)}）"
+                _emit_wf("workflow_step", step_id, step_n, msg)
+                step_results.append(StepResult(
+                    step_id=step_id, skill=skill_nm, description=desc,
+                    success=False, code="", skipped=True,
+                    diagnosis=f"依赖失败: {', '.join(failed_deps)}",
+                ))
+                failed_step_ids.add(step_id)
+                if not skip_on_failure:
+                    break
+                continue
+
+            # ── 3b. Discover files already in the shared workspace ────────────
+            available_files: List[str] = []
+            if shared_dir and Path(shared_dir).exists():
+                try:
+                    available_files = sorted(
+                        str(p) for p in Path(shared_dir).iterdir()
+                        if p.is_file() and not p.name.startswith("run.")
+                    )
+                except Exception:
+                    pass
+
+            _emit_wf("workflow_step", step_id, step_n,
+                     f"[{step_n+1}/{steps_total}] 生成步骤 {step_id}…")
+
+            # ── 3c. Build step prompt ─────────────────────────────────────────
+            completed = [r for r in step_results if r.success]
+            sys_content, user_msg = self._build_step_prompt(
+                step=step, workflow=workflow,
+                step_index=step_n, steps_total=steps_total,
+                available_files=available_files,
+                completed_steps=completed,
+                user_request=user_request + (f"\nData: {data_hint}" if data_hint else ""),
+            )
+
+            # ── 3d. Build messages (system + shared history) ──────────────────
+            messages = [{"role": "system", "content": sys_content}] + wf_history + \
+                       [{"role": "user", "content": user_msg}]
+
+            # ── 3e. Generate code ─────────────────────────────────────────────
+            try:
+                raw_response = _call_llm(messages, self.llm_config)
+            except ConnectionError as e:
+                step_results.append(StepResult(
+                    step_id=step_id, skill=skill_nm, description=desc,
+                    success=False, code="", diagnosis=str(e),
+                ))
+                failed_step_ids.add(step_id)
+                if not skip_on_failure:
+                    break
+                continue
+
+            code = _extract_code(raw_response)
+
+            # ── 3f. Execute ───────────────────────────────────────────────────
+            _emit_wf("workflow_step", step_id, step_n,
+                     f"[{step_n+1}/{steps_total}] 执行步骤 {step_id}…")
+            exec_res   = self._run_code_in_dir(code, timeout, shared_dir)
+            debug_trace: List[DebugAttempt] = []
+            attempt    = 0
+            diagnosis  = ""
+
+            # Set shared dir from first step's exec dir
+            if shared_dir is None and exec_res.exec_dir:
+                shared_dir = exec_res.exec_dir
+
+            # ── 3g. Debug loop ────────────────────────────────────────────────
+            while not self._execution_success(exec_res) and attempt < max_debug_rounds:
+                attempt += 1
+                error_summary = f"{exec_res.stdout}\n{exec_res.stderr}\n{exec_res.error}".strip()
+
+                _emit_wf("workflow_step", step_id, step_n,
+                         f"[{step_n+1}/{steps_total}] 调试步骤 {step_id} (第 {attempt} 轮)…")
+
+                # Error-targeted RAG re-query
+                _err_query = f"{skill_nm} {desc} {error_summary[:300]}"
+                try:
+                    _, _dbg_rag = _build_skill_context_with_rag(
+                        _err_query, max_skill_chars=1, max_rag_chars=2000, top_k=3
+                    )
+                except Exception:
+                    _dbg_rag = ""
+
+                file_contexts = []
+                if available_files:
+                    file_contexts = [f"Available: {f}" for f in available_files[:5]]
+
+                fixed_code, new_exec, diagnosis = self._debug_and_fix(
+                    original_request=f"{desc}\n{user_request}",
+                    failed_code=code,
+                    exec_res=exec_res,
+                    attempt=attempt,
+                    timeout=timeout,
+                    on_progress=None,
+                    file_contexts=file_contexts,
+                    extra_rag_ctx=_dbg_rag,
+                )
+                # Keep running in shared dir
+                if shared_dir:
+                    new_exec = self._run_code_in_dir(fixed_code, timeout, shared_dir)
+
+                debug_trace.append(DebugAttempt(
+                    attempt=attempt, diagnosis=diagnosis,
+                    code=fixed_code, error=error_summary,
+                    stdout=exec_res.stdout, success=False,
+                ))
+
+                code     = fixed_code
+                exec_res = new_exec
+
+                if self._execution_success(exec_res):
+                    break
+
+            step_success = self._execution_success(exec_res)
+
+            # ── 3h. Collect outputs ───────────────────────────────────────────
+            step_figs  = exec_res.figures     if exec_res else []
+            step_files = exec_res.output_files if exec_res else []
+            all_figures.extend(step_figs)
+            all_output_files.extend(step_files)
+
+            sr = StepResult(
+                step_id=step_id, skill=skill_nm, description=desc,
+                success=step_success,
+                code=code,
+                stdout=(exec_res.stdout or "")[:2000] if exec_res else "",
+                stderr=(exec_res.stderr or "")[:1000] if exec_res else "",
+                figures=step_figs,
+                output_files=step_files,
+                attempts=attempt + 1,
+                diagnosis=diagnosis,
+            )
+            step_results.append(sr)
+
+            if not step_success:
+                failed_step_ids.add(step_id)
+                _emit_wf("step_done", step_id, step_n,
+                         f"✗ 步骤 {step_id} 失败（共 {attempt+1} 次尝试）")
+                if not skip_on_failure:
+                    break
+            else:
+                _emit_wf("step_done", step_id, step_n,
+                         f"✓ 步骤 {step_id} 完成"
+                         + (f"，输出 {len(step_figs)} 图" if step_figs else ""))
+                # Append to shared history so next step's LLM sees what was done
+                wf_history.append({"role": "user", "content": user_msg})
+                step_summary = (
+                    f"步骤 {step_id} 完成。"
+                    + (f" 生成文件: {', '.join(Path(f).name for f in step_figs+step_files)}" if step_figs+step_files else "")
+                    + (f"\n关键输出:\n{exec_res.stdout.strip()[:500]}" if exec_res and exec_res.stdout.strip() else "")
+                )
+                wf_history.append({
+                    "role": "assistant",
+                    "content": f"```python\n{code}\n```\n\n[步骤结果] {step_summary}",
+                })
+
+        # ── 4. Build summary ─────────────────────────────────────────────────
+        steps_done    = sum(1 for r in step_results if r.success)
+        wf_success    = steps_done == steps_total and bool(step_results)
+        skipped_count = sum(1 for r in step_results if r.skipped)
+
+        lines = [f"工作流 **{workflow['name']}** — {workflow['title']}"]
+        lines.append(f"进度：{steps_done}/{steps_total} 步完成"
+                     + (f"，{skipped_count} 步跳过" if skipped_count else ""))
+        for sr in step_results:
+            icon = "✓" if sr.success else ("↷" if sr.skipped else "✗")
+            lines.append(f"  {icon} [{sr.step_id}] {sr.description}"
+                         + (f"（{sr.attempts} 次尝试）" if sr.attempts > 1 and not sr.skipped else ""))
+        if all_figures:
+            lines.append(f"生成图片：{len(all_figures)} 张")
+        if all_output_files:
+            lines.append(f"生成文件：{len(all_output_files)} 个")
+        if shared_dir:
+            lines.append(f"工作目录：{shared_dir}")
+
+        response = "\n".join(lines)
+        _emit_wf("workflow_done", "", steps_total, response)
+
+        # Sync exec dir to engine (so follow-up single-step runs continue there)
+        if shared_dir:
+            self._last_exec_dir = shared_dir
+
+        return WorkflowRunResult(
+            workflow_name=workflow_name,
+            workflow_title=workflow["title"],
+            success=wf_success,
+            steps_total=steps_total,
+            steps_done=steps_done,
+            step_results=step_results,
+            all_figures=all_figures,
+            all_output_files=all_output_files,
+            response=response,
+            exec_dir=shared_dir or "",
         )
 
     def _build_response(

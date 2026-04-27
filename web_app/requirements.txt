@@ -1,7 +1,7 @@
 # SeismicX Web Interface Dependencies
 
 # Web Framework
-flask==3.0.0
+flask
 
 # Scientific Computing
 numpy>=1.24.0

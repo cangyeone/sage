@@ -38,7 +38,7 @@ class DocMeta:
         self.size_bytes = size_bytes
 
 # Define constants to match rag_engine
-KB_DIR = Path.home() / ".seismicx" / "knowledge"
+KB_DIR = Path(__file__).parent.parent / "seismo_rag"
 SIMPLE_META_FILE = KB_DIR / "simple_meta.json"
 
 

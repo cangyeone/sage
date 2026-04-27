@@ -34,8 +34,11 @@ body { background:#f5f7fa; min-height:100vh; }
 .skill-name { font-size:.88rem; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .skill-cat { font-size:.72rem; color:#999; }
 .skill-src { font-size:.7rem; padding:.1rem .45rem; border-radius:8px; flex-shrink:0; }
-.src-builtin { background:#f0f0f0; color:#888; }
-.src-user { background:#e8f5e9; color:#2e7d32; font-weight:600; }
+.src-builtin   { background:#f0f0f0; color:#888; }
+.src-user      { background:#e8f5e9; color:#2e7d32; font-weight:600; }
+.src-generated { background:#e8eaf6; color:#3949ab; font-weight:600; }
+.rag-badge { background:#fff3e0; color:#e65100; border-radius:8px;
+  font-size:.68rem; padding:.1rem .4rem; font-weight:600; }
 
 /* Editor panel */
 .editor-panel { background:#fff; border-radius:12px; border:1px solid #e5e5e5; overflow:hidden; }
@@ -98,6 +101,52 @@ body { background:#f5f7fa; min-height:100vh; }
 .new-btn:hover { border-color:var(--accent); color:var(--accent); background:#f0f2ff; }
 
 .skill-dir-hint { font-size:.75rem; color:#aaa; padding:.3rem .4rem; word-break:break-all; }
+
+/* Left-col tab switcher */
+.left-tabs { display:flex; border-bottom:1px solid #e8e8e8; margin-bottom:.75rem; }
+.ltab { flex:1; text-align:center; padding:.38rem .5rem; font-size:.8rem; cursor:pointer;
+  border:none; background:none; color:#999; border-bottom:2px solid transparent;
+  transition:all .15s; font-weight:500; }
+.ltab.active { color:var(--accent); border-bottom-color:var(--accent); font-weight:700; }
+.ltab:hover:not(.active) { color:#555; background:#f5f5ff; }
+
+/* Workflow card */
+.wf-card {
+  border:1px solid #e5e5e5; border-radius:10px; padding:.6rem .9rem;
+  margin-bottom:.45rem; cursor:pointer; transition:all .15s; background:#fff;
+}
+.wf-card:hover { border-color:#5c6bc0; background:#f5f6ff; }
+.wf-card.active { border-color:#5c6bc0; background:#eceeff; box-shadow:0 0 0 2px rgba(92,107,192,.2); }
+.wf-name { font-size:.87rem; font-weight:600; color:#333; }
+.wf-meta { font-size:.72rem; color:#888; margin-top:.1rem; }
+.wf-skills-row { margin-top:.3rem; display:flex; flex-wrap:wrap; gap:.25rem; }
+.wf-skill-tag { background:#e3f2fd; color:#1565c0; border-radius:8px;
+  font-size:.68rem; padding:.1rem .4rem; font-weight:500; }
+.src-wf-builtin { background:#f0f0f0; color:#888; font-size:.7rem; padding:.1rem .42rem;
+  border-radius:8px; }
+.src-wf-user { background:#e8f5e9; color:#2e7d32; font-size:.7rem; padding:.1rem .42rem;
+  border-radius:8px; font-weight:600; }
+
+/* Markdown editor (workflow) */
+#pyEditor {
+  width:100%; border:none; outline:none; resize:none; padding:1rem 1.1rem;
+  font-family:'Menlo','Courier New',monospace; font-size:.83rem; line-height:1.6;
+  background:#1e1e2e; color:#cdd6f4; min-height:360px; tab-size:2;
+}
+.py-editor-wrap { background:#1e1e2e; border-radius:0; }
+/* Steps DAG preview */
+.steps-preview { padding:.6rem 1rem .4rem; background:#f8f9ff; border-top:1px solid #e9ecef; }
+.steps-preview-title { font-size:.72rem; color:#888; font-weight:600;
+  text-transform:uppercase; letter-spacing:.05em; margin-bottom:.4rem; }
+.step-node {
+  display:inline-flex; align-items:center; gap:.3rem;
+  background:#fff; border:1.5px solid #c5cae9; border-radius:8px;
+  padding:.18rem .55rem; font-size:.72rem; color:#3949ab; font-weight:500;
+  margin:.15rem .2rem;
+}
+.step-node .step-skill { font-size:.65rem; color:#9e9e9e; margin-left:.2rem; }
+.step-arrow { color:#bbb; font-size:.75rem; }
+#wfStepsPreview { display:none; }
 </style>
 </head>
 <body>
@@ -138,24 +187,42 @@ body { background:#f5f7fa; min-height:100vh; }
 
 <div class="container-fluid px-4 mt-4">
   <div class="skills-layout">
-    <!-- Left: skill list -->
+    <!-- Left: skill / workflow list -->
     <div class="skill-list-col">
-      <div class="d-flex align-items-center justify-content-between mb-2">
-        <span class="fw-semibold text-muted" style="font-size:.82rem;text-transform:uppercase;letter-spacing:.05em">
-          <i class="bi bi-list-ul me-1"></i>技能列表
-        </span>
-        <span id="skillCount" class="badge bg-light text-muted" style="font-size:.72rem;">…</span>
+      <!-- Tab switcher -->
+      <div class="left-tabs">
+        <button class="ltab active" id="ltabSkills" onclick="switchLeftTab('skills')">
+          <i class="bi bi-lightning-charge me-1"></i>技能
+          <span id="skillCount" class="badge bg-light text-muted ms-1" style="font-size:.68rem;">…</span>
+        </button>
+        <button class="ltab" id="ltabWorkflows" onclick="switchLeftTab('workflows')">
+          <i class="bi bi-diagram-3 me-1"></i>工作流
+          <span id="wfCount" class="badge bg-light text-muted ms-1" style="font-size:.68rem;">…</span>
+        </button>
       </div>
 
-      <div class="new-btn mb-2" onclick="newSkill()" data-i18n="btn_new">
-        <i class="bi bi-plus-lg me-1"></i>新建技能
+      <!-- Skills pane -->
+      <div id="skillsPane">
+        <div class="new-btn mb-2" onclick="newSkill()" data-i18n="btn_new">
+          <i class="bi bi-plus-lg me-1"></i>新建技能
+        </div>
+        <div id="skillList"></div>
+        <div class="skill-dir-hint mt-2">
+          <i class="bi bi-folder2 me-1"></i><span data-i18n="hint_skill_dir">自定义技能存储于：</span>
+          <br><code>~/.seismicx/skills/</code>
+        </div>
       </div>
 
-      <div id="skillList"></div>
-
-      <div class="skill-dir-hint mt-2">
-        <i class="bi bi-folder2 me-1"></i>自定义技能存储于：
-        <br><code id="userSkillDir">~/.seismicx/skills/</code>
+      <!-- Workflows pane (hidden by default) -->
+      <div id="workflowsPane" style="display:none">
+        <div class="new-btn mb-2" onclick="newWorkflow()">
+          <i class="bi bi-plus-lg me-1"></i>新建工作流
+        </div>
+        <div id="workflowList"></div>
+        <div class="skill-dir-hint mt-2">
+          <i class="bi bi-folder2 me-1"></i>自定义工作流存储于：
+          <br><code>~/.seismicx/workflows/</code>
+        </div>
       </div>
     </div>
 
@@ -215,6 +282,91 @@ body { background:#f5f7fa; min-height:100vh; }
         </div>
       </div>
 
+      <!-- Workflow editor panel (hidden by default) -->
+      <div class="editor-panel" id="wfEditorPanel" style="display:none">
+        <div class="d-flex align-items-center justify-content-between px-3 py-2 border-bottom">
+          <div class="d-flex align-items-center gap-2">
+            <span id="wfEditorTitle" class="fw-bold" style="font-size:.95rem"></span>
+            <span id="wfEditorSrcBadge" class="skill-src src-wf-builtin"></span>
+          </div>
+          <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-outline-secondary" id="wfEditBtn" onclick="enableWfEdit()">
+              <i class="bi bi-pencil"></i> 编辑
+            </button>
+            <button class="btn btn-sm btn-outline-danger" id="wfDeleteBtn" onclick="deleteWorkflow()" style="display:none">
+              <i class="bi bi-trash"></i> 删除
+            </button>
+          </div>
+        </div>
+        <!-- Skill dependency badges -->
+        <div id="wfSkillsRow" class="px-3 py-2 border-bottom" style="display:none">
+          <span style="font-size:.75rem;color:#888;margin-right:.4rem;"><i class="bi bi-link-45deg"></i>依赖技能：</span>
+          <span id="wfSkillBadges"></span>
+        </div>
+        <!-- Steps DAG preview (read-only) -->
+        <div class="steps-preview" id="wfStepsPreview">
+          <div class="steps-preview-title"><i class="bi bi-diagram-2 me-1"></i>执行步骤</div>
+          <div id="wfStepsFlow"></div>
+        </div>
+        <!-- YAML editor area -->
+        <div class="py-editor-wrap">
+          <textarea id="pyEditor" spellcheck="false" readonly
+            placeholder="工作流 Markdown 定义（YAML frontmatter + 流程说明）…" oninput="onWfEditorInput()"></textarea>
+        </div>
+        <div class="editor-toolbar">
+          <div style="font-size:.78rem;color:#aaa" id="wfEditorHint">选择工作流查看详情</div>
+          <div class="d-flex gap-2" id="wfSaveRow" style="display:none">
+            <button class="btn btn-sm btn-outline-secondary" onclick="cancelWfEdit()">取消</button>
+            <button class="btn-accent btn btn-sm" onclick="saveWorkflow()">
+              <i class="bi bi-cloud-check me-1"></i>保存
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- New workflow modal -->
+      <div class="modal fade" id="newWfModal" tabindex="-1">
+        <div class="modal-dialog">
+          <div class="modal-content">
+            <div class="modal-header py-2">
+              <h6 class="modal-title mb-0"><i class="bi bi-diagram-3 me-1"></i>新建工作流</h6>
+              <button type="button" class="btn-close btn-sm" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+              <div class="row g-2">
+                <div class="col-6">
+                  <label class="form-label small fw-semibold">工作流 ID（英文下划线）</label>
+                  <input type="text" class="form-control form-control-sm" id="newWfName"
+                         placeholder="my_workflow" oninput="this.value=this.value.replace(/[^\w\-]/g,'_')">
+                </div>
+                <div class="col-6">
+                  <label class="form-label small fw-semibold">标题</label>
+                  <input type="text" class="form-control form-control-sm" id="newWfTitle" placeholder="我的工作流">
+                </div>
+                <div class="col-12">
+                  <label class="form-label small fw-semibold">关键词（逗号分隔）</label>
+                  <input type="text" class="form-control form-control-sm" id="newWfKeywords" placeholder="keyword1, 关键词2">
+                </div>
+                <div class="col-12">
+                  <label class="form-label small fw-semibold">依赖技能（逗号分隔技能名）</label>
+                  <input type="text" class="form-control form-control-sm" id="newWfSkills"
+                         placeholder="gmt_plotting, tabular_io">
+                  <div class="form-text" style="font-size:.72rem">填写已有技能名，系统会生成 frontmatter skills 块</div>
+                </div>
+                <div class="col-12">
+                  <label class="form-label small fw-semibold">简短描述</label>
+                  <input type="text" class="form-control form-control-sm" id="newWfDesc" placeholder="工作流功能描述">
+                </div>
+              </div>
+            </div>
+            <div class="modal-footer py-2">
+              <button class="btn btn-sm btn-secondary" data-bs-dismiss="modal">取消</button>
+              <button class="btn-accent btn btn-sm" onclick="createWorkflowFromModal()">创建</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- New skill name modal -->
       <div class="modal fade" id="newSkillModal" tabindex="-1">
         <div class="modal-dialog modal-sm">
@@ -267,7 +419,8 @@ const I18N = {
   zh: {
     nav_chat: '对话', nav_geo: '地学解译', nav_knowledge: '知识库', nav_skills: '技能',
     page_title: '技能管理', page_sub: '查看内置技能，创建和编辑自定义技能',
-    builtin_section: '内置技能', custom_section: '自定义技能',
+    section_user: '自定义', section_generated: 'RAG 生成', section_builtin: '内置',
+    label_user: '自定义', label_builtin: '内置',
     btn_new: '新建技能', btn_save: '保存', btn_delete: '删除',
     tab_edit: '编辑', tab_preview: '预览',
     empty_state: '选择左侧技能查看详情，或点击「新建技能」创建'
@@ -275,7 +428,8 @@ const I18N = {
   en: {
     nav_chat: 'Chat', nav_geo: 'Geo Agent', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
     page_title: 'Skill Manager', page_sub: 'View built-in skills, create and edit custom skills',
-    builtin_section: 'Built-in Skills', custom_section: 'Custom Skills',
+    section_user: 'Custom', section_generated: 'RAG Generated', section_builtin: 'Built-in',
+    label_user: 'Custom', label_builtin: 'Built-in',
     btn_new: 'New Skill', btn_save: 'Save', btn_delete: 'Delete',
     tab_edit: 'Edit', tab_preview: 'Preview',
     empty_state: 'Select a skill on the left, or click "New Skill" to create one'
@@ -351,24 +505,27 @@ function renderList() {
 
   const catIcons = {
     waveform: '🌊', visualization: '📊', analysis: '🔬',
-    statistics: '📈', custom: '⚡', '': '📄'
+    statistics: '📈', custom: '⚡', generated: '🤖', '': '📄'
   };
 
   let html = '';
-  // Group: user first, then builtin
-  const userSkills = skills.filter(s => s.source === 'user');
-  const builtinSkills = skills.filter(s => s.source === 'builtin');
+  const userSkills      = skills.filter(s => s.source === 'user');
+  const generatedSkills = skills.filter(s => s.source === 'generated');
+  const builtinSkills   = skills.filter(s => s.source === 'builtin');
 
   if (userSkills.length) {
-    html += `<div class="text-muted mb-1 mt-2" style="font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;padding:0 .25rem">
-      <i class="bi bi-person-gear me-1"></i>自定义</div>`;
-    userSkills.forEach(s => html += skillCardHtml(s, catIcons));
+    html += sectionHeader('bi-person-gear', T('section_user'));
+    userSkills.forEach(s => { html += skillCardHtml(s, catIcons); });
+  }
+
+  if (generatedSkills.length) {
+    html += sectionHeader('bi-cpu', T('section_generated'));
+    generatedSkills.forEach(s => { html += skillCardHtml(s, catIcons); });
   }
 
   if (builtinSkills.length) {
-    html += `<div class="text-muted mb-1 mt-2" style="font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;padding:0 .25rem">
-      <i class="bi bi-box-seam me-1"></i>内置</div>`;
-    builtinSkills.forEach(s => html += skillCardHtml(s, catIcons));
+    html += sectionHeader('bi-box-seam', T('section_builtin'));
+    builtinSkills.forEach(s => { html += skillCardHtml(s, catIcons); });
   }
 
   list.innerHTML = html;
@@ -379,15 +536,24 @@ function renderList() {
   }
 }
 
+function sectionHeader(icon, label) {
+  return `<div class="text-muted mb-1 mt-2" style="font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;padding:0 .25rem">
+    <i class="bi ${icon} me-1"></i>${label}</div>`;
+}
+
 function skillCardHtml(s, catIcons) {
-  const icon = catIcons[s.category] || '📄';
-  const srcClass = s.source === 'user' ? 'src-user' : 'src-builtin';
-  const srcLabel = s.source === 'user' ? '自定义' : '内置';
+  const icon    = catIcons[s.category] || '📄';
+  const isGen   = s.source === 'generated';
+  const isUser  = s.source === 'user';
+  const srcClass = isGen ? 'src-generated' : isUser ? 'src-user' : 'src-builtin';
+  const srcLabel = isGen ? 'RAG·生成' : isUser ? T('label_user') : T('label_builtin');
   const isActive = currentSkill && currentSkill.name === s.name ? 'active' : '';
+  const ragBadge = (s.rag_sources && s.rag_sources.length)
+    ? `<span class="rag-badge ms-1">RAG</span>` : '';
   return `<div class="skill-card ${isActive}" data-name="${s.name}" onclick="openSkill('${s.name}')">
     <span class="skill-icon">${icon}</span>
     <div class="skill-info">
-      <div class="skill-name">${s.name}</div>
+      <div class="skill-name">${s.name}${ragBadge}</div>
       <div class="skill-cat">${s.category || '—'}</div>
     </div>
     <span class="skill-src ${srcClass}">${srcLabel}</span>
@@ -424,12 +590,30 @@ async function openSkill(name) {
 
   document.getElementById('editorTitle').textContent = name;
   const badge = document.getElementById('editorSrcBadge');
-  badge.className = 'skill-src ' + (skill.source === 'user' ? 'src-user' : 'src-builtin');
-  badge.textContent = skill.source === 'user' ? '自定义' : '内置';
+  const srcMap = { user: ['src-user', T('label_user')], generated: ['src-generated', 'RAG·生成'], builtin: ['src-builtin', T('label_builtin')] };
+  const [srcCls, srcLbl] = srcMap[skill.source] || srcMap.builtin;
+  badge.className = 'skill-src ' + srcCls;
+  badge.textContent = srcLbl;
 
-  // Edit / delete buttons
+  // RAG sources hint
+  let hintEl = document.getElementById('ragSourcesHint');
+  if (!hintEl) {
+    hintEl = document.createElement('div');
+    hintEl.id = 'ragSourcesHint';
+    hintEl.style.cssText = 'font-size:.76rem;color:#e65100;padding:.25rem .4rem;background:#fff3e0;border-radius:6px;margin-bottom:.4rem;';
+    document.getElementById('editorPanel').insertBefore(hintEl, document.getElementById('editorPanel').querySelector('.editor-tabs'));
+  }
+  if (skill.rag_sources && skill.rag_sources.length) {
+    hintEl.innerHTML = `<i class="bi bi-database-fill-check me-1"></i>RAG 知识源：${skill.rag_sources.join(', ')}`;
+    hintEl.style.display = 'block';
+  } else {
+    hintEl.style.display = 'none';
+  }
+
+  // Edit / delete buttons — user and generated can both be edited/deleted
+  const canEdit = skill.source === 'user' || skill.source === 'generated';
   document.getElementById('editBtn').style.display = '';
-  document.getElementById('deleteBtn').style.display = skill.source === 'user' ? '' : 'none';
+  document.getElementById('deleteBtn').style.display = canEdit ? '' : 'none';
 
   // Load into editor (read-only)
   const ta = document.getElementById('mdEditor');
@@ -439,15 +623,16 @@ async function openSkill(name) {
   ta.style.color = '#666';
 
   document.getElementById('saveRow').style.display = 'none';
-  document.getElementById('editorHint').textContent =
-    skill.source === 'user' ? '点击「编辑」修改此技能' : '内置技能只读，可复制后创建自定义版本';
+  document.getElementById('editorHint').textContent = canEdit
+    ? (skill.source === 'generated' ? '自动生成的技能，可编辑定制（编辑后变为自定义技能）' : '点击「编辑」修改此技能')
+    : '内置技能只读，可复制后创建自定义版本';
 
   switchTab('edit');
 }
 
 // ── Edit mode ──────────────────────────────────────────────────────────────
 function enableEdit() {
-  if (!currentSkill || currentSkill.source !== 'user') {
+  if (!currentSkill || !['user', 'generated'].includes(currentSkill.source)) {
     toast('内置技能不可编辑，请新建自定义技能', 'err');
     return;
   }
@@ -517,8 +702,9 @@ async function saveSkill() {
 
 // ── Delete skill ──────────────────────────────────────────────────────────
 async function deleteSkill() {
-  if (!currentSkill || currentSkill.source !== 'user') return;
-  if (!confirm(`确认删除自定义技能「${currentSkill.name}」？`)) return;
+  if (!currentSkill || !['user', 'generated'].includes(currentSkill.source)) return;
+  const typeLabel = currentSkill.source === 'generated' ? '自动生成的 RAG 技能' : '自定义技能';
+  if (!confirm(`确认删除${typeLabel}「${currentSkill.name}」？`)) return;
   try {
     const r = await fetch(`/api/skills/${encodeURIComponent(currentSkill.name)}`, {method:'DELETE'});
     const d = await r.json();
@@ -593,6 +779,301 @@ function toast(msg, type='') {
   el.textContent = msg;
   wrap.appendChild(el);
   setTimeout(() => el.remove(), 3000);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ── WORKFLOW TAB ──────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+
+let leftTab = 'skills';   // 'skills' | 'workflows'
+let workflows = [];
+let currentWf = null;
+let wfEditMode = false;
+let wfOriginalText = '';
+
+function switchLeftTab(tab) {
+  leftTab = tab;
+  document.getElementById('ltabSkills').classList.toggle('active', tab === 'skills');
+  document.getElementById('ltabWorkflows').classList.toggle('active', tab === 'workflows');
+  document.getElementById('skillsPane').style.display    = tab === 'skills'    ? '' : 'none';
+  document.getElementById('workflowsPane').style.display = tab === 'workflows' ? '' : 'none';
+
+  // Show/hide the correct right-panel
+  if (tab === 'workflows') {
+    document.getElementById('emptyState').style.display  = currentWf ? 'none' : '';
+    document.getElementById('editorPanel').style.display = 'none';
+    document.getElementById('wfEditorPanel').style.display = currentWf ? '' : 'none';
+    loadWorkflows();
+  } else {
+    document.getElementById('wfEditorPanel').style.display = 'none';
+    document.getElementById('editorPanel').style.display   = currentSkill ? '' : 'none';
+    document.getElementById('emptyState').style.display    = currentSkill ? 'none' : '';
+  }
+}
+
+// ── Load / render workflows ────────────────────────────────────────────────
+async function loadWorkflows() {
+  try {
+    const r = await fetch('/api/workflows');
+    const d = await r.json();
+    if (!d.ok) { toast('加载工作流失败: ' + d.error, 'err'); return; }
+    workflows = d.workflows || [];
+    renderWorkflowList();
+  } catch(e) { toast('网络错误', 'err'); }
+}
+
+function renderWorkflowList() {
+  document.getElementById('wfCount').textContent = workflows.length + ' 个';
+  const list = document.getElementById('workflowList');
+  const user    = workflows.filter(w => w.source === 'user');
+  const builtin = workflows.filter(w => w.source !== 'user');
+  let html = '';
+
+  if (user.length) {
+    html += sectionHeader('bi-person-gear', '自定义');
+    user.forEach(w => { html += wfCardHtml(w); });
+  }
+  if (builtin.length) {
+    html += sectionHeader('bi-box-seam', '内置');
+    builtin.forEach(w => { html += wfCardHtml(w); });
+  }
+  if (!workflows.length) {
+    html = `<div class="text-muted text-center py-3" style="font-size:.82rem">暂无工作流</div>`;
+  }
+  list.innerHTML = html;
+
+  if (currentWf) {
+    document.querySelector(`.wf-card[data-name="${currentWf.name}"]`)?.classList.add('active');
+  }
+}
+
+function wfCardHtml(w) {
+  const isUser  = w.source === 'user';
+  const isActive = currentWf && currentWf.name === w.name ? 'active' : '';
+  const srcBadge = isUser
+    ? `<span class="src-wf-user">自定义</span>`
+    : `<span class="src-wf-builtin">内置</span>`;
+  // skills may be list of {name,role} objects or plain strings
+  const skillNames = (w.skill_names || w.skills || []).map(s => typeof s === 'string' ? s : s.name);
+  const skillTags  = skillNames.slice(0, 4).map(s => `<span class="wf-skill-tag">${s}</span>`).join('');
+  const moreTags   = skillNames.length > 4 ? `<span class="wf-skill-tag">+${skillNames.length - 4}</span>` : '';
+  const stepCount  = (w.steps || []).length;
+  const stepBadge  = stepCount ? `<span style="font-size:.65rem;color:#999;margin-left:.3rem">${stepCount} steps</span>` : '';
+  return `<div class="wf-card ${isActive}" data-name="${w.name}" onclick="openWorkflow('${w.name}')">
+    <div class="d-flex align-items-center justify-content-between">
+      <div class="wf-name"><i class="bi bi-diagram-3 me-1" style="color:#5c6bc0"></i>${w.name}${stepBadge}</div>
+      ${srcBadge}
+    </div>
+    <div class="wf-meta">${w.title || ''}</div>
+    ${skillTags || moreTags ? `<div class="wf-skills-row">${skillTags}${moreTags}</div>` : ''}
+  </div>`;
+}
+
+// ── Open workflow ──────────────────────────────────────────────────────────
+async function openWorkflow(name) {
+  if (wfEditMode) cancelWfEdit();
+  const wf = workflows.find(w => w.name === name);
+  if (!wf) return;
+  currentWf = wf;
+  wfEditMode = false;
+
+  document.querySelectorAll('.wf-card').forEach(el => el.classList.remove('active'));
+  document.querySelector(`.wf-card[data-name="${name}"]`)?.classList.add('active');
+
+  // Fetch full source
+  try {
+    const r = await fetch(`/api/workflows/${encodeURIComponent(name)}`);
+    const d = await r.json();
+    if (!d.ok) { toast(d.error, 'err'); return; }
+    wfOriginalText = d.source_text || '';
+    currentWf = { ...currentWf, ...d };
+  } catch(_) { wfOriginalText = ''; }
+
+  // Show panel
+  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('editorPanel').style.display = 'none';
+  document.getElementById('wfEditorPanel').style.display = '';
+
+  document.getElementById('wfEditorTitle').textContent = name;
+  const badge = document.getElementById('wfEditorSrcBadge');
+  badge.className = 'skill-src ' + (wf.source === 'user' ? 'src-wf-user' : 'src-wf-builtin');
+  badge.textContent = wf.source === 'user' ? '自定义' : '内置';
+
+  // Skill badges row — skills is now list of {name, role} objects
+  const skillBadges = document.getElementById('wfSkillBadges');
+  const skillsRow   = document.getElementById('wfSkillsRow');
+  const skillList   = currentWf.skill_names || currentWf.skills || [];
+  // Normalise: may be plain strings or {name,role} objects
+  const skillNameList = skillList.map(s => (typeof s === 'string' ? s : s.name));
+  if (skillNameList.length) {
+    const skillObjs = (typeof skillList[0] === 'object') ? skillList : skillNameList.map(n => ({name:n,role:''}));
+    skillBadges.innerHTML = skillObjs
+      .map(s => `<span class="wf-skill-tag" onclick="openSkillFromWf('${s.name}')" style="cursor:pointer" title="${s.role || '点击查看技能'}">${s.name}</span>`)
+      .join('');
+    skillsRow.style.display = '';
+  } else {
+    skillsRow.style.display = 'none';
+  }
+
+  // Steps DAG preview
+  renderStepsPreview(currentWf.steps || []);
+
+  // YAML editor
+  const ta = document.getElementById('pyEditor');
+  ta.value = wfOriginalText;
+  ta.readOnly = true;
+  ta.style.opacity = '0.75';
+
+  document.getElementById('wfSaveRow').style.display = 'none';
+  const canEdit = wf.source === 'user';
+  document.getElementById('wfEditBtn').style.display = '';
+  document.getElementById('wfDeleteBtn').style.display = canEdit ? '' : 'none';
+  document.getElementById('wfEditorHint').textContent = canEdit
+    ? '点击「编辑」修改此工作流 Markdown'
+    : '内置工作流只读；可新建自定义版本';
+}
+
+function renderStepsPreview(steps) {
+  const container = document.getElementById('wfStepsPreview');
+  const flow      = document.getElementById('wfStepsFlow');
+  if (!steps || !steps.length) { container.style.display = 'none'; return; }
+  container.style.display = '';
+
+  // Build a simple linear rendering: if step has depends_on show arrow from prev
+  const html = steps.map((st, i) => {
+    const arrow = i > 0 ? '<span class="step-arrow mx-1">→</span>' : '';
+    const skill = st.skill ? `<span class="step-skill">[${st.skill}]</span>` : '';
+    const title = st.description || st.id;
+    return `${arrow}<span class="step-node" title="${title}">${st.id}${skill}</span>`;
+  }).join('');
+  flow.innerHTML = html;
+}
+
+function openSkillFromWf(skillName) {
+  switchLeftTab('skills');
+  openSkill(skillName);
+}
+
+// ── Edit workflow ──────────────────────────────────────────────────────────
+function enableWfEdit() {
+  if (!currentWf || currentWf.source !== 'user') {
+    toast('内置工作流不可编辑，请新建自定义工作流', 'err'); return;
+  }
+  wfEditMode = true;
+  // Hide steps preview while editing YAML directly
+  document.getElementById('wfStepsPreview').style.display = 'none';
+  const ta = document.getElementById('pyEditor');
+  ta.readOnly = false;
+  ta.style.opacity = '1';
+  ta.focus();
+  document.getElementById('wfSaveRow').style.display = '';
+  document.getElementById('wfEditorHint').textContent = '编辑工作流 Markdown';
+  document.getElementById('wfEditBtn').style.display = 'none';
+}
+
+function cancelWfEdit() {
+  wfEditMode = false;
+  const ta = document.getElementById('pyEditor');
+  ta.value = wfOriginalText;
+  ta.readOnly = true;
+  ta.style.opacity = '0.75';
+  // Restore steps preview
+  renderStepsPreview(currentWf ? (currentWf.steps || []) : []);
+  document.getElementById('wfSaveRow').style.display = 'none';
+  document.getElementById('wfEditBtn').style.display = '';
+  document.getElementById('wfEditorHint').textContent = '点击「编辑」修改此工作流 Markdown';
+}
+
+function onWfEditorInput() {}
+
+async function saveWorkflow() {
+  if (!currentWf) return;
+  const text = document.getElementById('pyEditor').value.trim();
+  if (!text) { toast('内容不能为空', 'err'); return; }
+  try {
+    const r = await fetch('/api/workflows', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ name: currentWf.name, text })
+    });
+    const d = await r.json();
+    if (!d.ok) { toast('保存失败: ' + d.error, 'err'); return; }
+    wfOriginalText = text;
+    wfEditMode = false;
+    document.getElementById('pyEditor').readOnly = true;
+    document.getElementById('pyEditor').style.opacity = '0.75';
+    document.getElementById('wfSaveRow').style.display = 'none';
+    document.getElementById('wfEditBtn').style.display = '';
+    document.getElementById('wfEditorHint').textContent = '点击「编辑」修改此工作流 Markdown';
+    // Re-render steps from saved YAML
+    await loadWorkflows();
+    const refreshed = workflows.find(w => w.name === currentWf.name);
+    if (refreshed) renderStepsPreview(refreshed.steps || []);
+    toast('工作流已保存', 'ok');
+  } catch(e) { toast('网络错误', 'err'); }
+}
+
+async function deleteWorkflow() {
+  if (!currentWf || currentWf.source !== 'user') return;
+  if (!confirm(`确认删除工作流「${currentWf.name}」？`)) return;
+  try {
+    const r = await fetch(`/api/workflows/${encodeURIComponent(currentWf.name)}`, {method:'DELETE'});
+    const d = await r.json();
+    if (!d.ok) { toast(d.error, 'err'); return; }
+    toast('工作流已删除', 'ok');
+    currentWf = null;
+    document.getElementById('wfEditorPanel').style.display = 'none';
+    document.getElementById('emptyState').style.display = '';
+    await loadWorkflows();
+  } catch(e) { toast('网络错误', 'err'); }
+}
+
+// ── New workflow modal ─────────────────────────────────────────────────────
+const newWfModal = new bootstrap.Modal(document.getElementById('newWfModal'));
+
+function newWorkflow() {
+  ['newWfName','newWfTitle','newWfKeywords','newWfSkills','newWfDesc'].forEach(id => {
+    document.getElementById(id).value = '';
+  });
+  newWfModal.show();
+  setTimeout(() => document.getElementById('newWfName').focus(), 300);
+}
+
+async function createWorkflowFromModal() {
+  const name     = document.getElementById('newWfName').value.trim();
+  const title    = document.getElementById('newWfTitle').value.trim() || name;
+  const keywords = document.getElementById('newWfKeywords').value.trim() || name;
+  const skills   = document.getElementById('newWfSkills').value.trim();
+  const desc     = document.getElementById('newWfDesc').value.trim() || '工作流描述';
+
+  if (!name) { toast('工作流 ID 不能为空', 'err'); return; }
+
+  // Fetch template
+  let tplText = '';
+  try {
+    const params = new URLSearchParams({ name, title, keywords, skills, desc });
+    const r = await fetch(`/api/workflows/template?${params}`);
+    const d = await r.json();
+    tplText = d.template || '';
+  } catch(_) {}
+
+  // Save
+  try {
+    const r = await fetch('/api/workflows', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ name, text: tplText })
+    });
+    const d = await r.json();
+    if (!d.ok) { toast('创建失败: ' + d.error, 'err'); return; }
+  } catch(e) { toast('网络错误', 'err'); return; }
+
+  newWfModal.hide();
+  toast('工作流已创建，请编辑内容', 'ok');
+  await loadWorkflows();
+
+  // Open in edit mode
+  currentWf = { name, source: 'user' };
+  await openWorkflow(name);
+  enableWfEdit();
 }
 </script>
 </body>
