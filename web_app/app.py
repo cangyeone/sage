@@ -18,7 +18,7 @@ import threading
 import json
 from datetime import datetime
 from pathlib import Path
-from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for
+from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for, Response
 
 # Add parent directory to path for config_manager
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -334,6 +334,216 @@ def chat_page():
 def evidence_geo_agent_page():
     """Evidence-driven geoscience interpretation agent page"""
     return render_template('evidence_geo.html')
+
+
+@app.route('/api/chat/stream', methods=['POST'])
+def chat_stream():
+    """SSE streaming for chat. Tries agent first; falls back to direct LLM stream."""
+    import json as _json
+    data     = request.json or {}
+    user_msg = data.get("message", "").strip()
+
+    if not user_msg:
+        def _err():
+            yield f"data: {_json.dumps({'error': 'Empty message'})}\n\n"
+        return Response(_err(), mimetype='text/event-stream')
+
+    llm_cfg = _get_llm_config()
+    if not llm_cfg.get("api_base"):
+        def _no_llm():
+            yield f"data: {_json.dumps({'error': '当前没有可用的 LLM 后端，请在 LLM 设置页面配置。'})}\n\n"
+        return Response(_no_llm(), mimetype='text/event-stream')
+
+    workspace_path = data.get("workspace", "")
+    agent_msg = user_msg
+    if workspace_path:
+        ws_ctx = _inject_workspace_context(user_msg, workspace_path)
+        if ws_ctx:
+            agent_msg = user_msg + "\n\n[系统已获取文件信息]\n" + ws_ctx
+
+    # Try conversational agent first to detect side-channel actions
+    agent_result = None
+    has_side_channel = False
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from conversational_agent import get_agent
+        agent = get_agent()
+        agent_result = agent.process_message(agent_msg)
+        action = agent_result.get('action', '')
+        if action in ('display_plot', 'batch_picking_async', 'picking_async',
+                       'sage_picking_async'):
+            has_side_channel = True
+    except Exception:
+        agent_result = None
+
+    if has_side_channel:
+        # Side-channel detected: process it like the old /api/chat endpoint,
+        # then send the full result as a single "meta" SSE event for the frontend.
+        inner = (agent_result.get('data', {}) or {})
+        inner_results = inner.get('results', {})
+        action = agent_result.get('action', '')
+
+        if action == 'display_plot':
+            wd = inner_results.get('waveform_data')
+            if wd:
+                agent_result['waveform_data'] = wd
+                agent_result['waveform_title'] = inner_results.get('title', '')
+                pd = inner_results.get('picks_data')
+                if pd:
+                    agent_result['picks_data'] = pd
+
+        if action == 'batch_picking_async':
+            cmd = inner_results.get('command', '')
+            cwd = inner_results.get('cwd', os.getcwd())
+            picks_file = inner_results.get('picks_file', '')
+            task_id = f"batch_pick_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+            tasks[task_id] = {'id': task_id, 'type': 'batch_picking',
+                              'status': 'running', 'command': cmd,
+                              'picks_file': picks_file}
+            threading.Thread(target=run_task, args=(task_id, cmd, 'batch_picking'),
+                             kwargs={'cwd': cwd}, daemon=True).start()
+            agent_result['pick_task_id'] = task_id
+            agent_result['picks_file'] = picks_file
+
+        if action == 'picking_async':
+            cmd = inner_results.get('command', '')
+            cwd = inner_results.get('cwd', os.getcwd())
+            picks_file = inner_results.get('picks_file', '')
+            tmp_dir = inner_results.get('tmp_dir', '')
+            task_id = f"chat_pick_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+            tasks[task_id] = {'id': task_id, 'type': 'chat_picking',
+                              'status': 'running', 'command': cmd,
+                              'picks_file': picks_file, 'tmp_dir': tmp_dir}
+            def _run_pick(tid, _cmd, _cwd, _picks_file, _tmp_dir):
+                try:
+                    import shutil
+                    proc = subprocess.run(_cmd, shell=True, capture_output=True,
+                                         text=True, timeout=300, cwd=_cwd)
+                    tasks[tid]['returncode'] = proc.returncode
+                    tasks[tid]['stdout'] = proc.stdout[-3000:]
+                    tasks[tid]['stderr'] = proc.stderr[-3000:]
+                    tasks[tid]['status'] = 'completed' if proc.returncode == 0 else 'failed'
+                except Exception as _e:
+                    tasks[tid]['status'] = 'error'
+                    tasks[tid]['stderr'] = str(_e)
+                finally:
+                    import shutil
+                    if _tmp_dir and os.path.isdir(_tmp_dir):
+                        shutil.rmtree(_tmp_dir, ignore_errors=True)
+            threading.Thread(target=_run_pick,
+                             args=(task_id, cmd, cwd, picks_file, tmp_dir),
+                             daemon=True).start()
+            wd = inner_results.get('waveform_data')
+            if wd:
+                agent_result['waveform_data'] = wd
+                agent_result['waveform_title'] = inner_results.get('title', '')
+            agent_result['pick_task_id'] = task_id
+            agent_result['picks_file'] = picks_file
+
+        if action == 'sage_picking_async':
+            inp_dir    = inner_results.get('input_dir', '')
+            mdl_path   = inner_results.get('model_path', '')
+            incomplete = inner_results.get('incomplete', 'skip')
+            out_base   = inner_results.get('output_base', '')
+            picks_file = inner_results.get('picks_file', '')
+
+            task_id = f"sage_pick_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+            tasks[task_id] = {
+                'id': task_id, 'type': 'sage_picking',
+                'status': 'running',
+                'picks_file': picks_file,
+                'progress': {
+                    'current': 0, 'total': 0,
+                    'n_picks': 0, 'current_station': '',
+                },
+            }
+
+            def _run_sage_inline(tid, _inp, _mdl, _mode, _out):
+                try:
+                    import sys as _sys
+                    _proj = str(Path(__file__).parent.parent)
+                    if _proj not in _sys.path:
+                        _sys.path.insert(0, _proj)
+                    from pnsn.sage_picker import SagePicker as _SP
+
+                    def _cb(station, done, total, n_picks=0):
+                        tasks[tid]['progress'] = {
+                            'current': done, 'total': total,
+                            'n_picks': n_picks, 'current_station': station,
+                        }
+
+                    picker = _SP(_mdl, samplerate=100.0)
+                    res = picker.pick_directory(_inp, _out, incomplete=_mode,
+                                               progress_cb=_cb)
+                    tasks[tid]['status'] = 'completed'
+                    tasks[tid]['result'] = {
+                        'n_stations': res['n_stations'],
+                        'n_picks': res['n_picks'],
+                        'skipped': len(res.get('skipped', [])),
+                        'output': res['output'],
+                    }
+                    tasks[tid]['progress']['current'] = res['n_stations']
+                    tasks[tid]['progress']['total']   = res['n_stations']
+                    tasks[tid]['progress']['n_picks'] = res['n_picks']
+                except Exception as _e:
+                    tasks[tid]['status'] = 'error'
+                    tasks[tid]['stderr'] = str(_e)
+
+            threading.Thread(
+                target=_run_sage_inline,
+                args=(task_id, inp_dir, mdl_path, incomplete, out_base),
+                daemon=True).start()
+
+            agent_result['pick_task_id'] = task_id
+            agent_result['picks_file'] = picks_file
+
+        def _meta():
+            yield f"data: {_json.dumps({'meta': agent_result})}\n\n"
+        return Response(_meta(), mimetype='text/event-stream',
+                        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+    # No side-channel: stream LLM response directly
+    # If agent already got a text response, stream it character-by-character
+    enable_thinking = data.get("thinking", False)
+    agent_text = (agent_result or {}).get('response', '') if agent_result else ''
+
+    if agent_text and not enable_thinking:
+        def generate_from_agent():
+            for i in range(0, len(agent_text), 4):
+                yield f"data: {_json.dumps({'token': agent_text[i:i+4]})}\n\n"
+            yield f"data: {_json.dumps({'done': True})}\n\n"
+        return Response(generate_from_agent(), mimetype='text/event-stream',
+                        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+    # Thinking enabled or agent failed: do a fresh streaming LLM call
+    messages = [
+        {"role": "system", "content": (
+            "You are SAGE, an expert seismology assistant. "
+            "Answer the user's question concisely and accurately."
+        )},
+        {"role": "user", "content": agent_msg},
+    ]
+    history = data.get("history", [])
+    if history:
+        messages = [messages[0]] + history[-6:] + [messages[-1]]
+
+    def generate():
+        for evt in _llm_call_stream(messages, llm_cfg, max_tokens=2000,
+                                    thinking=enable_thinking):
+            if evt["type"] == "token":
+                yield f"data: {_json.dumps({'token': evt['content']})}\n\n"
+            elif evt["type"] == "thinking":
+                yield f"data: {_json.dumps({'thinking': evt['content']})}\n\n"
+            elif evt["type"] == "error":
+                yield f"data: {_json.dumps({'error': evt['content']})}\n\n"
+                return
+            elif evt["type"] == "done":
+                yield f"data: {_json.dumps({'done': True})}\n\n"
+                return
+        yield f"data: {_json.dumps({'done': True})}\n\n"
+
+    return Response(generate(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
 
 @app.route('/api/chat', methods=['POST'])
@@ -682,6 +892,102 @@ def _llm_call(messages: list, llm_cfg: dict, max_tokens: int = 2000) -> str:
     if provider == "ollama":
         return body.get("message", {}).get("content", "").strip()
     return body.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+
+
+def _llm_call_stream(messages: list, llm_cfg: dict, max_tokens: int = 2000,
+                     thinking: bool = False):
+    """向 LLM 发流式请求，yield dict: {"type": "thinking"|"token"|"done"|"error", "content": ...}"""
+    import http.client, json as _json
+    from urllib.parse import urlparse
+
+    provider = llm_cfg.get("provider", "ollama")
+    model    = llm_cfg.get("model", "")
+    api_base = llm_cfg.get("api_base", "")
+    api_key  = llm_cfg.get("api_key", "")
+
+    if not api_base or not model:
+        yield {"type": "error", "content": "未配置 LLM 后端，请在 LLM 设置页面配置"}
+        return
+
+    if provider == "ollama":
+        url_path = "/api/chat"
+        payload  = {"model": model, "messages": messages, "stream": True,
+                    "options": {"temperature": 0.6, "num_predict": max_tokens}}
+    else:
+        url_path = "/chat/completions"
+        payload  = {"model": model, "messages": messages, "stream": True,
+                    "temperature": 0.6, "max_tokens": max_tokens}
+        if thinking:
+            payload["thinking"] = {"type": "enabled"}
+            payload.pop("temperature", None)
+
+    parsed  = urlparse(api_base.rstrip("/"))
+    host    = parsed.hostname
+    port    = parsed.port
+    scheme  = parsed.scheme or "http"
+    prefix  = parsed.path or ""
+
+    if scheme == "https":
+        import ssl
+        conn = http.client.HTTPSConnection(host, port or 443, timeout=120,
+                                           context=ssl.create_default_context())
+    else:
+        conn = http.client.HTTPConnection(host, port or 80, timeout=120)
+
+    headers = {"Content-Type": "application/json",
+               "Authorization": f"Bearer {api_key}" if api_key else "Bearer none"}
+
+    try:
+        conn.request("POST", prefix + url_path, body=_json.dumps(payload).encode(), headers=headers)
+        resp = conn.getresponse()
+        if resp.status != 200:
+            yield {"type": "error", "content": f"LLM 返回 HTTP {resp.status}"}
+            return
+
+        buf = b""
+        while True:
+            chunk = resp.read(4096)
+            if not chunk:
+                break
+            buf += chunk
+            while b"\n" in buf:
+                line_bytes, buf = buf.split(b"\n", 1)
+                line = line_bytes.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+
+                if provider == "ollama":
+                    try:
+                        obj = _json.loads(line)
+                    except _json.JSONDecodeError:
+                        continue
+                    token = obj.get("message", {}).get("content", "")
+                    if token:
+                        yield {"type": "token", "content": token}
+                    if obj.get("done"):
+                        break
+                else:
+                    if line.startswith("data: "):
+                        line = line[6:]
+                    if line == "[DONE]":
+                        break
+                    try:
+                        obj = _json.loads(line)
+                    except _json.JSONDecodeError:
+                        continue
+                    delta = obj.get("choices", [{}])[0].get("delta", {})
+                    reasoning = delta.get("reasoning_content", "")
+                    if reasoning:
+                        yield {"type": "thinking", "content": reasoning}
+                    token = delta.get("content", "")
+                    if token:
+                        yield {"type": "token", "content": token}
+
+        yield {"type": "done"}
+    except Exception as e:
+        yield {"type": "error", "content": str(e)}
+    finally:
+        conn.close()
 
 
 # ==================== Workspace (local filesystem access) ====================
@@ -1760,49 +2066,18 @@ def chat_clear_session():
 
 # ── RAG 增强对话 ──────────────────────────────────────────────────────────────
 
-@app.route('/api/chat/rag', methods=['POST'])
-def chat_rag():
-    """
-    RAG-aware chat endpoint.
-    Retrieves from:
-      1. Session docs (uploaded in this chat session)
-      2. Persistent knowledge base (if not empty)
-    Then calls LLM directly with retrieved context.
-    """
-    data       = request.json or {}
-    user_msg   = data.get("message", "").strip()
-    session_id = data.get("session_id", "default")
-    mode       = data.get("mode", "rag")   # "rag" | "paper_read"
-
-    if not user_msg:
-        return jsonify({"ok": False, "error": "Empty message"}), 400
-
-    llm_cfg = _get_llm_config()
-    if not llm_cfg.get("api_base"):
-        return jsonify({
-            "ok": True,
-            "response": (
-                "当前没有可用的 LLM 后端。\n"
-                "请在 **LLM 设置** 页面配置后端（Ollama / 在线 API）。"
-            ),
-            "sources": [],
-        })
-
-    # ── 检索上下文 ──────────────────────────────────────────────────────────
+def _build_rag_context(user_msg, session_id, mode, workspace_path):
+    """构建 RAG 上下文，返回 (context_parts, sources)"""
     context_parts = []
     sources = []
 
-    # 0. 工作目录文件系统上下文（用户授权后注入）
-    workspace_path = data.get("workspace", "")
     if workspace_path:
         ws_ctx = _inject_workspace_context(user_msg, workspace_path)
         if ws_ctx:
             context_parts.append("===== 本地文件系统 =====\n" + ws_ctx)
 
-    # 1. 会话文档（临时上传）
     session = _session_docs.get(session_id, {})
     if session.get("chunks"):
-        # 简单 TF-IDF 式关键词匹配（无需 GPU）
         query_words = set(user_msg.lower().split())
         scored = []
         for c in session["chunks"]:
@@ -1810,32 +2085,24 @@ def chat_rag():
             score = len(query_words & words) / (len(query_words) + 1)
             scored.append((score, c))
         scored.sort(key=lambda x: x[0], reverse=True)
-        top = scored[:4]
-        for score, c in top:
+        for score, c in scored[:4]:
             if score > 0 or mode == "paper_read":
-                context_parts.append(
-                    f"[上传文档 第{c['page']}页]\n{c['text']}"
-                )
+                context_parts.append(f"[上传文档 第{c['page']}页]\n{c['text']}")
         if session.get("doc_names"):
             sources.extend(session["doc_names"])
 
-    # 2. 持久知识库（BGE-M3 向量检索 / TF-IDF 回退）
     try:
         from rag_engine import get_knowledge_base
         kb = get_knowledge_base()
         if not kb.is_empty:
-            # Raise threshold so only genuinely relevant chunks are retrieved.
-            # BGE-M3 cosine similarity: 0.05 ≈ unrelated, 0.45 ≈ moderate match, 0.6+ = strong.
             kb_hits = kb.retrieve(user_msg, top_k=5, score_threshold=0.45)
             if kb_hits:
                 lines = ["The following passages were retrieved from the knowledge base. "
                          "Use them only if they are directly relevant to the question:\n"]
                 total = 0
                 for chunk, score in kb_hits:
-                    entry = (
-                        f"[Source: {chunk.doc_name}, page {chunk.page + 1}, "
-                        f"relevance {score:.2f}]\n{chunk.text}\n"
-                    )
+                    entry = (f"[Source: {chunk.doc_name}, page {chunk.page + 1}, "
+                             f"relevance {score:.2f}]\n{chunk.text}\n")
                     if total + len(entry) > 2500:
                         break
                     lines.append(entry)
@@ -1846,7 +2113,6 @@ def chat_rag():
     except Exception:
         pass
 
-    # 3. seismo_skill 技能文档（按用户消息检索最相关技能，注入代码示例）
     try:
         sl = _get_skill_loader()
         if sl is not None:
@@ -1856,7 +2122,11 @@ def chat_rag():
     except Exception:
         pass
 
-    # ── 构建提示 ─────────────────────────────────────────────────────────────
+    return context_parts, sources
+
+
+def _build_rag_messages(user_msg, mode, context_parts, history):
+    """构建 RAG 消息列表"""
     if mode == "paper_read":
         system = (
             "你是一位专业的地震学文献解读专家。\n"
@@ -1892,12 +2162,79 @@ def chat_rag():
         {"role": "system", "content": system},
         {"role": "user",   "content": user_msg},
     ]
-
-    # 加入历史（前端传入）
-    history = data.get("history", [])
     if history:
-        # 在 system 和最后 user 消息之间插入历史
         messages = [messages[0]] + history[-6:] + [messages[-1]]
+    return messages
+
+
+@app.route('/api/chat/rag/stream', methods=['POST'])
+def chat_rag_stream():
+    """SSE streaming version of /api/chat/rag"""
+    import json as _json
+    data       = request.json or {}
+    user_msg   = data.get("message", "").strip()
+    session_id = data.get("session_id", "default")
+    mode       = data.get("mode", "rag")
+
+    if not user_msg:
+        def _err():
+            yield f"data: {_json.dumps({'error': 'Empty message'})}\n\n"
+        return Response(_err(), mimetype='text/event-stream')
+
+    llm_cfg = _get_llm_config()
+    if not llm_cfg.get("api_base"):
+        def _no_llm():
+            yield f"data: {_json.dumps({'error': '当前没有可用的 LLM 后端，请在 LLM 设置页面配置。'})}\n\n"
+        return Response(_no_llm(), mimetype='text/event-stream')
+
+    context_parts, sources = _build_rag_context(
+        user_msg, session_id, mode, data.get("workspace", ""))
+    messages = _build_rag_messages(
+        user_msg, mode, context_parts, data.get("history", []))
+
+    enable_thinking = data.get("thinking", False)
+
+    def generate():
+        for evt in _llm_call_stream(messages, llm_cfg, max_tokens=2000,
+                                    thinking=enable_thinking):
+            if evt["type"] == "token":
+                yield f"data: {_json.dumps({'token': evt['content']})}\n\n"
+            elif evt["type"] == "thinking":
+                yield f"data: {_json.dumps({'thinking': evt['content']})}\n\n"
+            elif evt["type"] == "error":
+                yield f"data: {_json.dumps({'error': evt['content']})}\n\n"
+                return
+            elif evt["type"] == "done":
+                yield f"data: {_json.dumps({'done': True, 'sources': list(set(sources))})}\n\n"
+                return
+        yield f"data: {_json.dumps({'done': True, 'sources': list(set(sources))})}\n\n"
+
+    return Response(generate(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+@app.route('/api/chat/rag', methods=['POST'])
+def chat_rag():
+    """RAG-aware chat endpoint (non-streaming)."""
+    data       = request.json or {}
+    user_msg   = data.get("message", "").strip()
+    session_id = data.get("session_id", "default")
+    mode       = data.get("mode", "rag")
+
+    if not user_msg:
+        return jsonify({"ok": False, "error": "Empty message"}), 400
+
+    llm_cfg = _get_llm_config()
+    if not llm_cfg.get("api_base"):
+        return jsonify({
+            "ok": True,
+            "response": "当前没有可用的 LLM 后端。\n请在 **LLM 设置** 页面配置后端（Ollama / 在线 API）。",
+            "sources": [],
+        })
+
+    context_parts, sources = _build_rag_context(
+        user_msg, session_id, mode, data.get("workspace", ""))
+    messages = _build_rag_messages(
+        user_msg, mode, context_parts, data.get("history", []))
 
     try:
         answer = _llm_call(messages, llm_cfg, max_tokens=2000)
@@ -1909,10 +2246,7 @@ def chat_rag():
     except Exception as e:
         return jsonify({
             "ok": True,
-            "response": (
-                f"LLM 调用失败：{e}\n\n"
-                "请检查 LLM 设置页面中的后端配置是否正确。"
-            ),
+            "response": f"LLM 调用失败：{e}\n\n请检查 LLM 设置页面中的后端配置是否正确。",
             "sources": [],
         })
 

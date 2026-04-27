@@ -7,6 +7,7 @@
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
 <style>
 :root {
   --accent:#667eea; --accent2:#764ba2;
@@ -98,6 +99,17 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
 .dot:nth-child(2) { animation-delay:.2s; }
 .dot:nth-child(3) { animation-delay:.4s; }
 @keyframes blink { 0%,60%,100%{transform:none} 30%{transform:translateY(-7px)} }
+
+/* Thinking block */
+.thinking-block { margin-bottom:.5rem; }
+.thinking-toggle { display:inline-flex; align-items:center; gap:.35rem; cursor:pointer;
+  font-size:.8rem; color:#888; border:1px solid #e0e0e0; background:#fafafa;
+  border-radius:8px; padding:.2rem .6rem; user-select:none; }
+.thinking-toggle:hover { background:#f0f0f0; }
+.thinking-content { display:none; margin-top:.35rem; padding:.5rem .75rem;
+  background:#f8f8f8; border-left:3px solid #ddd; border-radius:4px;
+  font-size:.82rem; color:#666; max-height:300px; overflow-y:auto; white-space:pre-wrap; }
+.thinking-content.open { display:block; }
 
 /* Input area */
 .input-area { background:#fff; border-top:1px solid #eee; padding:.8rem 1.25rem; flex-shrink:0; }
@@ -225,12 +237,10 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
           </div>
         </div>
       </div>
-    </div>
 
-    <!-- Typing indicator (inside chat area) -->
-    <div style="padding:0 1.5rem .25rem">
-      <div class="typing" id="typingIndicator">
-        <div class="bubble" style="background:#fff;border:1px solid #e5e5e5;padding:.5rem .75rem;border-radius:14px;border-bottom-left-radius:4px;">
+      <!-- Typing indicator (in chat flow) -->
+      <div class="msg msg-assistant typing" id="typingIndicator">
+        <div class="bubble" style="padding:.5rem .75rem;">
           <div style="display:flex;align-items:center;gap:.5rem;">
             <div style="display:flex;gap:2px;">
               <span class="dot"></span><span class="dot"></span><span class="dot"></span>
@@ -240,8 +250,6 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
         </div>
       </div>
     </div>
-
-    <!-- Context bar -->
     <div class="context-bar" id="contextBar" style="display:none">
       <span style="font-size:.78rem;color:#888;" data-i18n="ctx_ref">引用上下文：</span>
       <div id="contextChips"></div>
@@ -254,7 +262,8 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
         <button class="qbtn" id="qbtn_summary" onclick="sendQuick(T('qbtn_summary_msg'))">📖 <span data-i18n="qbtn_summary">总结文献</span></button>
         <button class="qbtn" id="qbtn_formula" onclick="sendQuick(T('qbtn_formula_msg'))">🔢 <span data-i18n="qbtn_formula">解读公式</span></button>
         <button class="qbtn" id="qbtn_pick" onclick="sendQuick(T('qbtn_pick_msg'))">🔍 <span data-i18n="qbtn_pick">拾取震相</span></button>
-        <button class="qbtn" onclick="clearChat()" style="margin-left:auto">🗑 <span data-i18n="qbtn_clear">清空</span></button>
+        <button class="qbtn" id="qbtn_thinking" onclick="toggleThinking()" style="margin-left:auto">🧠 <span id="thinkingLabel" data-i18n="qbtn_thinking_off">思考：关</span></button>
+        <button class="qbtn" onclick="clearChat()">🗑 <span data-i18n="qbtn_clear">清空</span></button>
       </div>
       <div class="input-row">
         <div class="input-box">
@@ -276,6 +285,8 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
 <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked@4.3.0/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/highlight.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
 
 <!-- ── i18n / Language toggle ─────────────────────────────────────────── -->
 <script>
@@ -293,6 +304,7 @@ const I18N = {
     feat_code: '数据处理', feat_code_sub: '生成 Python 代码并执行',
     qbtn_filter: '滤波方法', qbtn_summary: '总结文献',
     qbtn_formula: '解读公式', qbtn_pick: '拾取震相', qbtn_clear: '清空',
+    qbtn_thinking_on: '思考：开', qbtn_thinking_off: '思考：关',
     attach_title: '上传 PDF', input_placeholder: '输入问题或指令…',
     // Quick action messages
     quick_qa_msg: '如何获取 IRIS 波形数据？',
@@ -323,6 +335,7 @@ const I18N = {
     feat_code: 'Data Processing', feat_code_sub: 'Generate & execute Python code',
     qbtn_filter: 'Filtering', qbtn_summary: 'Summarize paper',
     qbtn_formula: 'Explain formula', qbtn_pick: 'Phase picking', qbtn_clear: 'Clear',
+    qbtn_thinking_on: 'Think: ON', qbtn_thinking_off: 'Think: OFF',
     attach_title: 'Upload PDF', input_placeholder: 'Type a question or command…',
     // Quick action messages
     quick_qa_msg: 'How do I fetch waveform data from IRIS?',
@@ -384,8 +397,22 @@ let chatHistory    = [];    // [{role,content}] for LLM context
 let kbHasDocs      = false;
 let lastCodeStdout = '';    // 上一次 sendCode 的 stdout，供下一轮绘图注入路径
 let lastDataPath   = '';    // 用户消息中提取到的最近一次数据目录/文件路径
-let lastIntentWasCode  = false; // 上一轮是否执行了代码，用于识别"改进/调整"等后续指令
-let lastIntentWasPaper = false; // 上一轮是否在解读论文，用于识别"复现/实现"等后续指令
+let lastIntentWasCode  = false;
+let lastIntentWasPaper = false;
+let thinkingEnabled    = false;
+
+function toggleThinking() {
+  thinkingEnabled = !thinkingEnabled;
+  const btn = document.getElementById('qbtn_thinking');
+  const label = document.getElementById('thinkingLabel');
+  if (thinkingEnabled) {
+    btn.classList.add('active');
+    label.textContent = T('qbtn_thinking_on');
+  } else {
+    btn.classList.remove('active');
+    label.textContent = T('qbtn_thinking_off');
+  }
+}
 
 const chatMessages    = document.getElementById('chatMessages');
 const typingIndicator = document.getElementById('typingIndicator');
@@ -480,7 +507,7 @@ function addMsg(role, content, sources=[]) {
       sources.map((s, i) => `[${i + 1}] ${s}`).join('\n');
   }
   bubble.innerHTML = formatText(fullContent);
-
+  renderLatex(bubble);
   div.appendChild(bubble);
 
   const timeEl = document.createElement('div');
@@ -541,13 +568,69 @@ function formatText(text) {
       .replace(/\n/g,'<br>');
   }
   try {
-    return marked.parse(String(text));
+    let s = String(text);
+    const codeStore = [];
+    // protect fenced code blocks first
+    s = s.replace(/```[\s\S]*?```/g, (m) => {
+      codeStore.push(m);
+      return `%%CODE_${codeStore.length - 1}%%`;
+    });
+    // protect inline code
+    s = s.replace(/`[^`]+`/g, (m) => {
+      codeStore.push(m);
+      return `%%CODE_${codeStore.length - 1}%%`;
+    });
+
+    const latexStore = [];
+    s = s.replace(/\\\[([\s\S]+?)\\\]/g, (m, p1) => {
+      latexStore.push({display: true, tex: p1});
+      return `%%LATEX_${latexStore.length - 1}%%`;
+    });
+    s = s.replace(/\$\$([\s\S]+?)\$\$/g, (m, p1) => {
+      latexStore.push({display: true, tex: p1});
+      return `%%LATEX_${latexStore.length - 1}%%`;
+    });
+    s = s.replace(/\\\(([\s\S]+?)\\\)/g, (m, p1) => {
+      latexStore.push({display: false, tex: p1});
+      return `%%LATEX_${latexStore.length - 1}%%`;
+    });
+    s = s.replace(/(?<!\$)\$(?!\$)([^\s$](?:[^$]*[^\s$])?)\$(?!\$)/g, (m, p1) => {
+      latexStore.push({display: false, tex: p1});
+      return `%%LATEX_${latexStore.length - 1}%%`;
+    });
+
+    // restore code before markdown parse
+    codeStore.forEach((code, i) => {
+      s = s.replace(`%%CODE_${i}%%`, code);
+    });
+
+    let html = marked.parse(s);
+    latexStore.forEach((item, i) => {
+      const delim = item.display ? '$$' : '$';
+      html = html.replace(`%%LATEX_${i}%%`, delim + item.tex + delim);
+    });
+    return html;
   } catch(e) {
     console.warn('marked.parse error:', e);
     return String(text)
       .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
       .replace(/\n/g,'<br>');
   }
+}
+
+function renderLatex(el) {
+  if (typeof renderMathInElement === 'undefined') return;
+  try {
+    renderMathInElement(el, {
+      delimiters: [
+        {left: '$$', right: '$$', display: true},
+        {left: '$', right: '$', display: false},
+        {left: '\\[', right: '\\]', display: true},
+        {left: '\\(', right: '\\)', display: false}
+      ],
+      throwOnError: false
+    });
+  } catch(e) { console.warn('KaTeX error:', e); }
 }
 
 function copyCode(btn) {
@@ -567,6 +650,149 @@ function copyCode(btn) {
     btn.textContent = '✓';
     setTimeout(() => btn.textContent = 'Copy', 1800);
   });
+}
+
+// ── Streaming helpers ─────────────────────────────────────────────────────
+function streamResponse(url, body, onToken, onThinking, onDone, onError, onMeta) {
+  fetch(url, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  }).then(resp => {
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    function pump() {
+      reader.read().then(({done, value}) => {
+        if (done) { onDone({}); return; }
+        buf += decoder.decode(value, {stream: true});
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data: ')) continue;
+          try {
+            const evt = JSON.parse(trimmed.slice(6));
+            if (evt.token)         onToken(evt.token);
+            else if (evt.thinking) onThinking(evt.thinking);
+            else if (evt.meta && onMeta) { onMeta(evt.meta); return; }
+            else if (evt.error)    { onError(evt.error); return; }
+            else if (evt.done)     { onDone(evt); return; }
+          } catch(e) {}
+        }
+        pump();
+      }).catch(e => onError(e.message));
+    }
+    pump();
+  }).catch(e => onError(e.message));
+}
+
+function addStreamingMsg() {
+  const welcome = document.getElementById('welcomePanel');
+  if (welcome) welcome.remove();
+
+  const div = document.createElement('div');
+  div.className = 'msg msg-assistant';
+
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  div.appendChild(bubble);
+
+  chatMessages.appendChild(div);
+
+  let rawText = '';
+  let thinkingText = '';
+  let renderedUpTo = 0; // char index already rendered as HTML
+
+  let thinkingBlock = null;
+  let thinkingContent = null;
+
+  // rendered paragraphs go here
+  const renderedEl = document.createElement('div');
+  bubble.appendChild(renderedEl);
+  // current in-progress paragraph: plain text node (appendable, no DOM thrash)
+  const cursorEl = document.createElement('span');
+  cursorEl.style.whiteSpace = 'pre-wrap';
+  bubble.appendChild(cursorEl);
+  const cursorText = document.createTextNode('');
+  cursorEl.appendChild(cursorText);
+
+  let needsScroll = true;
+  function autoScroll() {
+    if (!needsScroll) return;
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+  }
+  const onScroll = () => {
+    const gap = chatMessages.scrollHeight - chatMessages.scrollTop - chatMessages.clientHeight;
+    needsScroll = gap < 60;
+  };
+  chatMessages.addEventListener('scroll', onScroll);
+
+  function flushParagraphs() {
+    // find the last double-newline boundary in rawText
+    const boundary = rawText.lastIndexOf('\n\n', rawText.length - 1);
+    if (boundary <= renderedUpTo) return;
+    const toRender = rawText.slice(0, boundary);
+    renderedEl.innerHTML = formatText(toRender);
+    renderLatex(renderedEl);
+    renderedUpTo = boundary;
+    // cursor shows only the tail (current paragraph)
+    cursorText.nodeValue = rawText.slice(renderedUpTo);
+  }
+
+  return {
+    el: div,
+    bubble,
+    appendToken(token) {
+      rawText += token;
+      cursorText.nodeValue = rawText.slice(renderedUpTo);
+      if (token.includes('\n')) flushParagraphs();
+      autoScroll();
+    },
+    appendThinking(text) {
+      thinkingText += text;
+      if (!thinkingBlock) {
+        thinkingBlock = document.createElement('div');
+        thinkingBlock.className = 'thinking-block';
+        const label = currentLang === 'zh' ? '思考过程' : 'Thinking';
+        const toggle = document.createElement('div');
+        toggle.className = 'thinking-toggle';
+        toggle.textContent = '💭 ' + label;
+        toggle.onclick = () => thinkingContent.classList.toggle('open');
+        thinkingBlock.appendChild(toggle);
+        thinkingContent = document.createElement('div');
+        thinkingContent.className = 'thinking-content open';
+        thinkingBlock.appendChild(thinkingContent);
+        bubble.insertBefore(thinkingBlock, renderedEl);
+        thinkingContent.appendChild(document.createTextNode(''));
+      }
+      thinkingContent.firstChild.nodeValue += text;
+      autoScroll();
+    },
+    finish(sources) {
+      chatMessages.removeEventListener('scroll', onScroll);
+      let fullContent = rawText;
+      if (sources && sources.length) {
+        const srcLabel = currentLang === 'en' ? 'References' : '参考文献';
+        fullContent += '\n\n---\n**' + srcLabel + '**\n' +
+          sources.map((s, i) => `[${i + 1}] ${s}`).join('\n');
+      }
+      cursorEl.remove();
+      renderedEl.innerHTML = formatText(fullContent);
+      renderLatex(renderedEl);
+
+      const timeEl = document.createElement('div');
+      timeEl.className = 'msg-time';
+      timeEl.textContent = new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});
+      div.appendChild(timeEl);
+
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+    },
+    cleanup() {
+      chatMessages.removeEventListener('scroll', onScroll);
+    },
+    getRawText() { return rawText; }
+  };
 }
 
 // ── Workspace directory ────────────────────────────────────────────────────
@@ -624,6 +850,7 @@ function showTyping(text = null) {
   } else {
     typingText.textContent = T('typing_thinking');
   }
+  chatMessages.appendChild(typingIndicator);
   typingIndicator.classList.add('show');
   chatMessages.scrollTop = chatMessages.scrollHeight;
 }
@@ -1080,34 +1307,30 @@ async function sendCode(text, phase2Badge = false) {
 }
 
 async function sendRag(text) {
-  // 自动判断是否为文献解读请求
   const paperKeywords = ['总结', '解读', '摘要', '结论', '方法', '论文', '文献', '这篇', '本文', '作者'];
   const isPaperMode = paperKeywords.some(k => text.includes(k)) && sessionDocs.length > 0;
   const mode = isPaperMode ? 'paper_read' : 'rag';
 
-  const r = await fetch('/api/chat/rag', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({
-      message:    text,
-      session_id: SESSION_ID,
-      mode:       mode,
-      history:    chatHistory.slice(-8),
-      workspace:  wsEnabled ? wsPath : '',
-    }),
-  });
-  const d = await r.json();
   hideTyping();
+  const stream = addStreamingMsg();
 
-  const answer  = d.response || '（无回复）';
-  const sources = d.sources  || [];
-  addMsg('assistant', answer, sources);
-  chatHistory.push({role:'assistant', content:answer});
+  streamResponse('/api/chat/rag/stream', {
+    message:    text,
+    session_id: SESSION_ID,
+    mode:       mode,
+    history:    chatHistory.slice(-8),
+    workspace:  wsEnabled ? wsPath : '',
+    thinking:   thinkingEnabled,
+  },
+  token => stream.appendToken(token),
+  thinking => stream.appendThinking(thinking),
+  evt => {
+    stream.finish(evt.sources || []);
+    chatHistory.push({role:'assistant', content: stream.getRawText()});
 
-  // 论文解读模式：标记状态，并显示"复现方法"提示卡
-  if (isPaperMode) {
-    lastIntentWasPaper = true;
-    lastIntentWasCode  = false;
+    if (isPaperMode) {
+      lastIntentWasPaper = true;
+      lastIntentWasCode  = false;
 
     const hintWrap = document.createElement('div');
     hintWrap.className = 'msg msg-assistant improve-hint-row';
@@ -1140,9 +1363,14 @@ async function sendRag(text) {
     hintWrap.appendChild(hintCard);
     chatMessages.appendChild(hintWrap);
     chatMessages.scrollTop = chatMessages.scrollHeight;
-  } else {
-    lastIntentWasPaper = false;
-  }
+    } else {
+      lastIntentWasPaper = false;
+    }
+  },
+  err => {
+    stream.finish([]);
+    stream.bubble.innerHTML += `<div style="color:#c62828;margin-top:.5rem">Error: ${err}</div>`;
+  });
 }
 
 // ── 串联模式：论文解读 → 编程 Agent ────────────────────────────────────────
@@ -1221,29 +1449,43 @@ async function sendChainRagCode(originalText) {
 }
 
 async function sendNormal(text) {
-  const r = await fetch('/api/chat', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({message: text, workspace: wsEnabled ? wsPath : ''}),
-  });
-  const d = await r.json();
   hideTyping();
+  const stream = addStreamingMsg();
 
-  const answer = d.response || '（无回复）';
-  addMsg('assistant', answer);
-  chatHistory.push({role:'assistant', content:answer});
+  streamResponse('/api/chat/stream', {
+    message: text,
+    history: chatHistory.slice(-8),
+    workspace: wsEnabled ? wsPath : '',
+    thinking: thinkingEnabled,
+  },
+  token => stream.appendToken(token),
+  thinking => stream.appendThinking(thinking),
+  evt => {
+    stream.finish([]);
+    chatHistory.push({role:'assistant', content: stream.getRawText()});
+  },
+  err => {
+    stream.finish([]);
+    stream.bubble.innerHTML += `<div style="color:#c62828;margin-top:.5rem">Error: ${err}</div>`;
+  },
+  meta => {
+    stream.cleanup();
+    stream.el.remove();
+    const answer = meta.response || '（无回复）';
+    const msgEl = addMsg('assistant', answer);
+    chatHistory.push({role:'assistant', content: answer});
 
-  // Waveform rendering (existing functionality)
-  if (d.waveform_data?.length) {
-    renderWaveform(chatMessages.lastElementChild, d.waveform_data,
-      d.waveform_title || '', d.picks_data || []);
-  }
-  if (d.pick_task_id && d.waveform_data) {
-    pollPickTask(d.pick_task_id, chatMessages.lastElementChild, d.waveform_data, d.waveform_title || '');
-  }
-  if (d.pick_task_id && !d.waveform_data) {
-    pollBatchTask(d.pick_task_id, chatMessages.lastElementChild, d.picks_file || '');
-  }
+    if (meta.waveform_data?.length) {
+      renderWaveform(msgEl, meta.waveform_data,
+        meta.waveform_title || '', meta.picks_data || []);
+    }
+    if (meta.pick_task_id && meta.waveform_data) {
+      pollPickTask(meta.pick_task_id, msgEl, meta.waveform_data, meta.waveform_title || '');
+    }
+    if (meta.pick_task_id && !meta.waveform_data) {
+      pollBatchTask(meta.pick_task_id, msgEl, meta.picks_file || '');
+    }
+  });
 }
 
 function sendQuick(msg) {
