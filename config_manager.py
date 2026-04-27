@@ -65,7 +65,7 @@ class LLMConfigManager:
 
     def set_llm_provider(self, provider: str):
         """Set LLM provider"""
-        valid_providers = ['ollama', 'openai', 'anthropic', 'azure', 'custom']
+        valid_providers = ['ollama', 'openai', 'deepseek', 'anthropic', 'azure', 'custom']
         if provider not in valid_providers:
             raise ValueError(f"Invalid provider: {provider}. Must be one of {valid_providers}")
 
@@ -77,6 +77,8 @@ class LLMConfigManager:
             self.config['llm']['api_key'] = ''
         elif provider == 'openai':
             self.config['llm']['api_base'] = 'https://api.openai.com/v1'
+        elif provider == 'deepseek':
+            self.config['llm']['api_base'] = 'https://api.deepseek.com/v1'
         elif provider == 'anthropic':
             self.config['llm']['api_base'] = 'https://api.anthropic.com'
         elif provider == 'azure':
@@ -180,6 +182,8 @@ class LLMConfigManager:
             'online': [
                 {'name': 'gpt-4o', 'provider': 'OpenAI', 'description': 'GPT-4 Optimized - Best quality'},
                 {'name': 'gpt-4o-mini', 'provider': 'OpenAI', 'description': 'GPT-4 Mini - Good balance'},
+                {'name': 'deepseek-v4-flash', 'provider': 'DeepSeek', 'description': 'DeepSeek V4 Flash - Fast chat model'},
+                {'name': 'deepseek-v4-pro', 'provider': 'DeepSeek', 'description': 'DeepSeek V4 Pro - Strong reasoning'},
                 {'name': 'claude-3-sonnet-20240229', 'provider': 'Anthropic', 'description': 'Claude 3 Sonnet - Excellent reasoning'},
                 {'name': 'claude-3-haiku-20240307', 'provider': 'Anthropic', 'description': 'Claude 3 Haiku - Fast and efficient'},
             ]
@@ -214,19 +218,21 @@ class LLMConfigManager:
         print("Choose your LLM provider:")
         print("  1. Ollama (Local models - Recommended)")
         print("  2. OpenAI (GPT-4, GPT-3.5)")
-        print("  3. Anthropic (Claude)")
-        print("  4. Azure OpenAI")
-        print("  5. Custom API")
+        print("  3. DeepSeek (deepseek-v4-flash / deepseek-v4-pro)")
+        print("  4. Anthropic (Claude)")
+        print("  5. Azure OpenAI")
+        print("  6. Custom API")
         print()
 
-        choice = input("Enter choice (1-5) [1]: ").strip() or '1'
+        choice = input("Enter choice (1-6) [1]: ").strip() or '1'
 
         provider_map = {
             '1': 'ollama',
             '2': 'openai',
-            '3': 'anthropic',
-            '4': 'azure',
-            '5': 'custom'
+            '3': 'deepseek',
+            '4': 'anthropic',
+            '5': 'azure',
+            '6': 'custom'
         }
 
         provider = provider_map.get(choice, 'ollama')
@@ -234,7 +240,7 @@ class LLMConfigManager:
 
         if provider == 'ollama':
             self._setup_ollama(ollama_available)
-        elif provider in ['openai', 'anthropic', 'azure', 'custom']:
+        elif provider in ['openai', 'deepseek', 'anthropic', 'azure', 'custom']:
             self._setup_online_api(provider)
 
         self.mark_first_run_complete()
@@ -316,6 +322,7 @@ class LLMConfigManager:
         """Setup online API configuration"""
         provider_names = {
             'openai': 'OpenAI',
+            'deepseek': 'DeepSeek',
             'anthropic': 'Anthropic',
             'azure': 'Azure OpenAI',
             'custom': 'Custom API'
@@ -354,6 +361,7 @@ class LLMConfigManager:
             # Set default based on provider
             defaults = {
                 'openai': 'gpt-4o-mini',
+                'deepseek': 'deepseek-v4-flash',
                 'anthropic': 'claude-3-haiku-20240307',
                 'azure': 'gpt-4o-mini',
                 'custom': ''

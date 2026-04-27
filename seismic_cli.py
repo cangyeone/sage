@@ -54,7 +54,7 @@ def setup_llm_parser(subparsers):
     set_provider = subparsers_llm.add_parser('set-provider', help='Set LLM provider')
     set_provider.add_argument(
         'provider',
-        choices=['ollama', 'openai', 'anthropic', 'azure', 'custom'],
+        choices=['ollama', 'openai', 'deepseek', 'anthropic', 'azure', 'custom'],
         help='LLM provider name'
     )
 
