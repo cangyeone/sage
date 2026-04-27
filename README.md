@@ -651,6 +651,94 @@ print(result)
 
 > **Override Rules:** When custom skill has same name as built-in skill, custom version takes priority automatically.
 
+### Building Documentation and Skills
+
+SAGE supports automatic building of documentation and skills from external repositories. You can integrate third-party documentation into the knowledge base and generate corresponding skills.
+
+#### Building from GitHub Repositories
+
+1. **Clone Repository to Local Directory**
+   ```bash
+   # Example: Clone GMT Chinese documentation
+   git clone https://github.com/gmt-china/GMT_docs.git
+   ```
+
+2. **Place in seismo_skill/docs Directory**
+   ```bash
+   # Move to SAGE project directory
+   mv GMT_docs ~/path/to/sage/seismo_skill/docs/
+   ```
+
+3. **Access Knowledge Base Page**
+   - Open web interface: `http://localhost:5000/knowledge`
+   - Click the "Build Skills" button in the main knowledge base card
+   - The system will automatically:
+     - Scan `seismo_skill/docs/` directory
+     - Index all documentation files (PDF, MD, RST, HTML, etc.)
+     - Generate FAISS vector index for RAG retrieval
+     - Create corresponding skill documents based on documentation content
+
+4. **Supported Documentation Formats**
+   - PDF documents
+   - Markdown files (.md)
+   - reStructuredText files (.rst)
+   - HTML files (.html, .htm)
+   - Text files (.txt)
+
+#### Automatic Skill Generation
+
+When building documentation, SAGE automatically analyzes the content and generates skill documents that include:
+
+- Function signatures and usage examples
+- Code snippets from documentation
+- Parameter descriptions
+- Best practices and notes
+
+**Example Generated Skill Structure:**
+```markdown
+---
+name: gmt_basemap
+category: generated
+keywords: GMT, basemap, map frame, projection
+---
+
+# GMT Basemap Drawing
+
+## Description
+
+Create map frames and coordinate systems using GMT's basemap module.
+
+## Main Functions
+
+### `psbasemap -R -J -B`
+
+**Parameters:**
+- `-R`: Region specification (e.g., -R0/10/0/10)
+- `-J`: Projection type (e.g., -JM10c for Mercator)
+- `-B`: Frame and annotation settings
+
+**Example:**
+```bash
+gmt psbasemap -R0/360/-90/90 -JM10c -Bafg -P > map.ps
+```
+
+## Notes
+
+- Use appropriate projection for your data region
+- Frame annotations (-B) control tick marks and labels
+```
+
+#### Building Progress Monitoring
+
+The build process runs in the background and provides real-time progress updates:
+
+- **Scanning Phase**: Detects new/modified/deleted files
+- **Indexing Phase**: Processes documents and builds vector embeddings
+- **Skill Generation Phase**: Creates skill documents from indexed content
+- **Completion**: Updates knowledge base statistics
+
+You can monitor progress through the web interface or check logs in the terminal.
+
 ---
 
 ## seismo_script Workflow System
