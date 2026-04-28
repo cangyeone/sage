@@ -6,7 +6,10 @@
 
 <p align="center">
   Conversational AI Platform for Seismology Research
+  **This project is actively evolving. Contributions via patches are welcome, and users are encouraged to stay up to date with ongoing repository updates.**
 </p>
+
+
 
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.9%2B-blue" alt="Python"/>
