@@ -23,12 +23,11 @@
 SAGE is an earthquake science AI platform integrating **natural language interaction**, **intelligent phase picking**, **statistical analysis**, **code generation and execution**, **GMT map drawing**, and **literature interpretation**. Users can drive complete analysis workflows through bilingual conversations without memorizing command-line parameters or writing boilerplate code.
 
 
-**This project is actively evolving. Contributions via patches are welcome, and users are encouraged to stay up to date with ongoing repository updates.**
 ---
 
 ## Table of Contents
 
-- [**This project is actively evolving. Contributions via patches are welcome, and users are encouraged to stay up to date with ongoing repository updates.**](#this-project-is-actively-evolving-contributions-via-patches-are-welcome-and-users-are-encouraged-to-stay-up-to-date-with-ongoing-repository-updates)
+
 - [Table of Contents](#table-of-contents)
 - [Features Overview](#features-overview)
 - [System Architecture](#system-architecture)
