@@ -6,3 +6,4 @@
 data/seismic/waveform/data.csv
 open_models
 seismo_skill/docs/GMT_docs-6.5
+*.mseed
