@@ -8,6 +8,8 @@
   Conversational AI Platform for Seismology Research
 </p>
 
+
+
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.9%2B-blue" alt="Python"/>
   <img src="https://img.shields.io/badge/Framework-Flask-lightgrey" alt="Flask"/>
@@ -20,25 +22,61 @@
 
 SAGE is an earthquake science AI platform integrating **natural language interaction**, **intelligent phase picking**, **statistical analysis**, **code generation and execution**, **GMT map drawing**, and **literature interpretation**. Users can drive complete analysis workflows through bilingual conversations without memorizing command-line parameters or writing boilerplate code.
 
+
+**This project is actively evolving. Contributions via patches are welcome, and users are encouraged to stay up to date with ongoing repository updates.**
 ---
 
 ## Table of Contents
 
+- [**This project is actively evolving. Contributions via patches are welcome, and users are encouraged to stay up to date with ongoing repository updates.**](#this-project-is-actively-evolving-contributions-via-patches-are-welcome-and-users-are-encouraged-to-stay-up-to-date-with-ongoing-repository-updates)
+- [Table of Contents](#table-of-contents)
 - [Features Overview](#features-overview)
 - [System Architecture](#system-architecture)
 - [Quick Start](#quick-start)
 - [Installation](#installation)
   - [System Requirements](#system-requirements)
   - [Basic Installation](#basic-installation)
-  - [pnsn Phase Picking Module](#pnsn-phase-picking-module-installation)
+  - [pnsn Phase Picking Module Installation](#pnsn-phase-picking-module-installation)
   - [RAG Dependencies](#rag-dependencies)
+    - [Alternative: Download BGE-M3 via ModelScope (recommended for users in China)](#alternative-download-bge-m3-via-modelscope-recommended-for-users-in-china)
 - [Configuring LLM Backend](#configuring-llm-backend)
+  - [Method 1: Ollama (Recommended, local, no internet required)](#method-1-ollama-recommended-local-no-internet-required)
+  - [Method 2: Online API (OpenAI Compatible Format)](#method-2-online-api-openai-compatible-format)
+  - [Method 3: Command Line Configuration](#method-3-command-line-configuration)
 - [Web Interface](#web-interface)
+  - [🗨 Conversation Page (/chat)](#-conversation-page-chat)
+  - [📚 Knowledge Base Page (/knowledge)](#-knowledge-base-page-knowledge)
+  - [⚡ Skill Management Page (/skills)](#-skill-management-page-skills)
+  - [⚙️ LLM Settings Page (/llm-settings)](#️-llm-settings-page-llm-settings)
 - [Command Line Tools](#command-line-tools)
+  - [Conversation Mode](#conversation-mode)
+  - [Phase Picking](#phase-picking)
+  - [Event Association](#event-association)
+  - [Seismic Statistics](#seismic-statistics)
+  - [LLM Code Generation and Execution](#llm-code-generation-and-execution)
+  - [Autonomous Agent](#autonomous-agent)
+  - [Skill Management](#skill-management)
+  - [LLM Backend Management](#llm-backend-management)
 - [Conversation Routing Mechanism](#conversation-routing-mechanism)
-- [seismo_skill Skill System](#seismo_skill-skill-system)
-- [seismo_script Workflow System](#seismo_script-workflow-system)
+  - [Routing Flow](#routing-flow)
+  - [Three Types of Routing](#three-types-of-routing)
+- [seismo\_skill Skill System](#seismo_skill-skill-system)
+  - [Working Principle](#working-principle)
+  - [Built-in Skills (7)](#built-in-skills-7)
+  - [Creating Custom Skills](#creating-custom-skills)
+- [Notes](#notes)
+    - [Automatic Skill Generation](#automatic-skill-generation)
+- [Notes](#notes-1)
+  - [Storage](#storage)
+  - [Built-in Workflows](#built-in-workflows)
+  - [`CodeEngine.run_workflow()` API](#codeenginerun_workflow-api)
+  - [Web API](#web-api)
+  - [Creating Custom Workflows](#creating-custom-workflows)
 - [GMT Map Drawing](#gmt-map-drawing)
+  - [Installing GMT](#installing-gmt)
+  - [Usage](#usage)
+  - [Automatic Chinese Title Processing](#automatic-chinese-title-processing)
+  - [Image and Script Download](#image-and-script-download)
 - [EvidenceDrivenGeoAgent — Geoscience Interpretation Agent](#evidencedrivengeoagent--geoscience-interpretation-agent)
   - [Design Principles](#design-principles)
   - [Architecture](#architecture)
@@ -47,17 +85,25 @@ SAGE is an earthquake science AI platform integrating **natural language interac
   - [Nine Built-in Tools](#nine-built-in-tools)
   - [Data Source Priority](#data-source-priority)
   - [Convergence Conditions](#convergence-conditions)
-  - [Web UI](#geo-agent-web-ui)
+  - [Geo Agent Web UI](#geo-agent-web-ui)
   - [File Upload for Research Data](#file-upload-for-research-data)
   - [Inline Web Literature Search](#inline-web-literature-search)
-  - [CLI Command](#geo-agent-cli-command)
-  - [Flask API](#geo-agent-flask-api)
+  - [Geo Agent CLI Command](#geo-agent-cli-command)
+  - [Geo Agent Flask API](#geo-agent-flask-api)
   - [Python Programmatic Usage](#python-programmatic-usage)
   - [Output Schema](#output-schema)
 - [Core Modules Details](#core-modules-details)
+  - [`seismo_script/` — Workflow System](#seismo_script--workflow-system)
+  - [`seismo_code/` — Code Generation and Execution Engine](#seismo_code--code-generation-and-execution-engine)
+  - [`seismo_agent/` — Autonomous Agent](#seismo_agent--autonomous-agent)
+  - [`web_app/rag_engine.py` — Knowledge Base RAG Engine](#web_apprag_enginepy--knowledge-base-rag-engine)
+  - [`seismo_stats/` — Seismic Statistical Analysis](#seismo_stats--seismic-statistical-analysis)
+  - [`seismo_tools/` — External Tool Registry](#seismo_tools--external-tool-registry)
 - [Directory Structure](#directory-structure)
 - [Configuration Files](#configuration-files)
 - [FAQ](#faq)
+- [Contact](#contact)
+- [License](#license)
 
 ---
 
