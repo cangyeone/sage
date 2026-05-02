@@ -9,7 +9,6 @@ Configuration is saved to ~/.seismicx/config.json
 
 import os
 import json
-import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -111,47 +110,114 @@ class LLMConfigManager:
         return self.config.get('first_run', True)
 
     @staticmethod
-    def check_ollama_available() -> bool:
-        """Check if Ollama is installed and running"""
+    def check_ollama_available(api_base: str = "http://localhost:11434") -> bool:
+        """Check if Ollama is running via its HTTP API (no subprocess — no hang)."""
+        import urllib.request as _ur
+        import urllib.error as _ue
         try:
-            result = subprocess.run(
-                ['ollama', 'list'],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            return result.returncode == 0
-        except (subprocess.TimeoutExpired, FileNotFoundError):
+            req = _ur.Request(api_base.rstrip('/') + '/api/tags')
+            with _ur.urlopen(req, timeout=3) as resp:
+                return resp.status == 200
+        except Exception:
             return False
 
     @staticmethod
-    def get_ollama_models() -> List[str]:
-        """Get list of available Ollama models"""
+    def get_ollama_models(api_base: str = "http://localhost:11434") -> List[str]:
+        """Get list of installed Ollama models via HTTP API (no subprocess — no hang)."""
+        import urllib.request as _ur
+        import urllib.error as _ue
         try:
-            result = subprocess.run(
-                ['ollama', 'list'],
-                capture_output=True,
-                text=True,
-                timeout=10
+            req = _ur.Request(api_base.rstrip('/') + '/api/tags')
+            with _ur.urlopen(req, timeout=5) as resp:
+                if resp.status != 200:
+                    return []
+                data = json.loads(resp.read().decode('utf-8'))
+            return sorted(
+                m['name'] for m in data.get('models', [])
+                if isinstance(m, dict) and m.get('name')
             )
-            if result.returncode != 0:
-                return []
-
-            models = []
-            lines = result.stdout.strip().split('\n')[1:]  # Skip header
-            for line in lines:
-                if line.strip():
-                    # Extract model name (first column)
-                    model_name = line.split()[0]
-                    models.append(model_name)
-
-            return models
-        except (subprocess.TimeoutExpired, FileNotFoundError):
+        except Exception:
             return []
+
+    def get_online_api_models(self, provider: str = None) -> Optional[List[str]]:
+        """Get list of available models from online API.
+        
+        Parameters
+        ----------
+        provider : str, optional
+            Online provider (deepseek, openai, siliconflow, etc.).
+            If None, uses current provider from config.
+        
+        Returns
+        -------
+        list of str or None
+            Available models, or None if unavailable.
+        """
+        if provider is None:
+            cfg = self.get_llm_config()
+            provider = cfg.get('provider', '')
+            api_base = cfg.get('api_base', '')
+            api_key = cfg.get('api_key', '')
+        else:
+            api_base = None
+            api_key = self.get_llm_config().get('api_key', '')
+        
+        # 如果没有指定api_base，从预设中获取
+        if not api_base:
+            ONLINE_PROVIDERS = {
+                "openai": {"api_base": "https://api.openai.com/v1"},
+                "deepseek": {"api_base": "https://api.deepseek.com/v1"},
+                "siliconflow": {"api_base": "https://api.siliconflow.cn/v1"},
+                "moonshot": {"api_base": "https://api.moonshot.cn/v1"},
+                "dashscope": {"api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
+                "zhipu": {"api_base": "https://open.bigmodel.cn/api/paas/v4"},
+                "anthropic": {"api_base": "https://api.anthropic.com/v1"},
+            }
+            if provider in ONLINE_PROVIDERS:
+                api_base = ONLINE_PROVIDERS[provider]["api_base"]
+            else:
+                return None
+        
+        if not api_key:
+            return None
+        
+        # 调用 /models 端点（api_base 通常已含版本号如 /v1，故不再额外加 /v1）
+        import urllib.request
+        import urllib.error
+
+        for endpoint in ["/models"]:
+            url = api_base.rstrip("/") + endpoint
+            try:
+                headers = {"Authorization": f"Bearer {api_key}"}
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    data = json.loads(resp.read().decode('utf-8'))
+                
+                models = []
+                
+                # 格式1：{"data": [{"id": "model-name"}, ...]}
+                if "data" in data and isinstance(data["data"], list):
+                    for item in data["data"]:
+                        if isinstance(item, dict) and "id" in item:
+                            models.append(item["id"])
+                
+                # 格式2：{"models": [{"name": "model-name"}, ...]}
+                elif "models" in data and isinstance(data["models"], list):
+                    for item in data["models"]:
+                        if isinstance(item, dict) and "name" in item:
+                            models.append(item["name"])
+                
+                if models:
+                    return models
+            except (urllib.error.URLError, urllib.error.HTTPError, OSError, json.JSONDecodeError):
+                continue
+        
+        return None
 
     @staticmethod
     def pull_ollama_model(model_name: str) -> bool:
-        """Pull an Ollama model"""
+        """Pull an Ollama model (CLI fallback — prefer the async HTTP pull route)."""
+        import subprocess
         try:
             print(f"Pulling model: {model_name}...")
             result = subprocess.run(

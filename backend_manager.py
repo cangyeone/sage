@@ -325,6 +325,68 @@ class BackendManager:
         st.reachable = (result is not None and "choices" in result)
         return st
 
+    def get_online_models(self, provider: str = None) -> Optional[List[str]]:
+        """获取在线 API 的可用模型列表。
+        
+        Parameters
+        ----------
+        provider : str, optional
+            指定 provider；如果为 None，使用当前配置的 provider。
+        
+        Returns
+        -------
+        list of str or None
+            模型列表，或获取失败时返回 None。
+        """
+        if provider is None:
+            ocfg = self._config.get("online", {})
+            provider = ocfg.get("provider", "")
+            api_base = ocfg.get("api_base", "")
+            api_key = ocfg.get("api_key", "")
+        else:
+            # 如果指定了 provider，从预设中获取
+            if provider in ONLINE_PROVIDERS:
+                api_base = ONLINE_PROVIDERS[provider]["api_base"]
+            else:
+                return None
+            ocfg = self._config.get("online", {})
+            api_key = ocfg.get("api_key", "")
+        
+        if not api_base or not api_key:
+            return None
+        
+        # 调用 /models 端点（api_base 通常已含版本号如 /v1，故不再额外加 /v1）
+        for endpoint in ["/models"]:
+            url = api_base.rstrip("/") + endpoint
+            data = _http_get(url, timeout=10)
+            
+            if not data:
+                continue
+            
+            # 尝试解析不同格式的响应
+            models = []
+            
+            # 格式1：{"data": [{"id": "model-name"}, ...]}（OpenAI标准）
+            if "data" in data and isinstance(data["data"], list):
+                for item in data["data"]:
+                    if isinstance(item, dict) and "id" in item:
+                        models.append(item["id"])
+            
+            # 格式2：{"models": [{"name": "model-name"}, ...]}（Ollama风格）
+            elif "models" in data and isinstance(data["models"], list):
+                for item in data["models"]:
+                    if isinstance(item, dict) and "name" in item:
+                        models.append(item["name"])
+            
+            # 格式3：直接是列表
+            elif isinstance(data, list):
+                models = data
+            
+            if models:
+                return models
+        
+        return None
+
     def detect_all(self) -> Dict[str, Any]:
         """一次性检测全部后端，返回汇总字典。"""
         return {

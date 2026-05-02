@@ -376,7 +376,7 @@ class IntentClassifier:
 
     def _classify_with_llm(self, user_input: str, llm_config: Dict) -> Optional[Dict]:
         """Call LLM for intent classification. Returns None on failure."""
-        provider = llm_config.get("provider", "ollama")
+        provider = llm_config.get("provider", "ollama").lower()
         model = llm_config.get("model", "qwen2.5:7b")
         api_base = llm_config.get("api_base", "http://localhost:11434")
         api_key = llm_config.get("api_key", "")
@@ -394,7 +394,9 @@ class IntentClassifier:
                 "stream": False,
                 "options": {"temperature": 0.0, "num_predict": 64},
             }
+            headers = {"Content-Type": "application/json"}
         else:
+            # 在线API（OpenAI-compatible）
             url = api_base.rstrip("/") + "/chat/completions"
             payload = {
                 "model": model,
@@ -402,15 +404,15 @@ class IntentClassifier:
                 "temperature": 0.0,
                 "max_tokens": 64,
             }
+            headers = {"Content-Type": "application/json"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
 
         req = urllib.request.Request(
             url,
             data=json.dumps(payload).encode(),
             method="POST",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}" if api_key else "Bearer none",
-            },
+            headers=headers,
         )
 
         try:

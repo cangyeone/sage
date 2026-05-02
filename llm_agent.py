@@ -390,22 +390,137 @@ class OllamaClient:
             return False
 
 
+class OpenAICompatibleClient:
+    """支持 DeepSeek、Qwen、SiliconFlow 等 OpenAI-compatible API 的客户端。"""
+    
+    def __init__(self, api_base: str, model: str, api_key: str, 
+                 temperature: float = 0.3, timeout: float = 180.0):
+        self.api_base = api_base.rstrip("/")
+        self.model = model
+        self.api_key = api_key
+        self.temperature = temperature
+        self.timeout = timeout
+
+    def chat(self, messages: List[Dict[str, Any]],
+             tools: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        """调用 OpenAI-compatible API."""
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+            "max_tokens": 2000,
+        }
+        if tools:
+            # OpenAI API 使用 tools 字段
+            payload["tools"] = [
+                {
+                    "type": "function",
+                    "function": t.get("function", t)
+                } for t in tools
+            ]
+
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+        }
+        
+        req = urllib.request.Request(
+            f"{self.api_base}/chat/completions",
+            data=data,
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            raw = resp.read().decode("utf-8")
+        
+        body = json.loads(raw)
+        
+        # 统一返回格式，兼容 Ollama 的响应格式
+        choice = body.get("choices", [{}])[0]
+        message = choice.get("message", {})
+        
+        # 处理 tool_calls（OpenAI 格式）
+        tool_calls = []
+        if message.get("tool_calls"):
+            for tc in message["tool_calls"]:
+                if tc.get("type") == "function":
+                    tool_calls.append({
+                        "function": {
+                            "name": tc["function"]["name"],
+                            "arguments": tc["function"].get("arguments", "{}"),
+                        }
+                    })
+        
+        return {
+            "message": {
+                "content": message.get("content", ""),
+                "tool_calls": tool_calls if tool_calls else None,
+            }
+        }
+
+    def ping(self) -> bool:
+        """测试 API 连接。"""
+        try:
+            # 尝试调用 /v1/models 端点
+            req = urllib.request.Request(
+                f"{self.api_base}/models",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status == 200
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError):
+            return False
+    
+    @staticmethod
+    def list_models(api_base: str, api_key: str) -> Optional[List[str]]:
+        """获取在线 API 的可用模型列表。"""
+        try:
+            req = urllib.request.Request(
+                f"{api_base.rstrip('/')}/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+            
+            models = []
+            # 不同 API 的模型列表格式可能不同
+            data = body.get("data", [])
+            if isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict):
+                        model_id = item.get("id")
+                        if model_id:
+                            models.append(model_id)
+            
+            return models if models else None
+        except Exception:
+            return None
+
+
 # ------------------------------------------------------------------
 # 主 Agent
 # ------------------------------------------------------------------
 
 class OllamaToolAgent:
-    """多轮 tool-use 对话 Agent。"""
+    """多轮 tool-use 对话 Agent。支持 Ollama 和 OpenAI-compatible API。"""
 
     MAX_TOOL_ITERATIONS = 6  # 单次用户消息内，LLM 最多连续调用多少轮工具
 
     def __init__(self, skill_executor, context,
+                 client = None,  # OllamaClient 或 OpenAICompatibleClient 实例
                  api_base: str = "http://localhost:11434",
                  model: str = "qwen2.5:7b",
                  temperature: float = 0.3,
+                 api_key: str = "",
                  max_history_messages: int = 40):
-        self.client = OllamaClient(api_base=api_base, model=model,
-                                   temperature=temperature)
+        # 如果没有传入 client，则根据参数创建 OllamaClient（向后兼容）
+        if client is None:
+            self.client = OllamaClient(api_base=api_base, model=model,
+                                       temperature=temperature)
+        else:
+            self.client = client
+        
         self.backend = ToolBackend(skill_executor, context)
         self.context = context
         self.max_history_messages = max_history_messages
@@ -514,7 +629,10 @@ class OllamaUnavailable(RuntimeError):
 # ------------------------------------------------------------------
 
 def build_agent_from_config(skill_executor, context) -> Optional[OllamaToolAgent]:
-    """根据 ~/.seismicx/config.json 构建 agent；不可用时返回 None。"""
+    """根据 ~/.seismicx/config.json 构建 agent；不可用时返回 None。
+    
+    支持 Ollama 和 OpenAI-compatible 在线 API（DeepSeek、Qwen、SiliconFlow 等）。
+    """
     try:
         from config_manager import get_config_manager
     except ImportError:
@@ -522,28 +640,79 @@ def build_agent_from_config(skill_executor, context) -> Optional[OllamaToolAgent
 
     cfg = get_config_manager().get_llm_config()
     provider = (cfg.get("provider") or "").lower()
-    if provider != "ollama":
-        # 这里只负责 Ollama 分支；其它 provider 未来可以在这里扩展
-        return None
-
+    model = cfg.get("model") or ""
     api_base = cfg.get("api_base") or "http://localhost:11434"
-    model = cfg.get("model") or "qwen2.5:7b"
     temperature = float(cfg.get("temperature", 0.3))
+    api_key = cfg.get("api_key") or ""
 
-    agent = OllamaToolAgent(
-        skill_executor=skill_executor,
-        context=context,
-        api_base=api_base,
-        model=model,
-        temperature=temperature,
-    )
+    # ──────────────────────────────────────────────────────────────
+    # 1. Ollama 分支
+    # ──────────────────────────────────────────────────────────────
+    if provider == "ollama":
+        if not model:
+            model = "qwen2.5:7b"
+        
+        client = OllamaClient(api_base=api_base, model=model,
+                             temperature=temperature)
+        agent = OllamaToolAgent(
+            skill_executor=skill_executor,
+            context=context,
+            client=client,
+        )
 
-    # 环境变量可以关掉 LLM 路径（调试/降级用）
-    if os.environ.get("SEISMICX_DISABLE_LLM") == "1":
-        return None
+        # 环境变量可以关掉 LLM 路径（调试/降级用）
+        if os.environ.get("SEISMICX_DISABLE_LLM") == "1":
+            return None
 
-    # 如果 Ollama 服务都连不上，直接返回 None 让上层走规则引擎
-    if not agent.client.ping():
-        return None
+        # 如果 Ollama 服务都连不上，直接返回 None 让上层走规则引擎
+        if not client.ping():
+            return None
 
-    return agent
+        return agent
+
+    # ──────────────────────────────────────────────────────────────
+    # 2. 在线 API 分支（DeepSeek、Qwen、OpenAI 等 OpenAI-compatible）
+    # ──────────────────────────────────────────────────────────────
+    elif provider in ["deepseek", "openai", "siliconflow", "moonshot", 
+                       "dashscope", "zhipu", "anthropic", "custom"]:
+        if not model:
+            # 根据 provider 设置默认模型
+            defaults = {
+                "deepseek": "deepseek-v4-flash",
+                "openai": "gpt-4o-mini",
+                "siliconflow": "Qwen/Qwen2.5-7B-Instruct",
+                "moonshot": "moonshot-v1-8k",
+                "dashscope": "qwen-turbo",
+                "zhipu": "glm-4-flash",
+                "anthropic": "claude-3-5-haiku-20241022",
+            }
+            model = defaults.get(provider, "")
+        
+        if not model or not api_key:
+            # 缺少必要配置
+            return None
+        
+        client = OpenAICompatibleClient(
+            api_base=api_base,
+            model=model,
+            api_key=api_key,
+            temperature=temperature,
+        )
+        
+        agent = OllamaToolAgent(
+            skill_executor=skill_executor,
+            context=context,
+            client=client,
+        )
+
+        # 环境变量可以关掉 LLM 路径
+        if os.environ.get("SEISMICX_DISABLE_LLM") == "1":
+            return None
+
+        # 在线 API 不通过 ping() 决定是否启用 agent。
+        # ping() 调用 /models 端点，部分平台（如 DashScope）不支持该端点，
+        # 会导致有效配置被误判为不可用。实际连接问题会在 chat 时暴露并报错。
+        return agent
+
+    # 其它 provider 目前不支持
+    return None

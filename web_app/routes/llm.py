@@ -129,6 +129,140 @@ def pull_ollama_model():
     return jsonify({'message': f'Started pulling model: {model_name}'})
 
 
+@bp.route('/api/llm/online/models', methods=['GET'])
+def get_online_api_models():
+    """从在线 API 获取可用模型列表。支持 GET 参数: api_base, api_key (可选，优先用已保存的 key)"""
+    from config_manager import get_config_manager
+
+    api_base = request.args.get('api_base', '').strip()
+    api_key  = request.args.get('api_key', '').strip()
+
+    # 如果请求没带 api_key，使用已保存的
+    if not api_key:
+        cfg = get_config_manager()
+        api_key = cfg.config.get('llm', {}).get('api_key', '')
+
+    if not api_base:
+        return jsonify({'error': '请提供 api_base 参数', 'models': []}), 400
+    if not api_key:
+        return jsonify({'error': '请先填写并保存 API Key，或在参数中提供 api_key', 'models': []}), 400
+
+    import urllib.request as _urq
+    import urllib.error as _ure
+
+    url = api_base.rstrip('/') + '/models'
+    try:
+        req = _urq.Request(
+            url,
+            headers={
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json',
+            }
+        )
+        with _urq.urlopen(req, timeout=12) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+
+        models = []
+        if isinstance(data.get('data'), list):
+            models = [m['id'] for m in data['data'] if isinstance(m, dict) and m.get('id')]
+        elif isinstance(data.get('models'), list):
+            models = [m.get('id') or m.get('name', '') for m in data['models'] if isinstance(m, dict)]
+
+        models = sorted([m for m in models if m])
+        if not models:
+            return jsonify({'error': '接口返回了空模型列表', 'models': []}), 502
+
+        return jsonify({'models': models})
+
+    except _ure.HTTPError as e:
+        msgs = {401: 'API Key 无效或已过期 (401)', 403: '访问被拒绝，请检查权限 (403)',
+                404: '该平台不支持模型列表接口 (404)'}
+        return jsonify({'error': msgs.get(e.code, f'HTTP {e.code}: {e.reason}'), 'models': []}), 502
+    except (_ure.URLError, OSError) as e:
+        return jsonify({'error': f'网络连接失败: {e.reason if hasattr(e, "reason") else str(e)}', 'models': []}), 502
+    except Exception as e:
+        return jsonify({'error': f'获取模型列表失败: {str(e)}', 'models': []}), 502
+
+
+@bp.route('/api/llm/test', methods=['POST'])
+def test_llm_connection():
+    """轻量测试 LLM 连接：发送一条最短的 chat 消息，返回详细错误信息。"""
+    from config_manager import get_config_manager
+
+    cfg = get_config_manager().get_llm_config()
+    provider = cfg.get('provider', 'ollama')
+    model    = cfg.get('model', '')
+    api_base = cfg.get('api_base', 'http://localhost:11434')
+    api_key  = cfg.get('api_key', '')
+
+    if not model:
+        return jsonify({'ok': False, 'error': '未配置模型，请先保存配置'})
+
+    import urllib.request as _urq
+    import urllib.error as _ure
+
+    # ── Ollama 分支 ─────────────────────────────────────────────────
+    if provider == 'ollama':
+        try:
+            req = _urq.Request(f'{api_base.rstrip("/")}/api/tags')
+            with _urq.urlopen(req, timeout=5) as resp:
+                ok = resp.status == 200
+            if ok:
+                return jsonify({'ok': True, 'message': f'Ollama 连接正常，当前模型: {model}'})
+            return jsonify({'ok': False, 'error': 'Ollama 服务未响应，请运行 ollama serve'})
+        except Exception as e:
+            return jsonify({'ok': False, 'error': f'Ollama 连接失败: {str(e)}'})
+
+    # ── 在线 API 分支 ────────────────────────────────────────────────
+    if not api_key:
+        return jsonify({'ok': False, 'error': '未配置 API Key，请填写后保存'})
+
+    payload = json.dumps({
+        'model': model,
+        'messages': [{'role': 'user', 'content': 'hi'}],
+        'max_tokens': 5,
+        'temperature': 0,
+    }).encode('utf-8')
+
+    try:
+        req = _urq.Request(
+            f'{api_base.rstrip("/")}/chat/completions',
+            data=payload,
+            headers={
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {api_key}',
+            },
+            method='POST',
+        )
+        with _urq.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode('utf-8'))
+
+        if result.get('choices'):
+            return jsonify({'ok': True, 'message': f'✓ {model} 响应正常'})
+        return jsonify({'ok': False, 'error': '模型返回了空结果，请检查模型名称'})
+
+    except _ure.HTTPError as e:
+        body = ''
+        try: body = e.read().decode('utf-8', errors='ignore')[:200]
+        except Exception: pass
+        msgs = {
+            401: f'API Key 无效或已过期 (401)',
+            403: f'访问被拒绝，请检查权限 (403)',
+            404: f'模型 "{model}" 不存在，请确认模型名称 (404)',
+            429: '请求频率超限，稍后再试 (429)',
+        }
+        err = msgs.get(e.code, f'HTTP {e.code}')
+        if body: err += f' — {body}'
+        return jsonify({'ok': False, 'error': err})
+    except (_ure.URLError, OSError) as e:
+        reason = e.reason if hasattr(e, 'reason') else str(e)
+        if 'timed out' in str(reason).lower():
+            return jsonify({'ok': False, 'error': '连接超时，请检查网络或 API 地址是否正确'})
+        return jsonify({'ok': False, 'error': f'网络连接失败: {reason}'})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': f'测试失败: {str(e)}'})
+
+
 @bp.route('/api/llm/ollama/pull/status', methods=['GET'])
 def pull_ollama_status():
     """Return current pull progress for a model."""

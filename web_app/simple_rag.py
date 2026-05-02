@@ -8,7 +8,10 @@ import re
 import json
 import os
 from pathlib import Path
-from .simple_vector_db import get_simple_vector_db, VectorItem
+try:
+    from .simple_vector_db import get_simple_vector_db, VectorItem
+except ImportError:
+    from simple_vector_db import get_simple_vector_db, VectorItem  # type: ignore
 
 # Define DocChunk and DocMeta classes to match rag_engine structure
 class DocChunk:

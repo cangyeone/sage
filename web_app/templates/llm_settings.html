@@ -132,7 +132,7 @@ body { background: #f5f7fa; min-height: 100vh; }
               <i class="bi bi-stars text-primary fs-5"></i>
               <div>
                 <div class="fw-bold">DeepSeek</div>
-                <div class="text-muted" style="font-size:.85rem" data-i18n="deepseek_sub">deepseek-v4-flash / deepseek-v4-pro，需要 API Key</div>
+                <div class="text-muted" style="font-size:.85rem" data-i18n="deepseek_sub">deepseek-chat / deepseek-reasoner，需要 API Key</div>
               </div>
             </div>
           </div>
@@ -214,18 +214,31 @@ body { background: #f5f7fa; min-height: 100vh; }
               <label class="form-label fw-bold" data-i18n="label_model_name">模型名称</label>
               <div class="d-flex flex-wrap gap-2 mb-2">
                 <button type="button" class="btn btn-sm btn-outline-primary"
-                  onclick="setOnlineModel('deepseek-v4-flash','https://api.deepseek.com/v1')">
-                  deepseek-v4-flash
+                  onclick="setOnlineModel('deepseek-chat','https://api.deepseek.com/v1')">
+                  deepseek-chat (V3)
                   <span class="badge bg-primary ms-1" style="font-size:.65rem" data-i18n="badge_recommend">推荐</span>
                 </button>
                 <button type="button" class="btn btn-sm btn-outline-secondary"
-                  onclick="setOnlineModel('deepseek-v4-pro','https://api.deepseek.com/v1')">
-                  deepseek-v4-pro
+                  onclick="setOnlineModel('deepseek-reasoner','https://api.deepseek.com/v1')">
+                  deepseek-reasoner (R1)
                   <span class="badge bg-secondary ms-1" style="font-size:.65rem" data-i18n="badge_reasoning">推理</span>
                 </button>
               </div>
-              <input type="text" class="form-control" id="onlineModel"
-                     placeholder="deepseek-v4-flash">
+              <div class="input-group">
+                <input type="text" class="form-control" id="onlineModel"
+                       placeholder="deepseek-chat">
+                <button type="button" class="btn btn-outline-secondary" id="btnFetchModelsDS"
+                        onclick="fetchOnlineModels(true)" title="从 API 获取可用模型列表">
+                  <i class="bi bi-arrow-repeat"></i>
+                  <span data-i18n="btn_fetch_models">获取模型</span>
+                </button>
+              </div>
+              <div id="modelDropdownWrapDS" style="display:none;margin-top:.4rem">
+                <select class="form-select form-select-sm" id="modelDropdownDS"
+                        onchange="document.getElementById('onlineModel').value=this.value">
+                </select>
+              </div>
+              <div id="modelFetchStatusDS" style="font-size:.8rem;margin-top:.3rem"></div>
             </div>
           </div>
 
@@ -264,8 +277,22 @@ body { background: #f5f7fa; min-height: 100vh; }
             </div>
             <div class="mb-3" id="modelNameRow">
               <label class="form-label fw-bold" data-i18n="label_model_name">模型名称</label>
-              <input type="text" class="form-control" id="onlineModelGeneric"
-                     placeholder="gpt-4o / Qwen/Qwen2.5-72B-Instruct / …">
+              <div class="input-group">
+                <input type="text" class="form-control" id="onlineModelGeneric"
+                       placeholder="gpt-4o / Qwen/Qwen2.5-72B-Instruct / …">
+                <button type="button" class="btn btn-outline-secondary" id="btnFetchModels"
+                        onclick="fetchOnlineModels()" title="从 API 获取可用模型列表">
+                  <i class="bi bi-arrow-repeat"></i>
+                  <span data-i18n="btn_fetch_models">获取模型</span>
+                </button>
+              </div>
+              <!-- Model dropdown, hidden until models are loaded -->
+              <div id="modelDropdownWrap" style="display:none;margin-top:.4rem">
+                <select class="form-select form-select-sm" id="modelDropdown"
+                        onchange="document.getElementById('onlineModelGeneric').value=this.value">
+                </select>
+              </div>
+              <div id="modelFetchStatus" style="font-size:.8rem;margin-top:.3rem"></div>
             </div>
           </div>
 
@@ -319,7 +346,7 @@ const I18N = {
     ollama_title: 'Ollama（本地）',
     ollama_sub: '本地运行，保护隐私，支持离线使用',
     openai_sub: 'GPT-4o / GPT-4o-mini，需要 API Key',
-    deepseek_sub: 'deepseek-v4-flash / deepseek-v4-pro，需要 API Key',
+    deepseek_sub: 'deepseek-chat / deepseek-reasoner，需要 API Key',
     deepseek_hint: '在 <a href="https://platform.deepseek.com" target="_blank">platform.deepseek.com</a> 注册并获取 API Key',
     badge_recommend: '推荐',
     badge_reasoning: '推理',
@@ -362,6 +389,13 @@ const I18N = {
     test_fail: '连接失败: ',
     save_validate_model: '请选择或输入一个模型名称',
     save_validate_online: '请填写 API URL 和模型名称',
+    btn_fetch_models: '获取模型',
+    fetch_models_loading: '正在获取模型列表…',
+    fetch_models_ok: '✓ 已获取 {n} 个模型',
+    fetch_models_fail: '获取失败: ',
+    fetch_models_need_key: '请先填写 API Key 再获取模型列表',
+    fetch_models_need_base: '请先填写 API Base URL',
+    ollama_timeout: 'Ollama 响应超时，请确认 <code>ollama serve</code> 已启动',
   },
   en: {
     nav_chat: 'Chat', nav_geo: 'Geo Agent', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
@@ -374,7 +408,7 @@ const I18N = {
     ollama_title: 'Ollama (Local)',
     ollama_sub: 'Runs locally — private, works offline',
     openai_sub: 'GPT-4o / GPT-4o-mini — requires an API Key',
-    deepseek_sub: 'deepseek-v4-flash / deepseek-v4-pro — requires an API Key',
+    deepseek_sub: 'deepseek-chat / deepseek-reasoner — requires an API Key',
     deepseek_hint: 'Sign up at <a href="https://platform.deepseek.com" target="_blank">platform.deepseek.com</a> to get your API Key',
     badge_recommend: 'Recommended',
     badge_reasoning: 'Reasoning',
@@ -417,6 +451,13 @@ const I18N = {
     test_fail: 'Connection failed: ',
     save_validate_model: 'Please select or enter a model name',
     save_validate_online: 'Please provide API URL and model name',
+    btn_fetch_models: 'Fetch Models',
+    fetch_models_loading: 'Fetching model list…',
+    fetch_models_ok: '✓ {n} models loaded',
+    fetch_models_fail: 'Failed: ',
+    fetch_models_need_key: 'Please enter your API Key before fetching models',
+    fetch_models_need_base: 'Please enter the API Base URL first',
+    ollama_timeout: 'Ollama timed out — make sure <code>ollama serve</code> is running',
   }
 };
 
@@ -506,7 +547,7 @@ function selectProvider(el) {
       document.getElementById('onlineModelGeneric').value = PRESETS.openai.model;
     }
     if (isDeepseek && !document.getElementById('onlineModel').value) {
-      document.getElementById('onlineModel').value = 'deepseek-v4-flash';
+      document.getElementById('onlineModel').value = 'deepseek-chat';
       document.getElementById('apiBase').value     = 'https://api.deepseek.com/v1';
     }
   }
@@ -532,7 +573,7 @@ async function loadConfig() {
       document.getElementById('ollamaCustomModel').value = currentConfig.model || '';
       loadOllamaModels();
     } else if (provider === 'deepseek') {
-      document.getElementById('onlineModel').value = currentConfig.model    || 'deepseek-v4-flash';
+      document.getElementById('onlineModel').value = currentConfig.model    || 'deepseek-chat';
       document.getElementById('apiBase').value     = currentConfig.api_base || 'https://api.deepseek.com/v1';
     } else {
       document.getElementById('apiBase').value            = currentConfig.api_base || '';
@@ -564,30 +605,39 @@ function updateCurrentBadge() {
 
 // ── Load Ollama installed models ──────────────────────────────────────────────
 async function loadOllamaModels() {
-  document.getElementById('ollamaModelsLoading').style.display = 'block';
-  document.getElementById('ollamaModelsList').style.display    = 'none';
+  const loadingEl = document.getElementById('ollamaModelsLoading');
+  const listEl    = document.getElementById('ollamaModelsList');
+  loadingEl.innerHTML = `<div class="spinner-border spinner-border-sm text-primary"></div>
+    <span class="ms-2 text-muted" data-i18n="models_loading">${T('models_loading')}</span>`;
+  loadingEl.style.display = 'block';
+  listEl.style.display    = 'none';
+
+  // Abort after 7 s — Ollama backend now uses HTTP (≤ 5 s), so 7 s is generous
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 7000);
+
   try {
-    const r = await fetch('/api/llm/ollama/models');
+    const r = await fetch('/api/llm/ollama/models', { signal: controller.signal });
+    clearTimeout(timer);
     const d = await r.json();
 
-    document.getElementById('ollamaModelsLoading').style.display = 'none';
-    const list = document.getElementById('ollamaModelsList');
-    list.style.display = 'block';
+    loadingEl.style.display = 'none';
+    listEl.style.display = 'block';
 
     if (!d.ollama_available) {
-      list.innerHTML = `<div class="alert alert-warning py-2">
+      listEl.innerHTML = `<div class="alert alert-warning py-2">
         <i class="bi bi-exclamation-triangle"></i> ${T('ollama_not_running')}
       </div>`;
       return;
     }
 
     if (!d.installed || d.installed.length === 0) {
-      list.innerHTML = `<div class="text-muted">${T('no_models')}</div>`;
+      listEl.innerHTML = `<div class="text-muted">${T('no_models')}</div>`;
       return;
     }
 
     const savedModel = currentConfig?.model || '';
-    list.innerHTML = `<div class="fw-semibold mb-2" style="font-size:.85rem">${T('installed_models_header')}</div>` +
+    listEl.innerHTML = `<div class="fw-semibold mb-2" style="font-size:.85rem">${T('installed_models_header')}</div>` +
       d.installed.map(m => `
         <div class="form-check mb-1">
           <input class="form-check-input" type="radio" name="ollamaModel"
@@ -597,8 +647,18 @@ async function loadOllamaModels() {
         </div>`).join('');
 
   } catch(e) {
-    document.getElementById('ollamaModelsLoading').innerHTML =
-      `<p class="text-danger">${T('model_fail')}</p>`;
+    clearTimeout(timer);
+    loadingEl.style.display = 'none';
+    listEl.style.display    = 'block';
+    if (e.name === 'AbortError') {
+      listEl.innerHTML = `<div class="alert alert-warning py-2">
+        <i class="bi bi-clock"></i> ${T('ollama_timeout')}
+      </div>`;
+    } else {
+      listEl.innerHTML = `<div class="alert alert-danger py-2">
+        <i class="bi bi-x-circle"></i> ${T('model_fail')}: ${e.message}
+      </div>`;
+    }
   }
 }
 
@@ -704,7 +764,7 @@ document.getElementById('llmForm').addEventListener('submit', async e => {
     payload.api_base = 'http://localhost:11434';
   } else if (provider === 'deepseek') {
     payload.api_base = 'https://api.deepseek.com/v1';
-    payload.model    = document.getElementById('onlineModel').value.trim() || 'deepseek-v4-flash';
+    payload.model    = document.getElementById('onlineModel').value.trim() || 'deepseek-chat';
     const key = document.getElementById('apiKey').value.trim();
     if (key) payload.api_key = key;
     if (!payload.model) { showToast(T('save_validate_model'), 'warning'); return; }
@@ -741,25 +801,71 @@ document.getElementById('llmForm').addEventListener('submit', async e => {
 async function testConnection() {
   showToast(T('test_pending'), 'info');
   try {
-    const r = await fetch('/api/llm/config');
+    const r = await fetch('/api/llm/test', { method: 'POST' });
     const d = await r.json();
-    const cfg = d.config || {};
-    if (!cfg.model || !cfg.api_base) {
-      showToast(T('test_no_cfg'), 'warning'); return;
-    }
-    const resp = await fetch('/api/chat/rag', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ message: 'hello', session_id: 'llm_test', mode: 'rag' })
-    });
-    const data = await resp.json();
-    if (data.ok && data.response) {
-      showToast(T('test_ok'), 'success');
+    if (d.ok) {
+      showToast(d.message || T('test_ok'), 'success');
     } else {
-      showToast(T('test_no_resp'), 'warning');
+      showToast(T('test_fail') + (d.error || T('test_no_resp')), 'danger');
     }
   } catch(e) {
     showToast(T('test_fail') + e.message, 'danger');
+  }
+}
+
+// ── Fetch online model list ───────────────────────────────────────────────────
+async function fetchOnlineModels(isDeepseek = false) {
+  const apiBase = document.getElementById('apiBase').value.trim()
+               || (isDeepseek ? 'https://api.deepseek.com/v1' : '');
+  const apiKey  = document.getElementById('apiKey').value.trim();
+
+  if (!apiBase) { showToast(T('fetch_models_need_base'), 'warning'); return; }
+
+  const statusEl    = document.getElementById(isDeepseek ? 'modelFetchStatusDS' : 'modelFetchStatus');
+  const dropWrap    = document.getElementById(isDeepseek ? 'modelDropdownWrapDS' : 'modelDropdownWrap');
+  const dropdown    = document.getElementById(isDeepseek ? 'modelDropdownDS' : 'modelDropdown');
+  const fetchBtn    = document.getElementById(isDeepseek ? 'btnFetchModelsDS' : 'btnFetchModels');
+
+  statusEl.textContent  = T('fetch_models_loading');
+  statusEl.style.color  = '#888';
+  fetchBtn.disabled     = true;
+  dropWrap.style.display = 'none';
+
+  try {
+    const params = new URLSearchParams({ api_base: apiBase });
+    if (apiKey) params.append('api_key', apiKey);
+    const r = await fetch('/api/llm/online/models?' + params.toString());
+    const d = await r.json();
+
+    if (!r.ok || d.error) {
+      statusEl.textContent = T('fetch_models_fail') + (d.error || '未知错误');
+      statusEl.style.color = '#c62828';
+    } else {
+      const models = d.models || [];
+      statusEl.textContent = T('fetch_models_ok').replace('{n}', models.length);
+      statusEl.style.color = '#2e7d32';
+
+      // Populate dropdown
+      const currentModel = (isDeepseek
+        ? document.getElementById('onlineModel')
+        : document.getElementById('onlineModelGeneric')).value.trim();
+
+      dropdown.innerHTML = models.map(m =>
+        `<option value="${m}" ${m === currentModel ? 'selected' : ''}>${m}</option>`
+      ).join('');
+      dropWrap.style.display = 'block';
+
+      // Auto-select first if nothing set
+      if (!currentModel && models.length) {
+        if (isDeepseek) document.getElementById('onlineModel').value = models[0];
+        else document.getElementById('onlineModelGeneric').value = models[0];
+      }
+    }
+  } catch(e) {
+    statusEl.textContent = T('fetch_models_fail') + e.message;
+    statusEl.style.color = '#c62828';
+  } finally {
+    fetchBtn.disabled = false;
   }
 }
 
