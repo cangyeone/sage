@@ -9,7 +9,7 @@ import uuid as _uuid
 from datetime import datetime
 from pathlib import Path
 from state import (
-    tasks, _session_docs, _geo_agent_jobs, _lit_jobs,
+    tasks, _session_docs, _geo_agent_jobs, _lit_jobs, _chat_jobs,
     UPLOAD_FOLDER_CHAT, GEO_WORKSPACE_ROOT, _PROJECT_ROOT,
 )
 from helpers import get_llm_config, llm_call, inject_workspace_context, get_kb_instance
@@ -986,3 +986,109 @@ def chat_stream():
         mimetype='text/event-stream',
         headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
     )
+
+
+# ── 后台异步聊天 Job（切换页面后仍能继续执行并取回结果）────────────────────────
+
+_CHAT_JOB_TTL = 1800   # 30 分钟内可取回结果
+
+
+def _chat_job_gc():
+    cutoff = _time.time() - _CHAT_JOB_TTL
+    for k in [k for k, v in list(_chat_jobs.items()) if v.get('ts', 0) < cutoff]:
+        _chat_jobs.pop(k, None)
+
+
+def _build_plain_messages(data: dict):
+    """Build messages for plain (no-RAG) chat — mirrors chat_stream() logic."""
+    user_msg     = data.get('message', '').strip()
+    enable_think = bool(data.get('enable_think', False))
+    llm_cfg      = get_llm_config()
+    model_name   = llm_cfg.get('model', '').lower()
+    is_reasoning = any(k in model_name for k in ['deepseek-r1', 'qwq', 'r1', 'deepseek-reasoner'])
+
+    system = (
+        'You are SAGE, an expert seismology assistant with deep knowledge of '
+        'seismology, geophysics and data processing.\n'
+        'Answer the user\'s question using your own knowledge. Be concise and accurate.\n'
+    )
+    if enable_think:
+        system += (
+            '\n请在正式回答前先进行详细推理，将思考过程放在 <think>…</think> 标签内，'
+            '然后在标签之外给出最终回答。'
+            if is_reasoning else
+            '\n\n请在回答前先进行详细推理，然后给出最终回答。'
+        )
+
+    workspace_path = data.get('workspace', '')
+    if workspace_path:
+        ws_ctx = inject_workspace_context(user_msg, workspace_path)
+        if ws_ctx:
+            system += '\n\n===== 本地文件系统 =====\n' + ws_ctx
+
+    messages = [{'role': 'system', 'content': system},
+                {'role': 'user',   'content': user_msg}]
+    history = data.get('history', [])
+    if history:
+        messages = [messages[0]] + history[-6:] + [messages[-1]]
+    return messages, [], llm_cfg
+
+
+@bp.route('/api/chat/submit', methods=['POST'])
+def chat_submit():
+    """
+    Start a non-streaming background chat job.  Returns {job_id} immediately.
+    The LLM call runs in a daemon thread — survives page navigation.
+
+    Body fields (same as /api/chat/rag/stream) plus:
+      type: 'rag' (default) | 'plain'
+    """
+    data = request.json or {}
+    if not data.get('message', '').strip():
+        return jsonify({'ok': False, 'error': 'Empty message'}), 400
+
+    _chat_job_gc()
+    job_id = 'chat_' + _uuid.uuid4().hex[:10]
+    _chat_jobs[job_id] = {
+        'status': 'running', 'answer': '', 'sources': [],
+        'error': '', 'ts': _time.time(),
+    }
+
+    chat_type = data.get('type', 'rag')
+
+    def _run():
+        try:
+            if chat_type == 'plain':
+                messages, sources, llm_cfg = _build_plain_messages(data)
+            else:
+                messages, sources, llm_cfg = _build_rag_messages(data)
+
+            if not llm_cfg.get('api_base'):
+                _chat_jobs[job_id].update(
+                    answer='当前没有可用的 LLM 后端。\n请在 **LLM 设置** 页面配置后端（Ollama / 在线 API）。',
+                    status='done',
+                )
+                return
+
+            answer = llm_call(messages, llm_cfg, max_tokens=2000)
+            _chat_jobs[job_id].update(answer=answer, sources=sources, status='done')
+        except Exception as exc:
+            _chat_jobs[job_id].update(status='error', error=str(exc))
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({'ok': True, 'job_id': job_id})
+
+
+@bp.route('/api/chat/job/<job_id>', methods=['GET'])
+def chat_job_poll(job_id):
+    """Poll a background chat job for its result."""
+    job = _chat_jobs.get(job_id)
+    if not job:
+        return jsonify({'ok': False, 'error': 'Job not found or expired'}), 404
+    return jsonify({
+        'ok':      True,
+        'status':  job['status'],   # 'running' | 'done' | 'error'
+        'answer':  job['answer'],
+        'sources': job['sources'],
+        'error':   job['error'],
+    })

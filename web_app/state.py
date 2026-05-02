@@ -19,6 +19,7 @@ _kb_dir_jobs: dict = {}         # job_id → {status, log, ...}
 _ref_kb_jobs: dict = {}         # job_id → {status, log, ...}
 _geo_agent_jobs: dict = {}      # job_id → {status, progress, result, error, ts}
 _lit_jobs: dict = {}            # job_id → {status, progress, result, error, ts}
+_chat_jobs: dict = {}           # job_id → {status, answer, sources, error, ts}
 _session_docs: dict = {}        # session_id → {chunks, doc_names}
 
 # ── Knowledge 目录扫描缓存 ────────────────────────────────────────────────────

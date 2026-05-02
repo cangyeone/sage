@@ -3,7 +3,7 @@
 # Usage: ./run_production.sh [--port PORT] [--workers NUM]
 
 PORT=${PORT:-5010}
-WORKERS=${WORKERS:-1}  # Use single worker process to avoid multiprocessing issues
+WORKERS=${WORKERS:-1}  # Single worker avoids multiprocessing (fork) issues with sentence-transformers
 
 # Check if gunicorn is installed
 if ! command -v gunicorn &> /dev/null; then
@@ -19,7 +19,7 @@ echo "  Workers: $WORKERS (process-based, thread-safe)"
 gunicorn \
     --bind "0.0.0.0:$PORT" \
     --workers "$WORKERS" \
-    --threads 1 \
+    --threads 4 \
     --timeout 300 \
     --access-logfile - \
     --error-logfile - \

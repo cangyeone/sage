@@ -134,11 +134,12 @@ if __name__ == '__main__':
     print(f"  LLM:        http://localhost:{args.port}/llm-settings")
     print("\nPress Ctrl+C to stop\n")
 
-    # threaded=False + use_reloader=False：避免 sentence-transformers 在多线程/多进程
-    # 模式下触发 SIGSEGV（C 扩展库的线程安全限制）
+    # threaded=True：允许并发请求（SSE 流不阻塞其他页面）
+    # sentence-transformers 的 SIGSEGV 问题来自 fork()，不来自 threads；
+    # OMP_NUM_THREADS=1 已在顶部设置，_code_engine_lock 保护 ML 推断，线程安全。
     app.run(
         host=args.host, port=args.port,
         debug=args.debug,
-        threaded=False,
+        threaded=True,
         use_reloader=False,
     )

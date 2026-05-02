@@ -426,9 +426,24 @@ document.addEventListener('DOMContentLoaded', applyLang);
 
 <script>
 // ── State ──────────────────────────────────────────────────────────────────
-const SESSION_ID = 'sess_' + Math.random().toString(36).slice(2,10);
+// SESSION_ID persists in localStorage so history survives page navigation
+let SESSION_ID = localStorage.getItem('sage_chat_session') || '';
+if (!SESSION_ID) {
+  SESSION_ID = 'sess_' + Math.random().toString(36).slice(2,10);
+  localStorage.setItem('sage_chat_session', SESSION_ID);
+}
+
+let chatHistory = [];    // [{role,content}] for LLM context — restored from localStorage
+try { chatHistory = JSON.parse(localStorage.getItem('sage_chat_history') || '[]'); } catch(e) {}
+
+let _msgStore   = [];    // display-level: [{role,content,sources,timeStr}]
+try { _msgStore = JSON.parse(localStorage.getItem('sage_chat_msgs') || '[]'); } catch(e) {}
+
+function _persistHistory() {
+  try { localStorage.setItem('sage_chat_history', JSON.stringify(chatHistory.slice(-12))); } catch(e) {}
+}
+
 let sessionDocs    = [];    // [{name, n_chunks}]
-let chatHistory    = [];    // [{role,content}] for LLM context
 let kbHasDocs      = false;
 let lastCodeStdout = '';    // 上一次 sendCode 的 stdout，供下一轮绘图注入路径
 let lastDataPath   = '';    // 用户消息中提取到的最近一次数据目录/文件路径
@@ -536,6 +551,12 @@ function addMsg(role, content, sources=[]) {
 
   chatMessages.appendChild(div);
   chatMessages.scrollTop = chatMessages.scrollHeight;
+
+  // Persist to localStorage (cap at 30 messages)
+  _msgStore.push({role, content, sources, timeStr: timeEl.textContent});
+  if (_msgStore.length > 30) _msgStore.splice(0, _msgStore.length - 30);
+  try { localStorage.setItem('sage_chat_msgs', JSON.stringify(_msgStore)); } catch(e) {}
+
   return div;
 }
 
@@ -788,6 +809,7 @@ async function sendMessage() {
 
   addMsg('user', text);
   chatHistory.push({role:'user', content:text});
+  _persistHistory();
   input.value = '';
   autoResize(input);
   // 清除上一轮的"继续改进"提示卡
@@ -1168,6 +1190,14 @@ async function sendCode(text, phase2Badge = false) {
     (d.success ? '执行成功' : '执行失败') +
     (cleanOut ? '\n输出:\n' + cleanOut.slice(0, 300) : '');
   chatHistory.push({role:'assistant', content: summary});
+  _persistHistory();
+  // Persist code result display summary
+  const _codeDisplaySummary = (d.success ? '✅ 代码执行成功' : '❌ 代码执行失败') +
+    (cleanOut ? '\n```\n' + cleanOut.slice(0, 200) + '\n```' : '') +
+    (d.figures && d.figures.length ? `\n📊 生成了 ${d.figures.length} 张图像` : '');
+  _msgStore.push({role:'assistant', content:_codeDisplaySummary, sources:[], timeStr: new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})});
+  if (_msgStore.length > 30) _msgStore.splice(0, _msgStore.length - 30);
+  try { localStorage.setItem('sage_chat_msgs', JSON.stringify(_msgStore)); } catch(e) {}
 
   // 标记此轮为代码模式，以便后续"改进/调整"指令自动路由到 code
   lastIntentWasCode = true;
@@ -1437,7 +1467,54 @@ async function streamToMsg(url, body) {
   streamer.finalise(parser.contentText, sources);
 
   const answer = parser.contentText;
+
+  // Only persist complete, successful responses (not aborted/errored streams)
+  if (!errored && answer.trim()) {
+    const _ts = new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});
+    _msgStore.push({role:'assistant', content: answer, sources, timeStr: _ts});
+    if (_msgStore.length > 30) _msgStore.splice(0, _msgStore.length - 30);
+    try { localStorage.setItem('sage_chat_msgs', JSON.stringify(_msgStore)); } catch(e) {}
+  }
+
   return {answer, sources, errored};
+}
+
+// ── Background job submit + poll ──────────────────────────────────────────
+// Submits a chat job to /api/chat/submit (non-streaming, daemon thread on server).
+// Persists job_id in localStorage so results survive page navigation.
+// Returns {answer, sources} when done, or throws on error.
+async function submitAndPoll(body) {
+  // Submit
+  const resp = await fetch('/api/chat/submit', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+  const init = await resp.json();
+  if (!init.ok) throw new Error(init.error || 'Submit failed');
+  const job_id = init.job_id;
+
+  // Persist so we can resume if user navigates away
+  try { localStorage.setItem('sage_pending_job', JSON.stringify({job_id, ts: Date.now()})); } catch(e) {}
+
+  // Poll until done
+  while (true) {
+    await new Promise(r => setTimeout(r, 1800));
+    let pd;
+    try {
+      const pr = await fetch(`/api/chat/job/${job_id}`);
+      pd = await pr.json();
+    } catch(e) { continue; }   // network blip — retry
+
+    if (pd.status === 'done') {
+      try { localStorage.removeItem('sage_pending_job'); } catch(e) {}
+      return {answer: pd.answer || '', sources: pd.sources || []};
+    }
+    if (pd.status === 'error') {
+      try { localStorage.removeItem('sage_pending_job'); } catch(e) {}
+      throw new Error(pd.error || 'Chat job failed');
+    }
+    // still running — loop
+  }
 }
 
 async function sendRag(text) {
@@ -1447,17 +1524,25 @@ async function sendRag(text) {
   const mode = isPaperMode ? 'paper_read' : 'rag';
 
   hideTyping();
+  showTyping(currentLang === 'zh' ? '🧠 AI 正在思考…' : '🧠 Thinking…');
 
-  const {answer, sources} = await streamToMsg('/api/chat/rag/stream', {
-    message:      text,
-    session_id:   SESSION_ID,
-    mode,
-    history:      chatHistory.slice(-8),
-    workspace:    wsEnabled ? wsPath : '',
-    enable_think: thinkEnabled,
-  });
+  let answer = '', sources = [];
+  try {
+    ({answer, sources} = await submitAndPoll({
+      type: 'rag', message: text, session_id: SESSION_ID, mode,
+      history: chatHistory.slice(-8), workspace: wsEnabled ? wsPath : '',
+      enable_think: thinkEnabled,
+    }));
+  } catch(e) {
+    hideTyping();
+    addMsg('assistant', `✗ ${e.message}`);
+    return;
+  }
+  hideTyping();
+  addMsg('assistant', answer || '（无回复）', sources);
 
   chatHistory.push({role:'assistant', content: answer || '（无回复）'});
+  _persistHistory();
 
   // 论文解读模式：标记状态，并显示"复现方法"提示卡
   if (isPaperMode) {
@@ -1505,24 +1590,23 @@ async function sendChainRagCode(originalText) {
   lastIntentWasCode  = false;
   lastIntentWasPaper = false;
 
-  // ── Phase 1：RAG — 提取论文方法 (streaming) ──────────────────────────────
+  // ── Phase 1：RAG — 提取论文方法 (background job) ─────────────────────────
   showTyping(currentLang === 'zh' ? '📄 提取论文方法…' : '📄 Extracting paper methods…');
 
   let ragAnswer  = '';
   let ragSources = [];
   try {
-    hideTyping();
-    const {answer: _ra, sources: _rs} = await streamToMsg('/api/chat/rag/stream', {
-      message:      originalText,
-      session_id:   SESSION_ID,
-      mode:         'paper_read',
-      history:      chatHistory.slice(-8),
-      workspace:    wsEnabled ? wsPath : '',
-      enable_think: thinkEnabled,
+    const {answer: _ra, sources: _rs} = await submitAndPoll({
+      type: 'rag', message: originalText, session_id: SESSION_ID,
+      mode: 'paper_read', history: chatHistory.slice(-8),
+      workspace: wsEnabled ? wsPath : '', enable_think: thinkEnabled,
     });
     ragAnswer  = _ra || '';
     ragSources = _rs || [];
+    hideTyping();
+    if (ragAnswer) addMsg('assistant', ragAnswer, ragSources);
   } catch(e) {
+    hideTyping();
     // RAG 失败不致命，直接用原始文本去 code
   }
 
@@ -1537,6 +1621,7 @@ async function sendChainRagCode(originalText) {
       if (bbl) bbl.prepend(badge1);
     }
     chatHistory.push({role:'assistant', content: ragAnswer});
+    _persistHistory();
   }
 
   // ── 连接指示器 ────────────────────────────────────────────────────────────
@@ -1573,16 +1658,25 @@ async function sendChainRagCode(originalText) {
 }
 
 async function sendNormal(text) {
-  hideTyping();
+  showTyping(currentLang === 'zh' ? '🧠 AI 正在思考…' : '🧠 Thinking…');
 
-  const {answer} = await streamToMsg('/api/chat/stream', {
-    message:      text,
-    history:      chatHistory.slice(-8),
-    workspace:    wsEnabled ? wsPath : '',
-    enable_think: thinkEnabled,
-  });
+  let answer = '';
+  try {
+    ({answer} = await submitAndPoll({
+      type: 'plain', message: text,
+      history: chatHistory.slice(-8), workspace: wsEnabled ? wsPath : '',
+      enable_think: thinkEnabled,
+    }));
+  } catch(e) {
+    hideTyping();
+    addMsg('assistant', `✗ ${e.message}`);
+    return;
+  }
+  hideTyping();
+  addMsg('assistant', answer || '（无回复）');
 
   chatHistory.push({role:'assistant', content: answer || '（无回复）'});
+  _persistHistory();
 }
 
 function sendQuick(msg) {
@@ -1603,6 +1697,7 @@ function autoResize(el) {
 function clearChat() {
   if (!confirm('确定清空对话记录？')) return;
   chatHistory = [];
+  _msgStore   = [];
   chatMessages.innerHTML = `<div class="welcome" id="welcomePanel">
     <h3><i class="bi bi-robot"></i> SeismicX AI 助手</h3>
     <p class="text-muted">对话已清空，有什么可以帮您？</p>
@@ -1618,6 +1713,11 @@ function clearChat() {
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({session_id: SESSION_ID}),
   }).catch(() => {});
+  // Clear localStorage and rotate to a fresh session
+  localStorage.removeItem('sage_chat_history');
+  localStorage.removeItem('sage_chat_msgs');
+  SESSION_ID = 'sess_' + Math.random().toString(36).slice(2,10);
+  localStorage.setItem('sage_chat_session', SESSION_ID);
 }
 
 // ── Waveform (keep existing Plotly logic) ──────────────────────────────────
@@ -1718,6 +1818,76 @@ function pollBatchTask(taskId, msgEl, picksFile, interval=3000) {
     chatMessages.scrollTop=chatMessages.scrollHeight;
   }, interval);
 }
+
+// ── Restore persisted chat on page load ────────────────────────────────────
+function _restoreChat() {
+  if (!_msgStore || _msgStore.length === 0) return;
+  const welcome = document.getElementById('welcomePanel');
+  if (welcome) welcome.remove();
+  for (const m of _msgStore) {
+    const div = document.createElement('div');
+    div.className = `msg msg-${m.role}`;
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.innerHTML = (typeof formatText === 'function' ? formatText(m.content) : m.content)
+                     + _renderSourceChips(m.sources || []);
+    div.appendChild(bubble);
+    const t = document.createElement('div');
+    t.className = 'msg-time';
+    t.textContent = (m.timeStr || '') + ' ↩';  // ↩ marks restored messages
+    div.appendChild(t);
+    chatMessages.appendChild(div);
+  }
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+document.addEventListener('DOMContentLoaded', _restoreChat);
+
+// ── Resume a pending job if the user navigated away mid-request ────────────
+async function _resumePendingJob() {
+  let pending;
+  try { pending = JSON.parse(localStorage.getItem('sage_pending_job') || 'null'); } catch(e) {}
+  if (!pending) return;
+
+  // Expire after 10 minutes
+  if (Date.now() - pending.ts > 10 * 60 * 1000) {
+    localStorage.removeItem('sage_pending_job');
+    return;
+  }
+
+  const {job_id} = pending;
+  showTyping(currentLang === 'zh' ? '⏳ 正在恢复上次请求…' : '⏳ Resuming previous request…');
+
+  while (true) {
+    await new Promise(r => setTimeout(r, 1800));
+    let pd;
+    try {
+      const pr = await fetch(`/api/chat/job/${job_id}`);
+      if (!pr.ok) {
+        localStorage.removeItem('sage_pending_job');
+        hideTyping();
+        addMsg('assistant', currentLang === 'zh' ? '上次请求已过期，请重新发送。' : 'Previous request expired — please resend.');
+        return;
+      }
+      pd = await pr.json();
+    } catch(e) { continue; }
+
+    if (pd.status === 'done') {
+      localStorage.removeItem('sage_pending_job');
+      hideTyping();
+      addMsg('assistant', pd.answer || '（无回复）', pd.sources || []);
+      chatHistory.push({role:'assistant', content: pd.answer || ''});
+      _persistHistory();
+      return;
+    }
+    if (pd.status === 'error') {
+      localStorage.removeItem('sage_pending_job');
+      hideTyping();
+      addMsg('assistant', `✗ ${currentLang === 'zh' ? '请求失败' : 'Request failed'}: ${pd.error}`);
+      return;
+    }
+  }
+}
+document.addEventListener('DOMContentLoaded', _resumePendingJob);
 
 // Init
 loadKbStatus();
