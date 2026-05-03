@@ -1055,6 +1055,7 @@ def chat_submit():
     }
 
     chat_type = data.get('type', 'rag')
+    images    = data.get('images') or []   # list of base64 strings for VL models
 
     def _run():
         try:
@@ -1070,7 +1071,8 @@ def chat_submit():
                 )
                 return
 
-            answer = llm_call(messages, llm_cfg, max_tokens=2000)
+            answer = llm_call(messages, llm_cfg, max_tokens=2000,
+                              images=images if images else None)
             _chat_jobs[job_id].update(answer=answer, sources=sources, status='done')
         except Exception as exc:
             _chat_jobs[job_id].update(status='error', error=str(exc))

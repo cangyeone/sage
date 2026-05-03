@@ -29,8 +29,47 @@ def get_llm_config() -> dict:
         return {}
 
 
-def llm_call(messages: list, llm_cfg: dict, max_tokens: int = 2000) -> str:
-    """向 LLM 发请求，返回回复文本；失败时抛出异常。"""
+def _strip_data_url(img: str) -> str:
+    """Remove 'data:image/...;base64,' prefix, returning raw base64."""
+    if img.startswith("data:") and "," in img:
+        return img.split(",", 1)[1]
+    return img
+
+
+def _inject_images_into_messages(messages: list, images: list, provider: str) -> list:
+    """
+    Return a shallow copy of messages with images embedded in the last user turn.
+    Ollama: adds {"images": [raw_b64, ...]} field to the user message dict.
+    OpenAI-compat: converts user content to the [{type:text},{type:image_url},...] array.
+    """
+    if not images:
+        return messages
+
+    msgs = [dict(m) for m in messages]   # shallow copy each message
+    for i in range(len(msgs) - 1, -1, -1):
+        if msgs[i].get("role") == "user":
+            if provider == "ollama":
+                msgs[i]["images"] = [_strip_data_url(img) for img in images]
+            else:
+                text = msgs[i].get("content", "")
+                content_arr: list = [{"type": "text", "text": text}]
+                for img in images:
+                    data_url = (img if img.startswith("data:")
+                                else f"data:image/jpeg;base64,{img}")
+                    content_arr.append(
+                        {"type": "image_url", "image_url": {"url": data_url}}
+                    )
+                msgs[i]["content"] = content_arr
+            break
+    return msgs
+
+
+def llm_call(messages: list, llm_cfg: dict, max_tokens: int = 2000,
+             images: list = None) -> str:
+    """
+    向 LLM 发请求，返回回复文本；失败时抛出异常。
+    images: 可选，base64 字符串列表（可含 data URL 前缀），用于多模态 VL 模型。
+    """
     import urllib.request
     import json as _json
 
@@ -44,19 +83,21 @@ def llm_call(messages: list, llm_cfg: dict, max_tokens: int = 2000) -> str:
     if not model:
         raise ValueError("未选择模型，请在 LLM 设置页面中选择一个 Ollama 模型")
 
+    msgs = _inject_images_into_messages(messages, images or [], provider)
+
     if provider == "ollama":
-        url     = api_base.rstrip("/") + "/api/chat"
-        payload = {"model": model, "messages": messages, "stream": False,
-                   "options": {"temperature": 0.6, "num_predict": max_tokens}}
+        endpoint = api_base.rstrip("/") + "/api/chat"
+        payload  = {"model": model, "messages": msgs, "stream": False,
+                    "options": {"temperature": 0.6, "num_predict": max_tokens}}
     else:
-        url     = api_base.rstrip("/") + "/chat/completions"
-        payload = {"model": model, "messages": messages,
-                   "temperature": 0.6, "max_tokens": max_tokens}
+        endpoint = api_base.rstrip("/") + "/chat/completions"
+        payload  = {"model": model, "messages": msgs,
+                    "temperature": 0.6, "max_tokens": max_tokens}
 
     data    = _json.dumps(payload).encode()
     headers = {"Content-Type": "application/json",
                "Authorization": f"Bearer {api_key}" if api_key else "Bearer none"}
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    req = urllib.request.Request(endpoint, data=data, headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=60) as resp:
         body = _json.loads(resp.read().decode())
 
@@ -65,10 +106,12 @@ def llm_call(messages: list, llm_cfg: dict, max_tokens: int = 2000) -> str:
     return body.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
 
 
-def llm_stream(messages: list, llm_cfg: dict, max_tokens: int = 2000):
+def llm_stream(messages: list, llm_cfg: dict, max_tokens: int = 2000,
+               images: list = None):
     """
     Generator that yields text chunks from the LLM stream.
     Supports Ollama (plain NDJSON stream) and OpenAI-compatible SSE.
+    images: 可选，base64 字符串列表，用于多模态 VL 模型。
     """
     import urllib.request
     import json as _json
@@ -83,13 +126,15 @@ def llm_stream(messages: list, llm_cfg: dict, max_tokens: int = 2000):
     if not model:
         raise ValueError("未选择模型")
 
+    msgs = _inject_images_into_messages(messages, images or [], provider)
+
     if provider == "ollama":
         url     = api_base.rstrip("/") + "/api/chat"
-        payload = {"model": model, "messages": messages, "stream": True,
+        payload = {"model": model, "messages": msgs, "stream": True,
                    "options": {"temperature": 0.6, "num_predict": max_tokens}}
     else:
         url     = api_base.rstrip("/") + "/chat/completions"
-        payload = {"model": model, "messages": messages, "stream": True,
+        payload = {"model": model, "messages": msgs, "stream": True,
                    "temperature": 0.6, "max_tokens": max_tokens}
 
     data    = _json.dumps(payload).encode()

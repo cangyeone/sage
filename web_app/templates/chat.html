@@ -158,6 +158,21 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
   display:flex; align-items:center; justify-content:center; font-size:1rem; flex-shrink:0; }
 .send-btn:hover { opacity:.9; }
 
+/* Image preview strip */
+.img-preview-strip { display:flex; flex-wrap:wrap; gap:.4rem; padding:.4rem .6rem .2rem;
+  border-bottom:1px solid #f0f0f0; }
+.img-preview-item { position:relative; width:56px; height:56px; border-radius:8px; overflow:hidden;
+  border:1.5px solid #dde; background:#f8f8f8; flex-shrink:0; }
+.img-preview-item img { width:100%; height:100%; object-fit:cover; display:block; }
+.img-remove-btn { position:absolute; top:1px; right:2px; width:16px; height:16px; border-radius:50%;
+  background:rgba(0,0,0,.55); color:#fff; border:none; font-size:.7rem; line-height:16px;
+  text-align:center; cursor:pointer; padding:0; }
+.img-remove-btn:hover { background:rgba(200,0,0,.75); }
+/* User bubble image thumbnails */
+.bubble-img-row { display:flex; flex-wrap:wrap; gap:.35rem; margin-top:.4rem; }
+.bubble-img-thumb { width:80px; height:60px; border-radius:7px; object-fit:cover;
+  border:1px solid rgba(255,255,255,.35); cursor:pointer; }
+
 /* Welcome */
 .welcome { text-align:center; padding:3rem 1rem; }
 .welcome h3 { background:var(--grad); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
@@ -297,10 +312,14 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
         </div>
         <button class="qbtn" onclick="clearChat()">🗑 <span data-i18n="qbtn_clear">清空</span></button>
       </div>
+      <div id="imgPreviews" class="img-preview-strip" style="display:none;"></div>
       <div class="input-row">
         <div class="input-box">
           <button class="attach-btn" data-i18n-title="attach_title" title="上传 PDF" onclick="triggerUpload()">
             <i class="bi bi-paperclip"></i>
+          </button>
+          <button class="attach-btn" id="imgUploadBtn" title="上传图片（VL 模型）" onclick="triggerImageUpload()" style="color:#aaa;">
+            <i class="bi bi-image"></i>
           </button>
           <textarea id="userInput" rows="1" data-i18n-placeholder="input_placeholder" placeholder="输入问题或指令…" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
         </div>
@@ -310,8 +329,9 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
   </div>
 </div>
 
-<!-- Hidden file input -->
+<!-- Hidden file inputs -->
 <input type="file" id="fileInput" accept=".pdf" multiple style="display:none" onchange="uploadFiles(this.files)">
+<input type="file" id="imageFileInput" accept="image/*" multiple style="display:none" onchange="handleImageFiles(this.files)">
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
@@ -335,7 +355,7 @@ const I18N = {
     feat_code: '数据处理', feat_code_sub: '生成 Python 代码并执行',
     qbtn_filter: '滤波方法', qbtn_summary: '总结文献',
     qbtn_formula: '解读公式', qbtn_pick: '拾取震相', qbtn_clear: '清空',
-    attach_title: '上传 PDF', input_placeholder: '输入问题或指令…',
+    attach_title: '上传 PDF', img_upload_title: '上传图片（VL 模型）', input_placeholder: '输入问题或指令…',
     // Quick action messages
     quick_qa_msg: '如何获取 IRIS 波形数据？',
     quick_kb_msg: '知识库里有哪些内容？',
@@ -368,7 +388,7 @@ const I18N = {
     feat_code: 'Data Processing', feat_code_sub: 'Generate & execute Python code',
     qbtn_filter: 'Filtering', qbtn_summary: 'Summarize paper',
     qbtn_formula: 'Explain formula', qbtn_pick: 'Phase picking', qbtn_clear: 'Clear',
-    attach_title: 'Upload PDF', input_placeholder: 'Type a question or command…',
+    attach_title: 'Upload PDF', img_upload_title: 'Upload image (VL model)', input_placeholder: 'Type a question or command…',
     // Quick action messages
     quick_qa_msg: 'How do I fetch waveform data from IRIS?',
     quick_kb_msg: 'What papers are in the knowledge base?',
@@ -529,8 +549,78 @@ async function uploadFiles(files) {
   document.getElementById('fileInput').value = '';
 }
 
+// ── Image upload / paste (VL models) ──────────────────────────────────────
+let pendingImages = [];   // [{id, b64, mime, objectUrl}]
+
+function triggerImageUpload() { document.getElementById('imageFileInput').click(); }
+
+function handleImageFiles(files) {
+  if (!files || files.length === 0) return;
+  for (const file of files) {
+    if (!file.type.startsWith('image/')) continue;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const dataUrl = e.target.result;
+      const b64  = dataUrl.split(',')[1];
+      _addPendingImage(b64, file.type, dataUrl);
+    };
+    reader.readAsDataURL(file);
+  }
+  document.getElementById('imageFileInput').value = '';
+}
+
+function _addPendingImage(b64, mime, objectUrl) {
+  const id = 'pi_' + Math.random().toString(36).slice(2, 9);
+  pendingImages.push({id, b64, mime, objectUrl});
+  _renderImgPreviews();
+}
+
+function _removePendingImage(id) {
+  pendingImages = pendingImages.filter(x => x.id !== id);
+  _renderImgPreviews();
+}
+
+function _renderImgPreviews() {
+  const strip = document.getElementById('imgPreviews');
+  if (!strip) return;
+  if (pendingImages.length === 0) { strip.style.display = 'none'; strip.innerHTML = ''; return; }
+  strip.style.display = 'flex';
+  strip.innerHTML = pendingImages.map(img =>
+    `<div class="img-preview-item">` +
+      `<img src="${img.objectUrl}" alt="img">` +
+      `<button class="img-remove-btn" onclick="_removePendingImage('${img.id}')" title="移除">×</button>` +
+    `</div>`
+  ).join('');
+}
+
+// Paste images from clipboard directly into the input
+document.addEventListener('DOMContentLoaded', () => {
+  const ta = document.getElementById('userInput');
+  if (ta) {
+    ta.addEventListener('paste', (e) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      let hadImage = false;
+      for (const item of items) {
+        if (!item.type.startsWith('image/')) continue;
+        const file = item.getAsFile();
+        if (!file) continue;
+        hadImage = true;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          const dataUrl = ev.target.result;
+          _addPendingImage(dataUrl.split(',')[1], item.type, dataUrl);
+        };
+        reader.readAsDataURL(file);
+      }
+      if (hadImage) e.preventDefault();   // don't paste raw binary text
+    });
+  }
+});
+
 // ── Message rendering ──────────────────────────────────────────────────────
-function addMsg(role, content, sources=[]) {
+// imgUrls: optional array of object-URL / data-URL strings to display as thumbnails
+function addMsg(role, content, sources=[], imgUrls=[]) {
   const welcome = document.getElementById('welcomePanel');
   if (welcome) welcome.remove();
 
@@ -540,7 +630,23 @@ function addMsg(role, content, sources=[]) {
   const bubble = document.createElement('div');
   bubble.className = 'bubble';
 
-  bubble.innerHTML = formatText(content) + _renderSourceChips(sources);
+  // Image thumbnails (shown above text for user messages with images)
+  if (imgUrls && imgUrls.length > 0) {
+    const imgRow = document.createElement('div');
+    imgRow.className = 'bubble-img-row';
+    imgUrls.forEach(url => {
+      const img = document.createElement('img');
+      img.src = url;
+      img.className = 'bubble-img-thumb';
+      img.onclick = () => window.open(url, '_blank');
+      imgRow.appendChild(img);
+    });
+    bubble.appendChild(imgRow);
+  }
+
+  const textDiv = document.createElement('div');
+  textDiv.innerHTML = formatText(content) + _renderSourceChips(sources);
+  bubble.appendChild(textDiv);
 
   div.appendChild(bubble);
 
@@ -552,7 +658,7 @@ function addMsg(role, content, sources=[]) {
   chatMessages.appendChild(div);
   chatMessages.scrollTop = chatMessages.scrollHeight;
 
-  // Persist to localStorage (cap at 30 messages)
+  // Persist to localStorage (cap at 30 messages, don't store large base64 image data)
   _msgStore.push({role, content, sources, timeStr: timeEl.textContent});
   if (_msgStore.length > 30) _msgStore.splice(0, _msgStore.length - 30);
   try { localStorage.setItem('sage_chat_msgs', JSON.stringify(_msgStore)); } catch(e) {}
@@ -805,10 +911,22 @@ async function classifyIntent(text) {
 async function sendMessage() {
   const input = document.getElementById('userInput');
   const text  = input.value.trim();
-  if (!text) return;
+  if (!text && pendingImages.length === 0) return;
+  if (!text && pendingImages.length > 0) {
+    // image-only: use a default prompt
+    input.value = '';
+  }
+  const msgText = text || (currentLang === 'zh' ? '请描述这张图片。' : 'Please describe this image.');
 
-  addMsg('user', text);
-  chatHistory.push({role:'user', content:text});
+  // Capture and clear pending images before rendering
+  const imgs       = pendingImages.map(x => x.b64);
+  const imgUrls    = pendingImages.map(x => x.objectUrl);
+  pendingImages    = [];
+  _renderImgPreviews();
+
+  // Add user message (text + optional image thumbnails)
+  addMsg('user', msgText, [], imgUrls);
+  chatHistory.push({role:'user', content: msgText});
   _persistHistory();
   input.value = '';
   autoResize(input);
@@ -817,26 +935,34 @@ async function sendMessage() {
   showTyping(T('typing_routing'));  // 正在分析意图...
 
   try {
+    // 有图片时跳过 intent 分类，直接走 RAG/plain 路径（含图片）
+    if (imgs.length > 0) {
+      hideTyping();
+      showTyping(currentLang === 'zh' ? '🖼 AI 正在识别图片…' : '🖼 Analyzing image…');
+      await sendNormal(msgText, imgs);
+      return;
+    }
+
     // 用 LLM 判断意图（code / qa / chat）
-    const intent = await classifyIntent(text);
+    const intent = await classifyIntent(msgText);
 
     if (intent === 'chain') {
       // ── 串联模式：论文解读 → 编程 Agent ──────────────────────────────
-      await sendChainRagCode(text);
+      await sendChainRagCode(msgText);
     } else if (intent === 'code') {
       lastIntentWasPaper = false;
       showTyping(T('typing_code'));  // 正在生成代码...
-      await sendCode(text);                              // 生成并执行技能代码
+      await sendCode(msgText);                              // 生成并执行技能代码
       // lastIntentWasCode is set inside sendCode on success
     } else if (intent === 'qa' || sessionDocs.length > 0 || kbHasDocs) {
       lastIntentWasCode = false;     // 切换到问答模式，清除改进标记
       showTyping(T('typing_rag'));  // 正在检索知识...
-      await sendRag(text);                               // 知识问答 + RAG 检索
+      await sendRag(msgText);                               // 知识问答 + RAG 检索
     } else {
       lastIntentWasCode  = false;    // 切换到普通对话，清除改进标记
       lastIntentWasPaper = false;
       showTyping(T('typing_chat'));  // 正在对话中...
-      await sendNormal(text);                            // 普通对话
+      await sendNormal(msgText);                            // 普通对话
     }
   } catch(e) {
     hideTyping();
@@ -1657,16 +1783,18 @@ async function sendChainRagCode(originalText) {
   connectorRow.remove();
 }
 
-async function sendNormal(text) {
+async function sendNormal(text, images=[]) {
   showTyping(currentLang === 'zh' ? '🧠 AI 正在思考…' : '🧠 Thinking…');
 
   let answer = '';
   try {
-    ({answer} = await submitAndPoll({
+    const body = {
       type: 'plain', message: text,
       history: chatHistory.slice(-8), workspace: wsEnabled ? wsPath : '',
       enable_think: thinkEnabled,
-    }));
+    };
+    if (images && images.length > 0) body.images = images;
+    ({answer} = await submitAndPoll(body));
   } catch(e) {
     hideTyping();
     addMsg('assistant', `✗ ${e.message}`);
