@@ -720,6 +720,9 @@ def chat_upload_pdf():
     try:
         # Extract text (no BGE-M3, just raw text for session context)
         pages, chunks = _extract_session_pdf_chunks(str(tmp_path), chunk_size=600)
+        for chunk in chunks:
+            if isinstance(chunk, dict):
+                chunk["doc_name"] = doc_name
 
         if session_id not in _session_docs:
             _session_docs[session_id] = {"chunks": [], "doc_names": []}
@@ -749,6 +752,40 @@ def chat_clear_session():
     sid = _safe_token(data.get('session_id', 'default'))
     _session_docs.pop(sid, None)
     return jsonify({"ok": True})
+
+
+@bp.route('/api/chat/remove_session_doc', methods=['POST'])
+def chat_remove_session_doc():
+    """Remove one temporary PDF from the current chat session."""
+    data = request.get_json(silent=True) or {}
+    sid = _safe_token(data.get('session_id', 'default'))
+    doc_name = str(data.get('doc_name', '')).strip()
+    if not doc_name:
+        return jsonify({"ok": False, "error": "Missing doc_name"}), 400
+
+    session = _session_docs.get(sid)
+    if not session:
+        return jsonify({"ok": True, "removed": False, "n_chunks": 0, "doc_names": []})
+
+    old_names = list(session.get("doc_names", []))
+    session["doc_names"] = [name for name in old_names if name != doc_name]
+    old_chunks = list(session.get("chunks", []))
+    session["chunks"] = [
+        chunk for chunk in old_chunks
+        if not (isinstance(chunk, dict) and chunk.get("doc_name") == doc_name)
+    ]
+
+    # Chunks created before doc_name metadata existed cannot be separated safely.
+    if not session["doc_names"]:
+        _session_docs.pop(sid, None)
+        return jsonify({"ok": True, "removed": doc_name in old_names, "n_chunks": 0, "doc_names": []})
+
+    return jsonify({
+        "ok": True,
+        "removed": doc_name in old_names,
+        "n_chunks": len(session["chunks"]),
+        "doc_names": session["doc_names"],
+    })
 
 
 # ── RAG 增强对话 ──────────────────────────────────────────────────────────────

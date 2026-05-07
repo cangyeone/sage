@@ -44,7 +44,33 @@ class TestChatUploadPdf(unittest.TestCase):
         self.assertEqual(body["n_pages"], 1)
         self.assertEqual(body["n_chunks"], 1)
         self.assertIn("paper.pdf", _session_docs[session_id]["doc_names"])
+        self.assertEqual(_session_docs[session_id]["chunks"][0]["doc_name"], "paper.pdf")
         extract.assert_called_once()
+        _session_docs.pop(session_id, None)
+
+    def test_remove_session_doc_drops_only_selected_chunks(self):
+        session_id = "remove_doc_regression"
+        _session_docs[session_id] = {
+            "doc_names": ["a.pdf", "b.pdf"],
+            "chunks": [
+                {"doc_name": "a.pdf", "page": 1, "text": "aaa"},
+                {"doc_name": "b.pdf", "page": 1, "text": "bbb"},
+            ],
+        }
+        client = web_app.app.test_client()
+
+        resp = client.post(
+            "/api/chat/remove_session_doc",
+            json={"session_id": session_id, "doc_name": "a.pdf"},
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.get_json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["doc_names"], ["b.pdf"])
+        self.assertEqual(_session_docs[session_id]["chunks"], [
+            {"doc_name": "b.pdf", "page": 1, "text": "bbb"},
+        ])
         _session_docs.pop(session_id, None)
 
 

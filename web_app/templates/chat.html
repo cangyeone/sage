@@ -36,6 +36,29 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
   line-height:1; flex-shrink:0; }
 .sb-doc .rm-btn:hover { color:#e53935; }
 .kb-info { font-size:.78rem; color:#888; padding:.25rem .5rem; }
+.scope-note { font-size:.73rem; color:#8a8f98; line-height:1.35; padding:.15rem .5rem .45rem; }
+.conv-head { display:flex; align-items:center; justify-content:space-between; gap:.45rem; margin-bottom:.45rem; }
+.conv-new { border:1px solid #dde; background:#fff; color:#445; border-radius:7px; padding:.16rem .45rem;
+  font-size:.75rem; line-height:1.2; cursor:pointer; }
+.conv-new:hover { border-color:var(--accent); color:var(--accent); background:#f7f8ff; }
+.conv-list { display:flex; flex-direction:column; gap:.25rem; }
+.conv-item { display:flex; align-items:center; gap:.45rem; padding:.42rem .5rem; border-radius:8px;
+  color:#444; cursor:pointer; border:1px solid transparent; min-width:0; }
+.conv-item:hover { background:#f6f7fb; }
+.conv-item.active { background:#eef1ff; border-color:#cfd6ff; color:#3949ab; }
+.conv-main { flex:1; min-width:0; }
+.conv-title { font-size:.82rem; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.conv-preview { font-size:.72rem; color:#8a8f98; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:.05rem; }
+.conv-del { border:none; background:transparent; color:#aeb4bf; padding:0 .1rem; line-height:1; flex-shrink:0; }
+.conv-del:hover { color:#e53935; }
+.privacy-pill { display:inline-flex; align-items:center; gap:.35rem; border:1.5px solid #dde; border-radius:20px;
+  padding:.3rem .75rem; font-size:.82rem; color:#555; background:#fff; white-space:nowrap; }
+.privacy-pill.local { background:#eef8f1; border-color:#bfe5c9; color:#26733d; }
+.privacy-pill.online { background:#fff7e6; border-color:#ffd487; color:#9a5a00; }
+.privacy-pill.offline { background:#f5f5f5; border-color:#ddd; color:#777; }
+.privacy-note { display:none; font-size:.76rem; color:#9a5a00; background:#fff7e6; border:1px solid #ffd487;
+  border-radius:8px; padding:.32rem .55rem; margin-bottom:.55rem; }
+.privacy-note.show { display:block; }
 
 /* Chat messages */
 .chat-messages { flex:1; overflow-y:auto; padding:1.25rem 1.5rem; }
@@ -218,13 +241,22 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
   <!-- Sidebar: uploaded docs + KB status -->
   <div class="sidebar">
     <div class="sb-section">
+      <div class="conv-head">
+        <div class="sb-title mb-0"><i class="bi bi-chat-left-text me-1"></i><span data-i18n="sb_conversations">对话</span></div>
+        <button class="conv-new" onclick="createNewSession()"><i class="bi bi-plus-lg"></i> <span data-i18n="sb_new_chat">新建</span></button>
+      </div>
+      <div id="conversationList" class="conv-list"></div>
+    </div>
+    <div class="sb-section">
       <div class="sb-title"><i class="bi bi-file-earmark-pdf me-1"></i><span data-i18n="sb_uploads">本次上传</span></div>
+      <div class="scope-note" data-i18n="sb_uploads_scope">仅当前对话使用，重启服务后不保留</div>
       <div id="sessionDocList">
         <div class="kb-info text-muted" data-i18n-html="sb_no_doc">暂无上传文档<br>点击 📎 上传 PDF</div>
       </div>
     </div>
     <div class="sb-section">
       <div class="sb-title"><i class="bi bi-journal-bookmark me-1"></i><span data-i18n="sb_kb">知识库</span></div>
+      <div class="scope-note" data-i18n="sb_kb_scope">长期保存，重启后仍可检索</div>
       <div id="kbInfo" class="kb-info" data-i18n="loading">加载中…</div>
       <a href="/knowledge" class="btn btn-sm btn-outline-secondary w-100 mt-2" style="font-size:.78rem;">
         <i class="bi bi-gear"></i> <span data-i18n="sb_manage_kb">管理知识库</span>
@@ -303,11 +335,13 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
 
     <!-- Input area -->
     <div class="input-area">
+      <div id="privacyNotice" class="privacy-note"></div>
       <div class="quick-row">
         <button class="qbtn" id="qbtn_filter" onclick="sendQuick(T('qbtn_filter_msg'))">💡 <span data-i18n="qbtn_filter">滤波方法</span></button>
         <button class="qbtn" id="qbtn_summary" onclick="sendQuick(T('qbtn_summary_msg'))">📖 <span data-i18n="qbtn_summary">总结文献</span></button>
         <button class="qbtn" id="qbtn_formula" onclick="sendQuick(T('qbtn_formula_msg'))">🔢 <span data-i18n="qbtn_formula">解读公式</span></button>
         <button class="qbtn" id="qbtn_pick" onclick="sendQuick(T('qbtn_pick_msg'))">🔍 <span data-i18n="qbtn_pick">拾取震相</span></button>
+        <span class="privacy-pill offline" id="privacyPill"><i class="bi bi-shield-lock"></i> <span id="privacyText">LLM</span></span>
         <div class="think-pill" id="thinkPill" onclick="toggleThink()" title="启用思考模式：模型会先推理再回答" style="margin-left:auto">
           <span class="pill-dot"></span>
           <span id="thinkPillLabel">🧠 <span data-i18n="think_off">思考：关</span></span>
@@ -349,8 +383,11 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
 const I18N = {
   zh: {
     nav_chat: '对话', nav_geo: '地学解译', nav_knowledge: '知识库', nav_skills: '技能',
+    sb_conversations: '对话', sb_new_chat: '新建',
     sb_uploads: '本次上传', sb_no_doc: '暂无上传文档<br>点击 📎 上传 PDF',
+    sb_uploads_scope: '仅当前对话使用，重启服务后不保留',
     sb_kb: '知识库', loading: '加载中…', sb_manage_kb: '管理知识库',
+    sb_kb_scope: '长期保存，重启后仍可检索',
     sb_workspace: '本地工作目录', sb_ws_auth: '授权访问', sb_save_path: '保存路径',
     welcome_title: 'SeismicX AI 助手',
     welcome_sub: '您好！我是地震学智能助手，可以回答问题、解读文献、分析数据。',
@@ -379,11 +416,20 @@ const I18N = {
     // Think toggle
     think_off: '思考：关', think_on: '思考：开',
     think_label: '思考过程',
+    untitled_chat: '新对话',
+    empty_preview: '暂无消息',
+    local_privacy: '本地模式',
+    online_privacy: '在线模式',
+    offline_privacy: 'LLM 未配置',
+    online_privacy_note: '在线模型会接收本轮问题以及被检索到的相关文献片段；敏感数据建议切回本地 Ollama。',
   },
   en: {
     nav_chat: 'Chat', nav_geo: 'Geo Agent', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
+    sb_conversations: 'Chats', sb_new_chat: 'New',
     sb_uploads: 'Uploaded', sb_no_doc: 'No documents uploaded<br>Click 📎 to upload PDF',
+    sb_uploads_scope: 'Current chat only; not kept after server restart',
     sb_kb: 'Knowledge Base', loading: 'Loading…', sb_manage_kb: 'Manage KB',
+    sb_kb_scope: 'Persisted and searchable after restart',
     sb_workspace: 'Local Workspace', sb_ws_auth: 'Authorize', sb_save_path: 'Save Path',
     welcome_title: 'SeismicX AI Assistant',
     welcome_sub: 'Hello! I\'m a seismology AI assistant — ask questions, read papers, or process data.',
@@ -412,6 +458,12 @@ const I18N = {
     // Think toggle
     think_off: 'Think: Off', think_on: 'Think: On',
     think_label: 'Reasoning',
+    untitled_chat: 'New chat',
+    empty_preview: 'No messages',
+    local_privacy: 'Local mode',
+    online_privacy: 'Online mode',
+    offline_privacy: 'LLM not set',
+    online_privacy_note: 'Online models receive the current question and any retrieved literature snippets. Use local Ollama for sensitive data.',
   }
 };
 
@@ -438,6 +490,9 @@ function applyLang() {
   });
   const lbl = document.getElementById('langLabel');
   if (lbl) lbl.textContent = currentLang === 'zh' ? 'EN' : '中';
+  renderSessionList();
+  refreshSessionSidebar();
+  refreshPrivacyNotice();
 }
 
 function toggleLang() {
@@ -451,25 +506,282 @@ document.addEventListener('DOMContentLoaded', applyLang);
 
 <script>
 // ── State ──────────────────────────────────────────────────────────────────
-// SESSION_ID persists in localStorage so history survives page navigation
-let SESSION_ID = localStorage.getItem('sage_chat_session') || '';
-if (!SESSION_ID) {
-  SESSION_ID = 'sess_' + Math.random().toString(36).slice(2,10);
-  localStorage.setItem('sage_chat_session', SESSION_ID);
+const ACTIVE_SESSION_KEY = 'sage_chat_session';
+const SESSION_LIST_KEY   = 'sage_chat_sessions';
+const LEGACY_HISTORY_KEY = 'sage_chat_history';
+const LEGACY_MSGS_KEY    = 'sage_chat_msgs';
+
+function _newSessionId() {
+  return 'sess_' + Math.random().toString(36).slice(2, 10);
 }
 
-let chatHistory = [];    // [{role,content}] for LLM context — restored from localStorage
-try { chatHistory = JSON.parse(localStorage.getItem('sage_chat_history') || '[]'); } catch(e) {}
+function _safeSessionId(id) {
+  const clean = String(id || '').trim();
+  return /^[A-Za-z0-9_-]{1,80}$/.test(clean) ? clean : _newSessionId();
+}
 
-let _msgStore   = [];    // display-level: [{role,content,sources,timeStr}]
-try { _msgStore = JSON.parse(localStorage.getItem('sage_chat_msgs') || '[]'); } catch(e) {}
+function _loadJson(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch(e) {
+    return fallback;
+  }
+}
+
+function _saveJson(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch(e) {}
+}
+
+function _historyKey(id = SESSION_ID) { return `sage_chat_history:${id}`; }
+function _msgsKey(id = SESSION_ID)    { return `sage_chat_msgs:${id}`; }
+function _docsKey(id = SESSION_ID)    { return `sage_chat_docs:${id}`; }
+function _pendingJobKey(id = SESSION_ID) { return `sage_pending_job:${id}`; }
+
+function _sessionTitleFrom(text) {
+  const clean = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!clean) return T('untitled_chat');
+  return clean.length > 22 ? clean.slice(0, 22) + '…' : clean;
+}
+
+let SESSION_ID = _safeSessionId(localStorage.getItem(ACTIVE_SESSION_KEY) || _newSessionId());
+localStorage.setItem(ACTIVE_SESSION_KEY, SESSION_ID);
+
+function _loadSessionList() {
+  let list = _loadJson(SESSION_LIST_KEY, []);
+  if (!Array.isArray(list)) list = [];
+  list = list
+    .filter(s => s && /^[A-Za-z0-9_-]{1,80}$/.test(String(s.id || '')))
+    .map(s => ({...s, id: String(s.id)}));
+
+  // Migrate the original single-chat storage into the active session.
+  const legacyHistory = localStorage.getItem(LEGACY_HISTORY_KEY);
+  const legacyMsgs    = localStorage.getItem(LEGACY_MSGS_KEY);
+  if (legacyHistory && !localStorage.getItem(_historyKey(SESSION_ID))) {
+    localStorage.setItem(_historyKey(SESSION_ID), legacyHistory);
+  }
+  if (legacyMsgs && !localStorage.getItem(_msgsKey(SESSION_ID))) {
+    localStorage.setItem(_msgsKey(SESSION_ID), legacyMsgs);
+  }
+
+  const now = Date.now();
+  if (!list.some(s => s.id === SESSION_ID)) {
+    const oldMsgs = _loadJson(_msgsKey(SESSION_ID), []);
+    const firstUser = Array.isArray(oldMsgs) ? oldMsgs.find(m => m.role === 'user') : null;
+    list.unshift({
+      id: SESSION_ID,
+      title: firstUser ? _sessionTitleFrom(firstUser.content) : T('untitled_chat'),
+      preview: firstUser ? String(firstUser.content || '').slice(0, 60) : '',
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  _saveJson(SESSION_LIST_KEY, list);
+  return list;
+}
+
+let chatSessions = _loadSessionList();
+let chatHistory  = _loadJson(_historyKey(), []);   // [{role,content}] for LLM context
+let _msgStore    = _loadJson(_msgsKey(), []);      // display-level: [{role,content,sources,timeStr}]
+let sessionDocs  = _loadJson(_docsKey(), []);      // [{name, n_chunks}]
 
 function _persistHistory() {
-  try { localStorage.setItem('sage_chat_history', JSON.stringify(chatHistory.slice(-12))); } catch(e) {}
+  chatHistory = chatHistory.slice(-12);
+  _saveJson(_historyKey(), chatHistory);
 }
 
-let sessionDocs    = [];    // [{name, n_chunks}]
+function _persistMessages() {
+  if (_msgStore.length > 30) _msgStore.splice(0, _msgStore.length - 30);
+  _saveJson(_msgsKey(), _msgStore);
+}
+
+function _persistSessionDocs() {
+  _saveJson(_docsKey(), sessionDocs);
+}
+
+function _saveSessionList() {
+  chatSessions.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  _saveJson(SESSION_LIST_KEY, chatSessions);
+}
+
+function _touchSession(text = '', preview = '') {
+  const now = Date.now();
+  let s = chatSessions.find(x => x.id === SESSION_ID);
+  if (!s) {
+    s = {id: SESSION_ID, title: T('untitled_chat'), preview: '', createdAt: now, updatedAt: now};
+    chatSessions.unshift(s);
+  }
+  if (text && (!s.title || s.title === T('untitled_chat') || s.title === 'New chat' || s.title === '新对话')) {
+    s.title = _sessionTitleFrom(text);
+  }
+  if (preview) s.preview = String(preview).replace(/\s+/g, ' ').trim().slice(0, 60);
+  s.updatedAt = now;
+  _saveSessionList();
+  renderSessionList();
+}
+
+function _resetTransientChatState() {
+  lastCodeStdout     = '';
+  lastDataPath       = '';
+  lastIntentWasCode  = false;
+  lastIntentWasPaper = false;
+  pendingImages      = [];
+  activeCodeJobId    = '';
+  stopRequested      = false;
+  _renderImgPreviews && _renderImgPreviews();
+}
+
+function _welcomeHtml() {
+  return `<div class="welcome" id="welcomePanel">
+    <h3><i class="bi bi-robot"></i> <span data-i18n="welcome_title">${T('welcome_title')}</span></h3>
+    <p class="text-muted" data-i18n="welcome_sub">${T('welcome_sub')}</p>
+    <div class="feat-grid">
+      <div class="feat-card" id="fc_qa" onclick="sendQuick(T('quick_qa_msg'))">
+        <div class="icon"><i class="bi bi-question-circle"></i></div>
+        <div class="fw-semibold" style="font-size:.88rem;" data-i18n="feat_qa">${T('feat_qa')}</div>
+        <div class="text-muted" style="font-size:.78rem;" data-i18n="feat_qa_sub">${T('feat_qa_sub')}</div>
+      </div>
+      <div class="feat-card" onclick="triggerUpload()">
+        <div class="icon"><i class="bi bi-file-earmark-pdf"></i></div>
+        <div class="fw-semibold" style="font-size:.88rem;" data-i18n="feat_upload">${T('feat_upload')}</div>
+        <div class="text-muted" style="font-size:.78rem;" data-i18n="feat_upload_sub">${T('feat_upload_sub')}</div>
+      </div>
+      <div class="feat-card" id="fc_kb" onclick="sendQuick(T('quick_kb_msg'))">
+        <div class="icon"><i class="bi bi-journal-bookmark"></i></div>
+        <div class="fw-semibold" style="font-size:.88rem;" data-i18n="feat_kb">${T('feat_kb')}</div>
+        <div class="text-muted" style="font-size:.78rem;" data-i18n="feat_kb_sub">${T('feat_kb_sub')}</div>
+      </div>
+      <div class="feat-card" id="fc_code" onclick="sendQuick(T('quick_code_msg'))">
+        <div class="icon"><i class="bi bi-code-slash"></i></div>
+        <div class="fw-semibold" style="font-size:.88rem;" data-i18n="feat_code">${T('feat_code')}</div>
+        <div class="text-muted" style="font-size:.78rem;" data-i18n="feat_code_sub">${T('feat_code_sub')}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderSessionList() {
+  const el = document.getElementById('conversationList');
+  if (!el) return;
+  if (!chatSessions.length) {
+    el.innerHTML = '';
+    return;
+  }
+  el.innerHTML = chatSessions.map(s => {
+    const active = s.id === SESSION_ID ? ' active' : '';
+    const title = _esc(s.title || T('untitled_chat'));
+    const preview = _esc(s.preview || T('empty_preview'));
+    return `<div class="conv-item${active}" onclick="switchSession('${s.id}')">
+      <i class="bi bi-chat-left-text" style="flex-shrink:0"></i>
+      <div class="conv-main">
+        <div class="conv-title">${title}</div>
+        <div class="conv-preview">${preview}</div>
+      </div>
+      <button class="conv-del" onclick="event.stopPropagation(); deleteSession('${s.id}')" title="Delete"><i class="bi bi-x"></i></button>
+    </div>`;
+  }).join('');
+}
+
+function renderCurrentMessages() {
+  if (!chatMessages) return;
+  chatMessages.innerHTML = '';
+  if (!_msgStore || _msgStore.length === 0) {
+    chatMessages.innerHTML = _welcomeHtml();
+    applyLang();
+    return;
+  }
+  for (const m of _msgStore) {
+    const div = document.createElement('div');
+    div.className = `msg msg-${m.role}`;
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.innerHTML = (typeof formatText === 'function' ? formatText(m.content) : _esc(m.content))
+                     + _renderSourceChips(m.sources || []);
+    div.appendChild(bubble);
+    const t = document.createElement('div');
+    t.className = 'msg-time';
+    t.textContent = (m.timeStr || '') + ' ↩';
+    div.appendChild(t);
+    chatMessages.appendChild(div);
+  }
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function createNewSession() {
+  if (isSending) stopCurrentResponse();
+  SESSION_ID = _newSessionId();
+  localStorage.setItem(ACTIVE_SESSION_KEY, SESSION_ID);
+  chatHistory = [];
+  _msgStore = [];
+  sessionDocs = [];
+  _persistHistory();
+  _persistMessages();
+  _persistSessionDocs();
+  chatSessions.unshift({
+    id: SESSION_ID,
+    title: T('untitled_chat'),
+    preview: '',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+  _saveSessionList();
+  _resetTransientChatState();
+  renderCurrentMessages();
+  refreshSessionSidebar();
+  renderSessionList();
+}
+
+async function switchSession(id) {
+  if (!id || id === SESSION_ID) return;
+  if (isSending) stopCurrentResponse();
+  SESSION_ID = id;
+  localStorage.setItem(ACTIVE_SESSION_KEY, SESSION_ID);
+  chatHistory = _loadJson(_historyKey(), []);
+  _msgStore   = _loadJson(_msgsKey(), []);
+  sessionDocs = _loadJson(_docsKey(), []);
+  _resetTransientChatState();
+  renderCurrentMessages();
+  refreshSessionSidebar();
+  renderSessionList();
+  await _resumePendingJob();
+}
+
+async function deleteSession(id) {
+  if (!confirm(currentLang === 'zh' ? '删除这个对话？' : 'Delete this chat?')) return;
+  fetch('/api/chat/clear_session', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({session_id: id})
+  }).catch(() => {});
+  fetch('/api/chat/code/reset', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({session_id: id})
+  }).catch(() => {});
+  localStorage.removeItem(_historyKey(id));
+  localStorage.removeItem(_msgsKey(id));
+  localStorage.removeItem(_docsKey(id));
+  localStorage.removeItem(_pendingJobKey(id));
+  chatSessions = chatSessions.filter(s => s.id !== id);
+  if (!chatSessions.length) {
+    SESSION_ID = _newSessionId();
+    chatSessions.push({id: SESSION_ID, title: T('untitled_chat'), preview: '', createdAt: Date.now(), updatedAt: Date.now()});
+  } else if (id === SESSION_ID) {
+    SESSION_ID = chatSessions[0].id;
+  }
+  localStorage.setItem(ACTIVE_SESSION_KEY, SESSION_ID);
+  _saveSessionList();
+  chatHistory = _loadJson(_historyKey(), []);
+  _msgStore   = _loadJson(_msgsKey(), []);
+  sessionDocs = _loadJson(_docsKey(), []);
+  _resetTransientChatState();
+  renderCurrentMessages();
+  refreshSessionSidebar();
+  renderSessionList();
+}
+
 let kbHasDocs      = false;
+let currentLlmProvider = '';
 let lastCodeStdout = '';    // 上一次 sendCode 的 stdout，供下一轮绘图注入路径
 let lastDataPath   = '';    // 用户消息中提取到的最近一次数据目录/文件路径
 let lastIntentWasCode  = false; // 上一轮是否执行了代码，用于识别"改进/调整"等后续指令
@@ -494,6 +806,7 @@ async function loadKbStatus() {
           ? `<span style="color:#3949ab;font-weight:600">${_nDocs} 篇</span> 文献 · ${_nChunk} 个片段`
           : `<span style="color:#3949ab;font-weight:600">${_nDocs}</span> docs · ${_nChunk} chunks`)
       : (_isZh ? '知识库为空' : 'Knowledge base is empty');
+    refreshPrivacyNotice();
   } catch { document.getElementById('kbInfo').textContent = '无法连接'; }
 }
 
@@ -501,7 +814,8 @@ async function loadKbStatus() {
 function refreshSessionSidebar() {
   const list = document.getElementById('sessionDocList');
   if (sessionDocs.length === 0) {
-    list.innerHTML = '<div class="kb-info text-muted">暂无上传文档<br>点击 📎 上传 PDF</div>';
+    list.innerHTML = `<div class="kb-info text-muted">${T('sb_no_doc')}</div>`;
+    refreshPrivacyNotice();
     return;
   }
   list.innerHTML = sessionDocs.map((d, i) => `
@@ -510,17 +824,18 @@ function refreshSessionSidebar() {
       <span class="doc-name" title="${d.name}">${d.name}</span>
       <button class="rm-btn" onclick="removeSessionDoc(${i})"><i class="bi bi-x"></i></button>
     </div>`).join('');
+  refreshPrivacyNotice();
 }
 
 async function removeSessionDoc(i) {
-  sessionDocs.splice(i, 1);
+  const removed = sessionDocs.splice(i, 1)[0];
+  _persistSessionDocs();
   refreshSessionSidebar();
-  // 若全部移除，清空服务器端会话
-  if (sessionDocs.length === 0) {
-    await fetch('/api/chat/clear_session', {
+  if (removed && removed.name) {
+    await fetch('/api/chat/remove_session_doc', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({session_id: SESSION_ID})
-    });
+      body: JSON.stringify({session_id: SESSION_ID, doc_name: removed.name})
+    }).catch(() => {});
   }
 }
 
@@ -540,10 +855,12 @@ async function uploadFiles(files) {
       const d = await r.json();
       if (d.ok) {
         sessionDocs.push({name: file.name, n_chunks: d.n_chunks});
+        _persistSessionDocs();
         refreshSessionSidebar();
+        _touchSession('', file.name);
         addMsg('assistant',
           `✅ **${file.name}** 已加载（${d.n_pages} 页，${d.n_chunks} 个片段）\n\n` +
-          `现在可以直接问我关于这篇文献的任何问题，回答将自动引用文献内容。`);
+          `这是当前对话的临时文献；如果需要长期保存，请在知识库页面上传。`);
       } else {
         addMsg('assistant', `✗ 上传失败：${d.error}`);
       }
@@ -711,8 +1028,7 @@ function addMsg(role, content, sources=[], imgUrls=[]) {
 
   // Persist to localStorage (cap at 30 messages, don't store large base64 image data)
   _msgStore.push({role, content, sources, timeStr: timeEl.textContent});
-  if (_msgStore.length > 30) _msgStore.splice(0, _msgStore.length - 30);
-  try { localStorage.setItem('sage_chat_msgs', JSON.stringify(_msgStore)); } catch(e) {}
+  _persistMessages();
 
   return div;
 }
@@ -924,10 +1240,43 @@ async function loadLlmStatus() {
       custom: 'Custom',
     };
     const provider = labels[cfg.provider] || cfg.provider || 'LLM';
+    currentLlmProvider = (cfg.provider || '').toLowerCase();
     el.textContent = cfg.model ? `${provider} · ${cfg.model}` : `${provider} · ${currentLang === 'zh' ? '未配置' : 'Not set'}`;
+    refreshPrivacyNotice();
   } catch(e) {
+    currentLlmProvider = '';
     el.textContent = currentLang === 'zh' ? 'LLM 未连接' : 'LLM offline';
+    refreshPrivacyNotice();
   }
+}
+
+function refreshPrivacyNotice() {
+  const pill = document.getElementById('privacyPill');
+  const text = document.getElementById('privacyText');
+  const note = document.getElementById('privacyNotice');
+  if (!pill || !text || !note) return;
+
+  pill.classList.remove('local', 'online', 'offline');
+  if (!currentLlmProvider) {
+    pill.classList.add('offline');
+    text.textContent = T('offline_privacy');
+    note.classList.remove('show');
+    note.textContent = '';
+    return;
+  }
+
+  if (currentLlmProvider === 'ollama') {
+    pill.classList.add('local');
+    text.textContent = T('local_privacy');
+    note.classList.remove('show');
+    note.textContent = '';
+    return;
+  }
+
+  pill.classList.add('online');
+  text.textContent = T('online_privacy');
+  note.textContent = T('online_privacy_note');
+  note.classList.toggle('show', kbHasDocs || sessionDocs.length > 0);
 }
 
 // ── Typing indicator ───────────────────────────────────────────────────────
@@ -1015,6 +1364,7 @@ async function sendMessage() {
   addMsg('user', msgText, [], imgUrls);
   chatHistory.push({role:'user', content: msgText});
   _persistHistory();
+  _touchSession(msgText, msgText);
   input.value = '';
   autoResize(input);
   // 清除上一轮的"继续改进"提示卡
@@ -1439,8 +1789,8 @@ async function sendCode(text, phase2Badge = false) {
     (cleanOut ? '\n```\n' + cleanOut.slice(0, 200) + '\n```' : '') +
     (d.figures && d.figures.length ? `\n📊 生成了 ${d.figures.length} 张图像` : '');
   _msgStore.push({role:'assistant', content:_codeDisplaySummary, sources:[], timeStr: new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})});
-  if (_msgStore.length > 30) _msgStore.splice(0, _msgStore.length - 30);
-  try { localStorage.setItem('sage_chat_msgs', JSON.stringify(_msgStore)); } catch(e) {}
+  _persistMessages();
+  _touchSession('', _codeDisplaySummary);
 
   // 标记此轮为代码模式，以便后续"改进/调整"指令自动路由到 code
   lastIntentWasCode = true;
@@ -1738,8 +2088,8 @@ async function streamToMsg(url, body) {
   if (!errored && !aborted && answer.trim()) {
     const _ts = new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});
     _msgStore.push({role:'assistant', content: answer, sources, timeStr: _ts});
-    if (_msgStore.length > 30) _msgStore.splice(0, _msgStore.length - 30);
-    try { localStorage.setItem('sage_chat_msgs', JSON.stringify(_msgStore)); } catch(e) {}
+    _persistMessages();
+    _touchSession('', answer);
   }
 
   return {answer, sources, errored, aborted};
@@ -1761,13 +2111,13 @@ async function submitAndPoll(body) {
   const job_id = init.job_id;
 
   // Persist so we can resume if user navigates away
-  try { localStorage.setItem('sage_pending_job', JSON.stringify({job_id, ts: Date.now()})); } catch(e) {}
+  _saveJson(_pendingJobKey(), {job_id, ts: Date.now()});
 
   // Poll until done
   while (true) {
     if (stopRequested) {
       fetch(`/api/chat/job/${job_id}/cancel`, {method: 'POST'}).catch(() => {});
-      localStorage.removeItem('sage_pending_job');
+      localStorage.removeItem(_pendingJobKey());
       return {answer: '', sources: [], aborted: true};
     }
     await new Promise(r => setTimeout(r, 1800));
@@ -1778,22 +2128,22 @@ async function submitAndPoll(body) {
     } catch(e) {
       if (stopRequested || _isAbortError(e)) {
         fetch(`/api/chat/job/${job_id}/cancel`, {method: 'POST'}).catch(() => {});
-        localStorage.removeItem('sage_pending_job');
+        localStorage.removeItem(_pendingJobKey());
         return {answer: '', sources: [], aborted: true};
       }
       continue;
     }   // network blip — retry
 
     if (pd.status === 'done') {
-      try { localStorage.removeItem('sage_pending_job'); } catch(e) {}
+      try { localStorage.removeItem(_pendingJobKey()); } catch(e) {}
       return {answer: pd.answer || '', sources: pd.sources || []};
     }
     if (pd.status === 'error') {
-      try { localStorage.removeItem('sage_pending_job'); } catch(e) {}
+      try { localStorage.removeItem(_pendingJobKey()); } catch(e) {}
       throw new Error(pd.error || 'Chat job failed');
     }
     if (pd.status === 'cancelled') {
-      try { localStorage.removeItem('sage_pending_job'); } catch(e) {}
+      try { localStorage.removeItem(_pendingJobKey()); } catch(e) {}
       return {answer: '', sources: [], aborted: true};
     }
     // still running — loop
@@ -1998,13 +2348,14 @@ function autoResize(el) {
 
 // ── Clear chat ─────────────────────────────────────────────────────────────
 function clearChat() {
-  if (!confirm('确定清空对话记录？')) return;
+  if (!confirm(currentLang === 'zh' ? '清空当前对话记录？' : 'Clear this chat?')) return;
   chatHistory = [];
   _msgStore   = [];
-  chatMessages.innerHTML = `<div class="welcome" id="welcomePanel">
-    <h3><i class="bi bi-robot"></i> SeismicX AI 助手</h3>
-    <p class="text-muted">对话已清空，有什么可以帮您？</p>
-  </div>`;
+  sessionDocs = [];
+  _persistHistory();
+  _persistMessages();
+  _persistSessionDocs();
+  renderCurrentMessages();
   contextBar.style.display = 'none';
   lastCodeStdout     = '';    // 清空路径缓存
   lastDataPath       = '';    // 清空数据目录缓存
@@ -2016,11 +2367,20 @@ function clearChat() {
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({session_id: SESSION_ID}),
   }).catch(() => {});
-  // Clear localStorage and rotate to a fresh session
-  localStorage.removeItem('sage_chat_history');
-  localStorage.removeItem('sage_chat_msgs');
-  SESSION_ID = 'sess_' + Math.random().toString(36).slice(2,10);
-  localStorage.setItem('sage_chat_session', SESSION_ID);
+  fetch('/api/chat/clear_session', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({session_id: SESSION_ID}),
+  }).catch(() => {});
+  const s = chatSessions.find(x => x.id === SESSION_ID);
+  if (s) {
+    s.title = T('untitled_chat');
+    s.preview = '';
+    s.updatedAt = Date.now();
+  }
+  _saveSessionList();
+  refreshSessionSidebar();
+  renderSessionList();
 }
 
 // ── Waveform (keep existing Plotly logic) ──────────────────────────────────
@@ -2124,36 +2484,21 @@ function pollBatchTask(taskId, msgEl, picksFile, interval=3000) {
 
 // ── Restore persisted chat on page load ────────────────────────────────────
 function _restoreChat() {
-  if (!_msgStore || _msgStore.length === 0) return;
-  const welcome = document.getElementById('welcomePanel');
-  if (welcome) welcome.remove();
-  for (const m of _msgStore) {
-    const div = document.createElement('div');
-    div.className = `msg msg-${m.role}`;
-    const bubble = document.createElement('div');
-    bubble.className = 'bubble';
-    bubble.innerHTML = (typeof formatText === 'function' ? formatText(m.content) : m.content)
-                     + _renderSourceChips(m.sources || []);
-    div.appendChild(bubble);
-    const t = document.createElement('div');
-    t.className = 'msg-time';
-    t.textContent = (m.timeStr || '') + ' ↩';  // ↩ marks restored messages
-    div.appendChild(t);
-    chatMessages.appendChild(div);
-  }
-  chatMessages.scrollTop = chatMessages.scrollHeight;
+  renderSessionList();
+  refreshSessionSidebar();
+  renderCurrentMessages();
 }
 document.addEventListener('DOMContentLoaded', _restoreChat);
 
 // ── Resume a pending job if the user navigated away mid-request ────────────
 async function _resumePendingJob() {
   let pending;
-  try { pending = JSON.parse(localStorage.getItem('sage_pending_job') || 'null'); } catch(e) {}
+  try { pending = JSON.parse(localStorage.getItem(_pendingJobKey()) || 'null'); } catch(e) {}
   if (!pending) return;
 
   // Expire after 10 minutes
   if (Date.now() - pending.ts > 10 * 60 * 1000) {
-    localStorage.removeItem('sage_pending_job');
+    localStorage.removeItem(_pendingJobKey());
     return;
   }
 
@@ -2166,7 +2511,7 @@ async function _resumePendingJob() {
     try {
       const pr = await fetch(`/api/chat/job/${job_id}`);
       if (!pr.ok) {
-        localStorage.removeItem('sage_pending_job');
+        localStorage.removeItem(_pendingJobKey());
         hideTyping();
         addMsg('assistant', currentLang === 'zh' ? '上次请求已过期，请重新发送。' : 'Previous request expired — please resend.');
         return;
@@ -2175,7 +2520,7 @@ async function _resumePendingJob() {
     } catch(e) { continue; }
 
     if (pd.status === 'done') {
-      localStorage.removeItem('sage_pending_job');
+      localStorage.removeItem(_pendingJobKey());
       hideTyping();
       addMsg('assistant', pd.answer || '（无回复）', pd.sources || []);
       chatHistory.push({role:'assistant', content: pd.answer || ''});
@@ -2183,13 +2528,13 @@ async function _resumePendingJob() {
       return;
     }
     if (pd.status === 'error') {
-      localStorage.removeItem('sage_pending_job');
+      localStorage.removeItem(_pendingJobKey());
       hideTyping();
       addMsg('assistant', `✗ ${currentLang === 'zh' ? '请求失败' : 'Request failed'}: ${pd.error}`);
       return;
     }
     if (pd.status === 'cancelled') {
-      localStorage.removeItem('sage_pending_job');
+      localStorage.removeItem(_pendingJobKey());
       hideTyping();
       return;
     }
