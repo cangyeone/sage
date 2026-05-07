@@ -1,6 +1,6 @@
 ---
 name: pnsn_phase_detection
-description: Use this skill for seismic phase picking, earthquake monitoring, Pg/Sg/Pn/Sn detection, P/S arrival picking, continuous waveform scanning, pnsn deep-learning pickers, PhaseNet/EQTransformer/RNN/LPPN pickers, and downstream phase association with FastLink, REAL, or GaMMA. Trigger when the user asks to detect phases, pick arrivals, monitor earthquakes, process continuous 3-component SAC/MSEED/SEED waveforms, or associate picks into earthquake events.
+description: Use this skill for seismic phase picking, earthquake monitoring, Pg/Sg/Pn/Sn detection, P/S arrival picking, continuous waveform scanning, pnsn deep-learning pickers, PhaseNet/EQTransformer/RNN/LPPN pickers, and downstream phase association with FastLink, REAL, or GaMMA. Trigger when the user asks to detect phases, pick arrivals, monitor earthquakes, process continuous 3-component SAC/MSEED/SEED waveforms, associate picks into earthquake events, or autonomously write/debug custom Python picking code with component grouping, preprocessing, TorchScript inference, pick tables, figures, mini-tests, and self-check output.
 ---
 
 # PNSN Phase Detection and Earthquake Monitoring
@@ -19,6 +19,222 @@ Project root assumptions:
 - The pnsn code lives at `pnsn/`.
 - Default models live at `pnsn/pickers/`.
 - Picker configuration lives at `pnsn/config/picker.py`.
+
+## Autonomous Programming Mode
+
+This skill is not limited to calling `pnsn/picker.py`. When the user asks to "自己编程", "写代码实现拾取", "检测这几条波形", "画出拾取结果", "调试检测流程", or when the waveform organization does not match `pnsn/config/picker.py`, write a custom Python program instead of only giving a CLI command.
+
+Use custom code for:
+
+- one station or a small set of files;
+- uploaded SAC/MSEED files with known paths;
+- non-standard filenames or component names;
+- tasks requiring waveform plots, pick tables, SNR/AMP statistics, or intermediate diagnostics;
+- debugging and mini-tests;
+- integrating picks into a larger SAGE analysis pipeline.
+
+Custom picking code should implement this workflow:
+
+1. Discover waveform files.
+2. Group files into 3-component station sets.
+3. Read with ObsPy.
+4. Align traces to a common time window.
+5. Detrend, taper, bandpass, and resample to 100 Hz.
+6. Stack data as `[n_samples, 3]`.
+7. Load a TorchScript picker with `torch.jit.load`.
+8. Run inference under `torch.no_grad()`.
+9. Convert sample indices to relative and absolute times.
+10. Save a CSV/text pick table.
+11. Generate a waveform figure with vertical pick markers.
+12. Print `[SAGE_TEST]` and file paths.
+
+Prefer writing all outputs to `SAGE_OUTDIR` when available:
+
+```python
+import os
+from pathlib import Path
+
+OUTDIR = Path(os.environ.get("SAGE_OUTDIR", "outputs/pnsn_phase_detection"))
+OUTDIR.mkdir(parents=True, exist_ok=True)
+```
+
+## Component Discovery Pattern
+
+When writing custom code, do not assume exact filenames unless the user gives them. Search common waveform suffixes and group by station/time key.
+
+```python
+from pathlib import Path
+from collections import defaultdict
+import re
+
+def discover_waveforms(root):
+    root = Path(root).expanduser()
+    suffixes = {".sac", ".SAC", ".mseed", ".MSEED", ".seed", ".SEED", ".miniseed"}
+    return [p for p in root.rglob("*") if p.is_file() and p.suffix in suffixes]
+
+def component_of(path):
+    name = path.name.upper()
+    # Handles BHE/BHN/BHZ, HHE/HHN/HHZ, E/N/Z endings.
+    for comp in ["BHE", "BHN", "BHZ", "HHE", "HHN", "HHZ", "EHE", "EHN", "EHZ"]:
+        if comp in name:
+            return comp[-1]
+    m = re.search(r"([ENZ])(?:\.[^.]+)?$", name)
+    return m.group(1) if m else None
+
+def station_key(path):
+    parts = path.name.split(".")
+    # Default SAGE/PNSN style: NET.STA.LOC.CHN...
+    if len(parts) >= 4:
+        return ".".join(parts[:3])
+    return path.parent.name
+
+def group_three_components(files):
+    groups = defaultdict(dict)
+    for p in files:
+        comp = component_of(p)
+        if comp:
+            groups[station_key(p)][comp] = p
+    return {k: v for k, v in groups.items() if {"E", "N", "Z"} <= set(v)}
+```
+
+If no 3-component group is found, print a clear diagnostic with example filenames and recommend updating grouping logic or `pnsn/config/picker.py`.
+
+## Robust Custom Picker Template
+
+Use this as the default pattern when coding the picking workflow yourself. Adapt `DATA_ROOT` when the user provides a path.
+
+```python
+import os
+from pathlib import Path
+import numpy as np
+import pandas as pd
+import torch
+import obspy
+import matplotlib.pyplot as plt
+
+OUTDIR = Path(os.environ.get("SAGE_OUTDIR", "outputs/pnsn_phase_detection"))
+OUTDIR.mkdir(parents=True, exist_ok=True)
+DATA_ROOT = Path("/path/to/waveforms")
+MODEL_PATH = Path("pnsn/pickers/pnsn.v3.jit")
+DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+PHASE_NAMES = {0: "Pg", 1: "Sg", 2: "Pn", 3: "Sn"}
+
+def prepare_stream(paths, target_rate=100.0):
+    st = obspy.Stream()
+    for p in paths:
+        st += obspy.read(str(p))
+    st.merge(method=1, fill_value="interpolate")
+    st.detrend("demean")
+    st.detrend("linear")
+    st.taper(0.02)
+    st.filter("bandpass", freqmin=1.0, freqmax=10.0, corners=4, zerophase=True)
+    if abs(st[0].stats.sampling_rate - target_rate) > 1e-6:
+        st.resample(target_rate)
+    start = max(tr.stats.starttime for tr in st)
+    end = min(tr.stats.endtime for tr in st)
+    if end <= start:
+        raise ValueError("No overlapping time window among three components")
+    st.trim(start, end, pad=False)
+    return st
+
+def stream_to_array(st):
+    comp_map = {}
+    for tr in st:
+        ch = tr.stats.channel.upper()
+        if ch.endswith("E"): comp_map["E"] = tr
+        elif ch.endswith("N"): comp_map["N"] = tr
+        elif ch.endswith("Z"): comp_map["Z"] = tr
+    missing = {"E", "N", "Z"} - set(comp_map)
+    if missing:
+        raise ValueError(f"Missing components: {sorted(missing)}")
+    n = min(len(comp_map[c].data) for c in ["E", "N", "Z"])
+    x = np.stack([comp_map[c].data[:n] for c in ["E", "N", "Z"]], axis=1)
+    return x.astype(np.float32), comp_map["Z"].stats.starttime, comp_map["Z"].stats.sampling_rate
+
+def run_picker(x, model):
+    with torch.no_grad():
+        picks = model(torch.tensor(x, dtype=torch.float32, device=DEVICE)).cpu().numpy()
+    rows = []
+    for phase_type, sample, confidence in picks:
+        rows.append({
+            "phase": PHASE_NAMES.get(int(phase_type), str(int(phase_type))),
+            "sample": int(sample),
+            "relative_time_s": float(sample) / 100.0,
+            "confidence": float(confidence),
+        })
+    return rows
+
+model = torch.jit.load(str(MODEL_PATH), map_location=DEVICE).to(DEVICE).eval()
+files = discover_waveforms(DATA_ROOT)
+groups = group_three_components(files)
+print(f"[INFO] found_files={len(files)} three_component_groups={len(groups)}")
+
+all_rows = []
+for station, comps in sorted(groups.items()):
+    try:
+        paths = [comps["E"], comps["N"], comps["Z"]]
+        st = prepare_stream(paths)
+        x, starttime, fs = stream_to_array(st)
+        rows = run_picker(x, model)
+        for r in rows:
+            r["station"] = station
+            r["absolute_time"] = str(starttime + r["relative_time_s"])
+            r["model"] = str(MODEL_PATH)
+        all_rows.extend(rows)
+
+        if rows:
+            fig_path = OUTDIR / f"{station.replace('.', '_')}_picks.png"
+            t = np.arange(len(x)) / fs
+            plt.figure(figsize=(12, 4))
+            plt.plot(t, x[:, 2], color="0.25", lw=0.8)
+            for r in rows:
+                color = {"Pg": "tab:red", "Sg": "tab:blue", "Pn": "tab:green", "Sn": "black"}.get(r["phase"], "black")
+                plt.axvline(r["relative_time_s"], color=color, alpha=0.85)
+                plt.text(r["relative_time_s"], np.nanmax(x[:, 2]), r["phase"], color=color, rotation=90, va="top")
+            plt.title(f"PNSN picks: {station}")
+            plt.xlabel("Time (s)")
+            plt.ylabel("Z amplitude")
+            plt.tight_layout()
+            plt.savefig(fig_path, dpi=200)
+            plt.close()
+            print(f"[FIGURE] {fig_path}")
+    except Exception as exc:
+        print(f"[WARN] station={station} skipped: {exc}")
+
+pick_table = OUTDIR / "pnsn_picks.csv"
+pd.DataFrame(all_rows).to_csv(pick_table, index=False)
+print(f"[SAGE_TEST] pnsn custom picker finished: stations={len(groups)} picks={len(all_rows)}")
+print(f"[SAGE_TEST] pick_table={pick_table}")
+```
+
+The template references `discover_waveforms` and `group_three_components`; include those helper functions in the actual generated script.
+
+## Mini-Tests for Self-Debugging
+
+When generating custom code, add small tests before full execution:
+
+```python
+def _mini_test_grouping():
+    fake = [
+        Path("X1.53085.01.BHE.D.2012.sac"),
+        Path("X1.53085.01.BHN.D.2012.sac"),
+        Path("X1.53085.01.BHZ.D.2012.sac"),
+    ]
+    groups = group_three_components(fake)
+    assert len(groups) == 1, groups
+    assert {"E", "N", "Z"} <= set(next(iter(groups.values())))
+
+_mini_test_grouping()
+print("[SAGE_TEST] grouping mini-test passed")
+```
+
+Also check:
+
+- model path exists before loading;
+- at least one waveform file is found;
+- at least one 3-component group is formed;
+- sampling rate after preprocessing is 100 Hz;
+- output table exists even if zero picks are found.
 
 ## Default Tool Choice
 
@@ -271,4 +487,3 @@ When using this skill, the assistant should provide:
 - number of picks/events generated;
 - paths to `.txt`, `.log`, `.err`, figures, and associated event catalogs;
 - warnings about skipped files, sampling rate mismatch, or missing components.
-
