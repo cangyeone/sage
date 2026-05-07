@@ -438,12 +438,36 @@ def serialize_code_result(result, skill_used: str) -> dict:
     ]
 
     downloads = []
+    html_previews = []
     seen = set()
     _MIME = {'.py': 'text/x-python', '.sh': 'text/x-shellscript',
              '.txt': 'text/plain', '.png': 'image/png',
              '.svg': 'image/svg+xml', '.pdf': 'application/pdf',
              '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-             '.csv': 'text/csv', '.dat': 'text/plain'}
+             '.csv': 'text/csv', '.dat': 'text/plain',
+             '.html': 'text/html', '.htm': 'text/html'}
+    _HTML_PREVIEW_LIMIT = 15 * 1024 * 1024
+
+    def _inline_plotly_if_needed(path, raw):
+        if Path(path).suffix.lower() not in ('.html', '.htm') or b'cdn.plot.ly' not in raw:
+            return raw
+        try:
+            import re as _re
+            import plotly as _plotly
+            plotly_js = Path(_plotly.__file__).parent / 'package_data' / 'plotly.min.js'
+            if not plotly_js.is_file():
+                return raw
+            text = raw.decode('utf-8')
+            inline_script = '<script type="text/javascript">' + plotly_js.read_text(encoding='utf-8') + '</script>'
+            new_text = _re.sub(
+                r'<script[^>]+src=["\']https?://cdn\.plot\.ly/plotly-[^"\']+\.min\.js["\'][^>]*>\s*</script>',
+                lambda _m: inline_script,
+                text,
+                count=1,
+            )
+            return new_text.encode('utf-8') if new_text != text else raw
+        except Exception:
+            return raw
 
     def _add(path, mime):
         rp = os.path.realpath(path)
@@ -451,9 +475,15 @@ def serialize_code_result(result, skill_used: str) -> dict:
             return
         try:
             with open(rp, 'rb') as _f:
+                raw = _inline_plotly_if_needed(rp, _f.read())
+                encoded = _b64.b64encode(raw).decode('utf-8')
                 downloads.append({'name': Path(rp).name,
-                                  'data': _b64.b64encode(_f.read()).decode('utf-8'),
+                                  'data': encoded,
                                   'mimetype': mime})
+                if Path(rp).suffix.lower() in ('.html', '.htm') and len(raw) <= _HTML_PREVIEW_LIMIT:
+                    html_previews.append({'name': Path(rp).name,
+                                          'data': encoded,
+                                          'mimetype': 'text/html'})
             seen.add(rp)
         except Exception:
             pass
@@ -480,4 +510,5 @@ def serialize_code_result(result, skill_used: str) -> dict:
         'plan':        result.plan,
         'script_b64':  script_b64,
         'downloads':   downloads,
+        'html_previews': html_previews,
     }

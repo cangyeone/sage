@@ -365,6 +365,39 @@ def chat_route():
     if _QUESTION_QA_RE.search(msg_stripped) and not has_path and not _CODE_ACTION_RE.search(msg_stripped):
         return jsonify({'ok': True, 'intent': 'qa', 'rule': 'conceptual_qa'})
 
+    # Deterministic QA guard: explanations of algorithms/methods should not be
+    # sent to the coding engine just because they contain technical terms.
+    explanation_re = _re.compile(
+        r'(详细讲|讲一下|讲讲|解释|介绍|原理|机制|怎么回事|是什么|什么是|为什么|为何'
+        r'|区别|优缺点|适用|局限|how does|how .*work|what is|why |explain|tell me about)',
+        _re.I,
+    )
+    concrete_code_re = _re.compile(
+        r'(写代码|写个程序|代码实现|编程实现|实现一下|复现|生成脚本|运行|执行|读取|处理数据'
+        r'|绘制|画图|下载|保存|导出|计算一下|检测一下|检测下|检测上面|识别一下|拾取|触发'
+        r'|plot|run|execute|write.*code|implement|detect|pick|trigger)',
+        _re.I,
+    )
+    if explanation_re.search(msg_stripped) and not concrete_code_re.search(msg_stripped):
+        return jsonify({'ok': True, 'intent': 'qa', 'rule': 'explanation_guard'})
+
+    apply_method_re = _re.compile(
+        r'(使用|用|通过|基于).{0,30}(算法|方法|模型|STA/?LTA|stalta|classic_sta_lta|recursive_sta_lta)'
+        r'.{0,30}(检测|识别|拾取|触发|处理|分析|计算)'
+        r'|(?:检测|识别|拾取).{0,20}(波形|数据|事件|震相)',
+        _re.I,
+    )
+    if apply_method_re.search(msg_stripped):
+        return jsonify({'ok': True, 'intent': 'code', 'rule': 'apply_method_guard'})
+
+    contextual_code_re = _re.compile(
+        r'(用\s*Python|python|代码|编程|实现|复现|写出来|写个程序|完整实现|run it|code it|implement)',
+        _re.I,
+    )
+    context_ref_re = _re.compile(r'(上述|上面|上文|前面|刚才|这个|该|此|this|above|previous)', _re.I)
+    if contextual_code_re.search(msg_stripped) and (context_ref_re.search(msg_stripped) or history):
+        return jsonify({'ok': True, 'intent': 'code', 'rule': 'contextual_code_guard'})
+
     # ── 构建对话历史摘要（最近 3 轮）────────────────────────────────────────
     history_text = ""
     if history:
@@ -410,9 +443,9 @@ Intent:"""
     # ── 强操作信号 re（LLM 结果兜底用）────────────────────────────────────
     ACTION_SIGNAL_RE = _re.compile(
         r'(帮我|请帮|帮忙'
-        r'|使用[^\s]{0,8}(?:绘|画|生成|计算|滤|读|处理|下载|运行)'
-        r'|用[^\s]{0,8}(?:绘|画|生成|计算|滤|读|处理|下载)'
-        r'|^(?:绘制|画[^报面版刊]|生成|计算|读取|处理|分析|滤波|下载))',
+        r'|使用[^\s]{0,16}(?:绘|画|生成|计算|滤|读|处理|下载|运行|检测|识别|拾取|触发)'
+        r'|用[^\s]{0,16}(?:绘|画|生成|计算|滤|读|处理|下载|检测|识别|拾取|触发)'
+        r'|^(?:绘制|画[^报面版刊]|生成|计算|读取|处理|分析|滤波|下载|检测|识别|拾取))',
         _re.I | _re.MULTILINE
     )
 
@@ -436,7 +469,7 @@ Intent:"""
         # LLM 不可用 → 规则兜底
         FALLBACK_RE = _re.compile(
             r'(绘制|画图|画[^报面版刊]|帮我|请帮|使用|执行|运行|下载|读取|处理|滤波|计算|生成图'
-            r'|plot|filter|spectrum|\.sac|\.mseed|\.csv)',
+            r'|检测|识别|拾取|触发|plot|filter|spectrum|detect|pick|trigger|\.sac|\.mseed|\.csv)',
             _re.I
         )
         fallback = 'code' if FALLBACK_RE.search(message) and not ends_q else 'qa'
