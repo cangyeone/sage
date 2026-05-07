@@ -244,6 +244,25 @@ def llm_stream(messages: list, llm_cfg: dict, max_tokens: int = 2000,
 
 import re as _re
 
+def path_is_within_root(path: str | Path, root: str | Path) -> bool:
+    """Return True only when path resolves inside root."""
+    try:
+        root_path = Path(root).expanduser().resolve(strict=False)
+        req_path = Path(path).expanduser().resolve(strict=False)
+        req_path.relative_to(root_path)
+        return True
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def safe_child_path(root: str | Path, child_name: str) -> Path:
+    """Build a child path and reject traversal outside root."""
+    root_path = Path(root).expanduser().resolve(strict=False)
+    child_path = (root_path / child_name).resolve(strict=False)
+    child_path.relative_to(root_path)
+    return child_path
+
+
 def get_workspace_config() -> dict:
     try:
         from config_manager import LLMConfigManager
@@ -276,7 +295,7 @@ def inject_workspace_context(message: str, workspace_path: str) -> str:
         p_exp = os.path.expanduser(p)
         p_abs = (os.path.realpath(p_exp) if p_exp.startswith('/')
                  else os.path.realpath(os.path.join(abs_root, p_exp)))
-        if not p_abs.startswith(abs_root):
+        if not path_is_within_root(p_abs, abs_root):
             continue
         if os.path.isdir(p_abs):
             try:

@@ -55,7 +55,7 @@ def chat_code():
     Returns immediately with {ok, job_id}.
     Frontend polls /api/chat/code/poll/<job_id> for progress + result.
     """
-    data       = request.json or {}
+    data       = request.get_json(silent=True) or {}
     user_msg   = (data.get('message') or '').strip()
     session_id = data.get('session_id', 'default')
     if not user_msg:
@@ -82,8 +82,12 @@ def chat_code():
 
     def _run():
         try:
+            if _code_jobs.get(job_id, {}).get('status') == 'cancelled':
+                return
             # Phase 1: Init under lock — protects sentence-transformers / C-extension loading
             with _code_engine_lock:
+                if _code_jobs.get(job_id, {}).get('status') == 'cancelled':
+                    return
                 from seismo_skill import search_skills, invalidate_cache
                 invalidate_cache()
                 try:
@@ -97,7 +101,8 @@ def chat_code():
             # Phase 2: Execute OUTSIDE lock — subprocess (GMT/Python) is fork-safe;
             # holding the lock here would block all other init for minutes.
             def _on_progress(p):
-                _code_jobs[job_id]['progress'].append(p.get('phase', p.get('message', '')))
+                if _code_jobs.get(job_id, {}).get('status') != 'cancelled':
+                    _code_jobs[job_id]['progress'].append(p.get('phase', p.get('message', '')))
 
             result = engine.run(
                 user_msg,
@@ -106,11 +111,14 @@ def chat_code():
                 run_verify=False,
                 on_progress=_on_progress,
             )
-            _code_jobs[job_id]['result'] = serialize_code_result(result, skill_used)
+            if _code_jobs.get(job_id, {}).get('status') != 'cancelled':
+                _code_jobs[job_id]['result'] = serialize_code_result(result, skill_used)
         except Exception as exc:
-            _code_jobs[job_id]['result'] = {'ok': False, 'error': str(exc)}
+            if _code_jobs.get(job_id, {}).get('status') != 'cancelled':
+                _code_jobs[job_id]['result'] = {'ok': False, 'error': str(exc)}
         finally:
-            _code_jobs[job_id]['status'] = 'done'
+            if _code_jobs.get(job_id, {}).get('status') != 'cancelled':
+                _code_jobs[job_id]['status'] = 'done'
 
     threading.Thread(target=_run, daemon=True).start()
     return jsonify({'ok': True, 'job_id': job_id})
@@ -129,10 +137,22 @@ def poll_code_job(job_id):
     })
 
 
+@bp.route('/api/chat/code/cancel/<job_id>', methods=['POST'])
+def cancel_code_job(job_id):
+    """Mark a running code job as cancelled for frontend stop requests."""
+    job = _code_jobs.get(job_id)
+    if not job:
+        return jsonify({'ok': False, 'error': 'job not found'}), 404
+    if job.get('status') == 'running':
+        job['status'] = 'cancelled'
+        job['result'] = {'ok': False, 'aborted': True, 'error': 'cancelled'}
+    return jsonify({'ok': True, 'status': job.get('status')})
+
+
 @bp.route('/api/chat/code/reset', methods=['POST'])
 def chat_code_reset():
     """清除指定 session 的 CodeEngine 历史（对话清空时调用）。"""
-    session_id = (request.json or {}).get('session_id', 'default')
+    session_id = (request.get_json(silent=True) or {}).get('session_id', 'default')
     if session_id in _code_engines:
         _code_engines[session_id].reset()
     return jsonify({'ok': True})
@@ -153,7 +173,7 @@ def chat_workflow():
     Returns immediately with {ok, job_id}.
     Poll /api/chat/code/poll/<job_id> for progress + result.
     """
-    data          = request.json or {}
+    data          = request.get_json(silent=True) or {}
     workflow_name = (data.get('workflow_name') or '').strip()
     user_msg      = (data.get('message') or '').strip()
     session_id    = data.get('session_id', 'default')
@@ -258,7 +278,7 @@ def chat_route():
     """
     import re as _re
 
-    data        = request.json or {}
+    data        = request.get_json(silent=True) or {}
     message     = data.get('message', '').strip()
     kb_has_docs = data.get('kb_has_docs', False)
     history     = data.get('history', [])   # [{role, content}, ...]

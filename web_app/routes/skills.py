@@ -71,7 +71,7 @@ def skills_save():
     sl = get_skill_loader()
     if sl is None:
         return jsonify({'ok': False, 'error': '技能模块未安装'}), 500
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     name = (data.get('name') or '').strip()
     text = (data.get('text') or '').strip()
     if not name or not text:
@@ -101,7 +101,7 @@ def skills_install():
     if sl is None:
         return jsonify({'ok': False, 'error': '技能模块未安装'}), 500
 
-    data      = request.json or {}
+    data      = request.get_json(silent=True) or {}
     src_path  = (data.get('path') or '').strip()
     overwrite = data.get('overwrite', True)
 
@@ -215,7 +215,7 @@ def workflows_save():
     wr = get_workflow_runner()
     if wr is None:
         return jsonify({'ok': False, 'error': 'workflow_runner 未找到'}), 500
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     name = (data.get('name') or '').strip()
     text = (data.get('text') or '').strip()
     if not name or not text:

@@ -7,14 +7,34 @@ import time as _time
 import uuid as _uuid
 from pathlib import Path
 from datetime import datetime
+from werkzeug.utils import secure_filename
 from state import (
     _kb_dir_status, _kb_dir_jobs, _ref_kb_dir_status, _ref_kb_jobs,
     _PROJECT_ROOT, _REF_KNOWLEDGE_DIR, _REF_KB_MANIFEST_DIR, tasks,
     UPLOAD_FOLDER_CHAT, _code_engine_lock,
 )
-from helpers import get_kb_instance, get_ref_indexer, get_llm_config, llm_call
+from helpers import (
+    get_kb_instance,
+    get_ref_indexer,
+    get_llm_config,
+    llm_call,
+    safe_child_path,
+)
 
 bp = Blueprint('knowledge', __name__)
+
+
+def _safe_pdf_upload_path(filename: str | None) -> tuple[Path, str]:
+    raw_name = Path(filename or "").name
+    if Path(raw_name).suffix.lower() != ".pdf":
+        raise ValueError("Only PDF files are supported")
+    safe_stem = secure_filename(Path(raw_name).stem) or "upload"
+    safe_name = f"{safe_stem}.pdf"
+    tmp_name = f"kb_{_uuid.uuid4().hex}_{safe_name}"
+    try:
+        return safe_child_path(UPLOAD_FOLDER_CHAT, tmp_name), safe_name
+    except (OSError, RuntimeError, ValueError):
+        raise ValueError("Invalid upload path")
 
 
 # ── Knowledge base status and list ────────────────────────────────────────
@@ -109,17 +129,18 @@ def knowledge_upload():
         return jsonify({"ok": False, "error": "No file"}), 400
 
     f = request.files['file']
-    if not f.filename.lower().endswith('.pdf'):
-        return jsonify({"ok": False, "error": "Only PDF files are supported"}), 400
+    try:
+        tmp_path, doc_name = _safe_pdf_upload_path(f.filename)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
 
     # Save temporarily
-    tmp_path = UPLOAD_FOLDER_CHAT / f.filename
     f.save(str(tmp_path))
 
     # Index in background — return immediately with task_id
     task_id = f"kb_idx_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
     tasks[task_id] = {"id": task_id, "type": "kb_index",
-                      "status": "running", "doc_name": f.filename}
+                      "status": "running", "doc_name": doc_name}
 
     def _index(tid, path, name):
         try:
@@ -143,7 +164,7 @@ def knowledge_upload():
             except Exception:
                 pass
 
-    threading.Thread(target=_index, args=(task_id, tmp_path, f.filename),
+    threading.Thread(target=_index, args=(task_id, tmp_path, doc_name),
                      daemon=True).start()
     return jsonify({"ok": True, "task_id": task_id})
 
@@ -478,7 +499,7 @@ def ref_knowledge_delete_collection(coll_name):
 @bp.route('/api/knowledge/retrieve', methods=['POST'])
 def knowledge_retrieve():
     """直接检索知识库中高度相关的文献段落。"""
-    data  = request.json or {}
+    data  = request.get_json(silent=True) or {}
     query = (data.get("query") or "").strip()
     if not query:
         return jsonify({"ok": False, "error": "query 不能为空"}), 400

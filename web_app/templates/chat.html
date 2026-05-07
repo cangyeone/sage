@@ -157,6 +157,8 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
 .send-btn { background:var(--grad); color:#fff; border-radius:50%; width:38px; height:38px;
   display:flex; align-items:center; justify-content:center; font-size:1rem; flex-shrink:0; }
 .send-btn:hover { opacity:.9; }
+.send-btn.stop-mode { background:#ef4444; }
+.send-btn.stop-mode:hover { background:#dc2626; opacity:1; }
 
 /* Image preview strip */
 .img-preview-strip { display:flex; flex-wrap:wrap; gap:.4rem; padding:.4rem .6rem .2rem;
@@ -324,9 +326,9 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
           <button class="attach-btn" id="imgUploadBtn" title="上传图片（VL 模型）" onclick="triggerImageUpload()" style="color:#aaa;">
             <i class="bi bi-image"></i>
           </button>
-          <textarea id="userInput" rows="1" data-i18n-placeholder="input_placeholder" placeholder="输入问题或指令…" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+          <textarea id="userInput" rows="1" data-i18n-placeholder="input_placeholder" placeholder="输入问题或指令…" onkeydown="handleKey(event)" oncompositionstart="isComposingText=true" oncompositionend="isComposingText=false" oninput="autoResize(this)"></textarea>
         </div>
-        <button class="send-btn" id="sendBtn" onclick="sendMessage()"><i class="bi bi-send-fill"></i></button>
+        <button class="send-btn" id="sendBtn" onclick="sendOrStop()" title="发送"><i class="bi bi-send-fill"></i></button>
       </div>
     </div>
   </div>
@@ -555,6 +557,51 @@ async function uploadFiles(files) {
 // ── Image upload / paste (VL models) ──────────────────────────────────────
 let pendingImages = [];   // [{id, b64, mime, objectUrl}]
 let isSending = false;
+let isComposingText = false;
+let stopRequested = false;
+let activeAbortController = null;
+let activeCodeJobId = '';
+let activeRequestId = 0;
+
+function _activeSignal() {
+  return activeAbortController ? activeAbortController.signal : undefined;
+}
+
+function _isAbortError(e) {
+  return e && (e.name === 'AbortError' || String(e.message || '').includes('aborted'));
+}
+
+function _setSendMode(active) {
+  const btn = document.getElementById('sendBtn');
+  if (!btn) return;
+  btn.disabled = false;
+  btn.classList.toggle('stop-mode', active);
+  btn.title = active
+    ? (currentLang === 'zh' ? '停止当前回复' : 'Stop current response')
+    : (currentLang === 'zh' ? '发送' : 'Send');
+  btn.innerHTML = active ? '<i class="bi bi-stop-fill"></i>' : '<i class="bi bi-send-fill"></i>';
+}
+
+function sendOrStop() {
+  if (isSending) {
+    stopCurrentResponse();
+  } else {
+    sendMessage();
+  }
+}
+
+function stopCurrentResponse() {
+  stopRequested = true;
+  if (activeAbortController) {
+    activeAbortController.abort();
+  }
+  if (activeCodeJobId) {
+    fetch(`/api/chat/code/cancel/${activeCodeJobId}`, {method: 'POST'}).catch(() => {});
+  }
+  hideTyping();
+  isSending = false;
+  _setSendMode(false);
+}
 
 function triggerImageUpload() { document.getElementById('imageFileInput').click(); }
 
@@ -924,6 +971,7 @@ async function classifyIntent(text) {
     const r = await fetch('/api/chat/route', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
+      signal: _activeSignal(),
       body: JSON.stringify({
         message:     text,
         kb_has_docs: kbHasDocs || sessionDocs.length > 0,
@@ -950,9 +998,12 @@ async function sendMessage() {
     input.value = '';
   }
   const msgText = text || (currentLang === 'zh' ? '请描述这张图片。' : 'Please describe this image.');
-  const sendBtn = document.getElementById('sendBtn');
+  activeAbortController = new AbortController();
+  activeCodeJobId = '';
+  stopRequested = false;
+  const requestId = ++activeRequestId;
   isSending = true;
-  if (sendBtn) sendBtn.disabled = true;
+  _setSendMode(true);
 
   // Capture and clear pending images before rendering
   const imgs       = pendingImages.map(x => x.b64);
@@ -1002,10 +1053,19 @@ async function sendMessage() {
     }
   } catch(e) {
     hideTyping();
-    addMsg('assistant', `✗ Request failed: ${e.message}`);
+    if (stopRequested || _isAbortError(e)) {
+      addMsg('assistant', currentLang === 'zh' ? '已停止当前回复。' : 'Stopped current response.');
+    } else {
+      addMsg('assistant', `✗ Request failed: ${e.message}`);
+    }
   } finally {
-    isSending = false;
-    if (sendBtn) sendBtn.disabled = false;
+    if (requestId === activeRequestId) {
+      isSending = false;
+      activeAbortController = null;
+      activeCodeJobId = '';
+      stopRequested = false;
+      _setSendMode(false);
+    }
   }
 }
 
@@ -1027,12 +1087,15 @@ async function pollCodeJob(jobId) {
   const POLL_MS = 1000;
 
   while (true) {
+    if (stopRequested) return {ok: false, aborted: true};
     await new Promise(res => setTimeout(res, POLL_MS));
+    if (stopRequested) return {ok: false, aborted: true};
     let poll;
     try {
-      const pr = await fetch(`/api/chat/code/poll/${jobId}`);
+      const pr = await fetch(`/api/chat/code/poll/${jobId}`, {signal: _activeSignal()});
       poll = await pr.json();
     } catch(e) {
+      if (stopRequested || _isAbortError(e)) return {ok: false, aborted: true};
       // Network hiccup — keep retrying
       continue;
     }
@@ -1053,6 +1116,9 @@ async function pollCodeJob(jobId) {
     }
     if (poll.status === 'error') {
       return {ok: false, error: poll.error || 'Job failed'};
+    }
+    if (poll.status === 'cancelled') {
+      return {ok: false, aborted: true};
     }
     // status === 'running' → keep polling
   }
@@ -1079,12 +1145,17 @@ async function sendCode(text, phase2Badge = false) {
     const r = await fetch('/api/chat/code', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
+      signal: _activeSignal(),
       body: JSON.stringify({message: enrichedText, session_id: SESSION_ID}),
     });
     startData = await r.json();
   } catch(e) {
     hideTyping();
-    addMsg('assistant', `✗ ${T('skill_label')} error: ${e.message}`);
+    if (stopRequested || _isAbortError(e)) {
+      addMsg('assistant', currentLang === 'zh' ? '已停止当前代码任务。' : 'Stopped current code task.');
+    } else {
+      addMsg('assistant', `✗ ${T('skill_label')} error: ${e.message}`);
+    }
     return;
   }
 
@@ -1096,9 +1167,16 @@ async function sendCode(text, phase2Badge = false) {
 
   // Poll the job until it's done
   const jobId = startData.job_id;
+  activeCodeJobId = jobId;
   const d = await pollCodeJob(jobId);
+  activeCodeJobId = '';
 
   hideTyping();
+
+  if (d.aborted) {
+    addMsg('assistant', currentLang === 'zh' ? '已停止当前代码任务。' : 'Stopped current code task.');
+    return;
+  }
 
   if (!d.ok) {
     addMsg('assistant', `✗ ${T('skill_label')} error: ${d.error}`);
@@ -1571,11 +1649,13 @@ async function streamToMsg(url, body) {
   const parser   = new ThinkParser();
   let   sources  = [];
   let   errored  = false;
+  let   aborted  = false;
 
   try {
     const resp = await fetch(url, {
       method:  'POST',
       headers: {'Content-Type': 'application/json'},
+      signal:  _activeSignal(),
       body:    JSON.stringify(body),
     });
     if (!resp.ok || !resp.body) {
@@ -1594,6 +1674,11 @@ async function streamToMsg(url, body) {
     while (true) {
       const {done, value} = await reader.read();
       if (done) break;
+      if (stopRequested) {
+        aborted = true;
+        try { await reader.cancel(); } catch(e) {}
+        break;
+      }
       buffer += decoder.decode(value, {stream: true});
 
       const lines = buffer.split('\n');
@@ -1620,7 +1705,11 @@ async function streamToMsg(url, body) {
       }
     }
   } catch(e) {
-    parser.push(`\n✗ 请求失败：${e.message}`);
+    if (stopRequested || _isAbortError(e)) {
+      aborted = true;
+    } else {
+      parser.push(`\n✗ 请求失败：${e.message}`);
+    }
     streamer.updateContent(parser.contentText);
     errored = true;
   }
@@ -1637,19 +1726,23 @@ async function streamToMsg(url, body) {
     streamer.hideThink && streamer.hideThink();
   }
 
+  if (aborted && !parser.contentText.trim()) {
+    parser.contentText = currentLang === 'zh' ? '已停止当前回复。' : 'Stopped current response.';
+  }
+
   streamer.finalise(parser.contentText, sources);
 
   const answer = parser.contentText;
 
   // Only persist complete, successful responses (not aborted/errored streams)
-  if (!errored && answer.trim()) {
+  if (!errored && !aborted && answer.trim()) {
     const _ts = new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});
     _msgStore.push({role:'assistant', content: answer, sources, timeStr: _ts});
     if (_msgStore.length > 30) _msgStore.splice(0, _msgStore.length - 30);
     try { localStorage.setItem('sage_chat_msgs', JSON.stringify(_msgStore)); } catch(e) {}
   }
 
-  return {answer, sources, errored};
+  return {answer, sources, errored, aborted};
 }
 
 // ── Background job submit + poll ──────────────────────────────────────────
@@ -1660,6 +1753,7 @@ async function submitAndPoll(body) {
   // Submit
   const resp = await fetch('/api/chat/submit', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
+    signal: _activeSignal(),
     body: JSON.stringify(body),
   });
   const init = await resp.json();
@@ -1671,12 +1765,24 @@ async function submitAndPoll(body) {
 
   // Poll until done
   while (true) {
+    if (stopRequested) {
+      fetch(`/api/chat/job/${job_id}/cancel`, {method: 'POST'}).catch(() => {});
+      localStorage.removeItem('sage_pending_job');
+      return {answer: '', sources: [], aborted: true};
+    }
     await new Promise(r => setTimeout(r, 1800));
     let pd;
     try {
-      const pr = await fetch(`/api/chat/job/${job_id}`);
+      const pr = await fetch(`/api/chat/job/${job_id}`, {signal: _activeSignal()});
       pd = await pr.json();
-    } catch(e) { continue; }   // network blip — retry
+    } catch(e) {
+      if (stopRequested || _isAbortError(e)) {
+        fetch(`/api/chat/job/${job_id}/cancel`, {method: 'POST'}).catch(() => {});
+        localStorage.removeItem('sage_pending_job');
+        return {answer: '', sources: [], aborted: true};
+      }
+      continue;
+    }   // network blip — retry
 
     if (pd.status === 'done') {
       try { localStorage.removeItem('sage_pending_job'); } catch(e) {}
@@ -1685,6 +1791,10 @@ async function submitAndPoll(body) {
     if (pd.status === 'error') {
       try { localStorage.removeItem('sage_pending_job'); } catch(e) {}
       throw new Error(pd.error || 'Chat job failed');
+    }
+    if (pd.status === 'cancelled') {
+      try { localStorage.removeItem('sage_pending_job'); } catch(e) {}
+      return {answer: '', sources: [], aborted: true};
     }
     // still running — loop
   }
@@ -1700,13 +1810,19 @@ async function sendRag(text) {
 
   let answer = '', sources = [];
   try {
-    ({answer, sources} = await streamToMsg('/api/chat/rag/stream', {
+    const result = await streamToMsg('/api/chat/rag/stream', {
       message: text, session_id: SESSION_ID, mode,
       history: chatHistory.slice(-8), workspace: wsEnabled ? wsPath : '',
       enable_think: thinkEnabled,
-    }));
+    });
+    if (result.aborted) {
+      hideTyping();
+      return;
+    }
+    ({answer, sources} = result);
   } catch(e) {
     hideTyping();
+    if (stopRequested || _isAbortError(e)) return;
     addMsg('assistant', `✗ ${e.message}`);
     return;
   }
@@ -1768,16 +1884,22 @@ async function sendChainRagCode(originalText) {
   let ragSources = [];
   try {
     hideTyping();
-    const {answer: _ra, sources: _rs} = await streamToMsg('/api/chat/rag/stream', {
+    const result = await streamToMsg('/api/chat/rag/stream', {
       message: originalText, session_id: SESSION_ID,
       mode: 'paper_read', history: chatHistory.slice(-8),
       workspace: wsEnabled ? wsPath : '', enable_think: thinkEnabled,
     });
+    if (result.aborted) {
+      hideTyping();
+      return;
+    }
+    const {answer: _ra, sources: _rs} = result;
     ragAnswer  = _ra || '';
     ragSources = _rs || [];
     hideTyping();
   } catch(e) {
     hideTyping();
+    if (stopRequested || _isAbortError(e)) return;
     // RAG 失败不致命，直接用原始文本去 code
   }
 
@@ -1839,9 +1961,15 @@ async function sendNormal(text, images=[]) {
       enable_think: thinkEnabled,
     };
     if (images && images.length > 0) body.images = images;
-    ({answer} = await streamToMsg('/api/chat/stream', body));
+    const result = await streamToMsg('/api/chat/stream', body);
+    if (result.aborted) {
+      hideTyping();
+      return;
+    }
+    ({answer} = result);
   } catch(e) {
     hideTyping();
+    if (stopRequested || _isAbortError(e)) return;
     addMsg('assistant', `✗ ${e.message}`);
     return;
   }
@@ -1858,7 +1986,10 @@ function sendQuick(msg) {
 
 // ── Keyboard & resize ──────────────────────────────────────────────────────
 function handleKey(e) {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  if (e.key !== 'Enter' || e.shiftKey) return;
+  if (e.isComposing || isComposingText || e.keyCode === 229) return;
+  e.preventDefault();
+  sendMessage();
 }
 function autoResize(el) {
   el.style.height = 'auto';
@@ -2055,6 +2186,11 @@ async function _resumePendingJob() {
       localStorage.removeItem('sage_pending_job');
       hideTyping();
       addMsg('assistant', `✗ ${currentLang === 'zh' ? '请求失败' : 'Request failed'}: ${pd.error}`);
+      return;
+    }
+    if (pd.status === 'cancelled') {
+      localStorage.removeItem('sage_pending_job');
+      hideTyping();
       return;
     }
   }

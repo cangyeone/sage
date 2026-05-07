@@ -4,20 +4,130 @@ import os
 import sys
 import threading
 import subprocess
+import shlex
 import time as _time
 import uuid as _uuid
+import re as _re
 from datetime import datetime
 from pathlib import Path
+from werkzeug.utils import secure_filename
 from state import (
     tasks, _session_docs, _geo_agent_jobs, _lit_jobs, _chat_jobs,
     UPLOAD_FOLDER_CHAT, GEO_WORKSPACE_ROOT, _PROJECT_ROOT,
 )
-from helpers import get_llm_config, llm_call, inject_workspace_context, get_kb_instance
+from helpers import (
+    get_llm_config,
+    llm_call,
+    inject_workspace_context,
+    get_kb_instance,
+    safe_child_path,
+)
 
 bp = Blueprint('chat', __name__)
 
 
 # ── Task management ──────────────────────────────────────────────────────
+
+_DEVICE_RE = _re.compile(r"^(cpu|mps|cuda(?::\d+)?)$")
+_SAFE_TOKEN_RE = _re.compile(r"[^A-Za-z0-9_.-]+")
+
+
+def _require_text(data: dict, key: str, label: str) -> str:
+    value = data.get(key)
+    if value is None or not str(value).strip():
+        raise ValueError(f"{label} required")
+    return str(value).strip()
+
+
+def _optional_text(data: dict, key: str, default: str) -> str:
+    value = data.get(key, default)
+    value = str(value).strip()
+    return value or default
+
+
+def _validated_device(data: dict) -> str:
+    device = _optional_text(data, 'device', 'cpu')
+    if not _DEVICE_RE.match(device):
+        raise ValueError("Invalid device; expected cpu, mps, cuda, or cuda:N")
+    return device
+
+
+def _command_display(argv: list[str]) -> str:
+    return shlex.join(str(arg) for arg in argv)
+
+
+def _build_pick_command(data: dict, task_id: str) -> list[str]:
+    return [
+        sys.executable,
+        str(_PROJECT_ROOT / "pnsn" / "picker.py"),
+        "-i", _require_text(data, 'input_dir', 'Input directory'),
+        "-o", str(_PROJECT_ROOT / "web_app" / "outputs" / task_id),
+        "-m", _optional_text(data, 'model', 'pnsn/pickers/pnsn.v3.jit'),
+        "-d", _validated_device(data),
+    ]
+
+
+def _build_association_command(data: dict, task_id: str) -> list[str]:
+    method_scripts = {
+        'fastlink': 'pnsn/fastlinker.py',
+        'real': 'pnsn/reallinker.py',
+        'gamma': 'pnsn/gammalink.py',
+    }
+    method = _optional_text(data, 'method', 'fastlink')
+    script = method_scripts.get(method)
+    if not script:
+        raise ValueError("Invalid method; expected fastlink, real, or gamma")
+
+    argv = [
+        sys.executable,
+        str(_PROJECT_ROOT / script),
+        "-i", _require_text(data, 'input_file', 'Input file'),
+        "-o", str(_PROJECT_ROOT / "web_app" / "outputs" / f"{task_id}.txt"),
+        "-s", _require_text(data, 'station_file', 'Station file'),
+    ]
+    if method == 'fastlink':
+        argv.extend(["-d", _validated_device(data)])
+    return argv
+
+
+def _build_polarity_command(data: dict, task_id: str) -> list[str]:
+    try:
+        min_confidence = float(data.get('min_confidence', 0.5))
+    except (TypeError, ValueError):
+        raise ValueError("min_confidence must be numeric")
+    if not 0 <= min_confidence <= 1:
+        raise ValueError("min_confidence must be between 0 and 1")
+
+    return [
+        sys.executable,
+        str(_PROJECT_ROOT / "seismic_cli.py"),
+        "polarity",
+        "-i", _require_text(data, 'input_file', 'Input file'),
+        "-w", _require_text(data, 'waveform_dir', 'Waveform directory'),
+        "-o", str(_PROJECT_ROOT / "web_app" / "outputs" / f"{task_id}_polarity.txt"),
+        "--model", _optional_text(data, 'model', 'pnsn/pickers/polar.onnx'),
+        "--min-confidence", str(min_confidence),
+        "--phase", _optional_text(data, 'phase', 'Pg'),
+    ]
+
+
+def _safe_token(value: str | None, default: str = "default") -> str:
+    token = _SAFE_TOKEN_RE.sub("_", str(value or default)).strip("._")
+    return token[:80] or default
+
+
+def _safe_pdf_upload_path(filename: str | None, prefix: str) -> tuple[Path, str]:
+    raw_name = Path(filename or "").name
+    if Path(raw_name).suffix.lower() != ".pdf":
+        raise ValueError("Only PDF files are supported")
+    safe_stem = secure_filename(Path(raw_name).stem) or "upload"
+    safe_name = f"{safe_stem}.pdf"
+    tmp_name = f"{_safe_token(prefix)}_{_uuid.uuid4().hex}_{safe_name}"
+    try:
+        return safe_child_path(UPLOAD_FOLDER_CHAT, tmp_name), safe_name
+    except (OSError, RuntimeError, ValueError):
+        raise ValueError("Invalid upload path")
+
 
 def run_task(task_id, command, task_type, cwd=None):
     """Run a seismic processing task in background"""
@@ -27,11 +137,11 @@ def run_task(task_id, command, task_type, cwd=None):
 
         result = subprocess.run(
             command,
-            shell=True,
+            shell=False,
             capture_output=True,
             text=True,
             timeout=3600,  # 1 hour timeout
-            cwd=cwd or os.getcwd()
+            cwd=cwd or str(_PROJECT_ROOT)
         )
 
         tasks[task_id]['end_time'] = datetime.now().isoformat()
@@ -118,32 +228,29 @@ def get_chat_picks(task_id):
 @bp.route('/api/pick', methods=['POST'])
 def submit_picking():
     """Submit phase picking job"""
-    data = request.json
-
-    if not data.get('input_dir'):
-        return jsonify({'error': 'Input directory required'}), 400
+    data = request.get_json(silent=True) or {}
 
     task_id = f"pick_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{os.getpid()}"
 
-    # Build command
-    cmd = f"python pnsn/picker.py"
-    cmd += f" -i {data['input_dir']}"
-    cmd += f" -o web_app/outputs/{task_id}"
-    cmd += f" -m {data.get('model', 'pnsn/pickers/pnsn.v3.jit')}"
-    cmd += f" -d {data.get('device', 'cpu')}"
+    try:
+        cmd = _build_pick_command(data, task_id)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
 
     # Initialize task
     tasks[task_id] = {
         'id': task_id,
         'type': 'phase_picking',
         'status': 'queued',
-        'command': cmd,
+        'command': _command_display(cmd),
         'parameters': data,
         'created_at': datetime.now().isoformat()
     }
 
     # Start task in background
-    thread = threading.Thread(target=run_task, args=(task_id, cmd, 'picking'))
+    thread = threading.Thread(
+        target=run_task, args=(task_id, cmd, 'picking'), kwargs={'cwd': str(_PROJECT_ROOT)}
+    )
     thread.daemon = True
     thread.start()
 
@@ -153,46 +260,29 @@ def submit_picking():
 @bp.route('/api/associate', methods=['POST'])
 def submit_association():
     """Submit phase association job"""
-    data = request.json
-
-    if not data.get('input_file'):
-        return jsonify({'error': 'Input file required'}), 400
-
-    if not data.get('station_file'):
-        return jsonify({'error': 'Station file required'}), 400
+    data = request.get_json(silent=True) or {}
 
     task_id = f"assoc_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{os.getpid()}"
 
-    # Select method
-    method_scripts = {
-        'fastlink': 'pnsn/fastlinker.py',
-        'real': 'pnsn/reallinker.py',
-        'gamma': 'pnsn/gammalink.py'
-    }
-
-    script = method_scripts.get(data.get('method', 'fastlink'), 'pnsn/fastlinker.py')
-
-    # Build command
-    cmd = f"python {script}"
-    cmd += f" -i {data['input_file']}"
-    cmd += f" -o web_app/outputs/{task_id}.txt"
-    cmd += f" -s {data['station_file']}"
-
-    if data.get('method') == 'fastlink':
-        cmd += f" -d {data.get('device', 'cpu')}"
+    try:
+        cmd = _build_association_command(data, task_id)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
 
     # Initialize task
     tasks[task_id] = {
         'id': task_id,
         'type': 'phase_association',
         'status': 'queued',
-        'command': cmd,
+        'command': _command_display(cmd),
         'parameters': data,
         'created_at': datetime.now().isoformat()
     }
 
     # Start task in background
-    thread = threading.Thread(target=run_task, args=(task_id, cmd, 'association'))
+    thread = threading.Thread(
+        target=run_task, args=(task_id, cmd, 'association'), kwargs={'cwd': str(_PROJECT_ROOT)}
+    )
     thread.daemon = True
     thread.start()
 
@@ -202,37 +292,29 @@ def submit_association():
 @bp.route('/api/polarity', methods=['POST'])
 def submit_polarity():
     """Submit polarity analysis job"""
-    data = request.json
-
-    if not data.get('input_file'):
-        return jsonify({'error': 'Input file required'}), 400
-
-    if not data.get('waveform_dir'):
-        return jsonify({'error': 'Waveform directory required'}), 400
+    data = request.get_json(silent=True) or {}
 
     task_id = f"polar_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{os.getpid()}"
 
-    # For now, use CLI tool
-    cmd = f"python seismic_cli.py polarity"
-    cmd += f" -i {data['input_file']}"
-    cmd += f" -w {data['waveform_dir']}"
-    cmd += f" -o web_app/outputs/{task_id}_polarity.txt"
-    cmd += f" --model {data.get('model', 'pnsn/pickers/polar.onnx')}"
-    cmd += f" --min-confidence {data.get('min_confidence', 0.5)}"
-    cmd += f" --phase {data.get('phase', 'Pg')}"
+    try:
+        cmd = _build_polarity_command(data, task_id)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
 
     # Initialize task
     tasks[task_id] = {
         'id': task_id,
         'type': 'polarity_analysis',
         'status': 'queued',
-        'command': cmd,
+        'command': _command_display(cmd),
         'parameters': data,
         'created_at': datetime.now().isoformat()
     }
 
     # Start task in background
-    thread = threading.Thread(target=run_task, args=(task_id, cmd, 'polarity'))
+    thread = threading.Thread(
+        target=run_task, args=(task_id, cmd, 'polarity'), kwargs={'cwd': str(_PROJECT_ROOT)}
+    )
     thread.daemon = True
     thread.start()
 
@@ -259,7 +341,7 @@ def _lit_gc():
 @bp.route('/api/literature_loop', methods=['POST'])
 def literature_loop():
     """Start an async literature-loop interpretation job."""
-    data          = request.json or {}
+    data          = request.get_json(silent=True) or {}
     question      = (data.get("question") or "").strip()
     study_area    = (data.get("study_area") or "").strip()
     max_iters     = int(data.get("max_iterations", 3))
@@ -334,7 +416,7 @@ def _geo_agent_gc():
 @bp.route('/api/evidence_geo_agent', methods=['POST'])
 def evidence_geo_agent():
     """Start an async evidence-driven geoscience interpretation job."""
-    data         = request.json or {}
+    data         = request.get_json(silent=True) or {}
     question     = (data.get("question") or "").strip()
     study_area   = (data.get("study_area") or "").strip()
 
@@ -488,15 +570,19 @@ def evidence_geo_agent_upload():
         return jsonify({"ok": False, "error": "No file provided"}), 400
 
     f          = request.files['file']
-    session_id = (request.form.get('session_id') or 'default').replace('/', '_').replace('..', '_')
-    orig_name  = Path(f.filename).name if f.filename else 'upload'
-    ext        = Path(orig_name).suffix.lower()
+    session_id = _safe_token(request.form.get('session_id'), 'default')
+    raw_name   = Path(f.filename or 'upload').name
+    ext        = Path(raw_name).suffix.lower()
+    orig_name  = f"{secure_filename(Path(raw_name).stem) or 'upload'}{ext}"
 
     if ext not in _GEO_ALLOWED_EXTS:
         return jsonify({"ok": False, "error": f"File type '{ext}' not allowed"}), 400
 
     # Create session workspace
-    ws_dir = GEO_WORKSPACE_ROOT / session_id
+    try:
+        ws_dir = safe_child_path(GEO_WORKSPACE_ROOT, session_id)
+    except (OSError, RuntimeError, ValueError):
+        return jsonify({"ok": False, "error": "Invalid session_id"}), 400
     ws_dir.mkdir(parents=True, exist_ok=True)
 
     # Determine sub-folder by type
@@ -512,7 +598,10 @@ def evidence_geo_agent_upload():
     sub_dir = ws_dir / sub
     sub_dir.mkdir(exist_ok=True)
 
-    dest = sub_dir / orig_name
+    try:
+        dest = safe_child_path(sub_dir, f"{_uuid.uuid4().hex}_{orig_name}")
+    except (OSError, RuntimeError, ValueError):
+        return jsonify({"ok": False, "error": "Invalid upload path"}), 400
     f.save(str(dest))
 
     return jsonify({
@@ -528,7 +617,7 @@ def evidence_geo_agent_upload():
 @bp.route('/api/evidence_geo_agent/web_search', methods=['POST'])
 def evidence_geo_agent_web_search():
     """Lightweight inline web search used by the frontend search panel."""
-    data         = request.json or {}
+    data         = request.get_json(silent=True) or {}
     query        = (data.get('query') or '').strip()
     search_type  = data.get('search_type', 'scholar')
     max_results  = int(data.get('max_results', 10))
@@ -603,12 +692,15 @@ def chat_upload_pdf():
         return jsonify({"ok": False, "error": "No file"}), 400
 
     f = request.files['file']
-    session_id = request.form.get('session_id', 'default')
+    session_id = _safe_token(request.form.get('session_id', 'default'))
 
-    if not f.filename.lower().endswith('.pdf'):
+    try:
+        tmp_path, doc_name = _safe_pdf_upload_path(f.filename, session_id)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception:
         return jsonify({"ok": False, "error": "Only PDF files are supported"}), 400
 
-    tmp_path = UPLOAD_FOLDER_CHAT / f"{session_id}_{f.filename}"
     f.save(str(tmp_path))
 
     try:
@@ -625,11 +717,11 @@ def chat_upload_pdf():
             _session_docs[session_id] = {"chunks": [], "doc_names": []}
 
         _session_docs[session_id]["chunks"].extend(chunks)
-        _session_docs[session_id]["doc_names"].append(f.filename)
+        _session_docs[session_id]["doc_names"].append(doc_name)
 
         return jsonify({
             "ok": True,
-            "doc_name": f.filename,
+            "doc_name": doc_name,
             "n_pages":  len(pages),
             "n_chunks": len(chunks),
             "session_id": session_id,
@@ -645,7 +737,8 @@ def chat_upload_pdf():
 
 @bp.route('/api/chat/clear_session', methods=['POST'])
 def chat_clear_session():
-    sid = request.json.get('session_id', 'default')
+    data = request.get_json(silent=True) or {}
+    sid = _safe_token(data.get('session_id', 'default'))
     _session_docs.pop(sid, None)
     return jsonify({"ok": True})
 
@@ -655,7 +748,7 @@ def chat_clear_session():
 @bp.route('/api/chat/rag', methods=['POST'])
 def chat_rag():
     """RAG-aware chat endpoint."""
-    data       = request.json or {}
+    data       = request.get_json(silent=True) or {}
     user_msg   = data.get("message", "").strip()
     session_id = data.get("session_id", "default")
     mode       = data.get("mode", "rag")   # "rag" | "paper_read"
@@ -950,7 +1043,7 @@ def chat_rag_stream():
     """
     import json as _json
 
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     if not data.get("message", "").strip():
         return jsonify({"ok": False, "error": "Empty message"}), 400
 
@@ -995,7 +1088,7 @@ def chat_stream():
     """
     import json as _json
 
-    data    = request.json or {}
+    data    = request.get_json(silent=True) or {}
     user_msg = data.get("message", "").strip()
     if not user_msg:
         return jsonify({"ok": False, "error": "Empty message"}), 400
@@ -1114,7 +1207,7 @@ def chat_submit():
     Body fields (same as /api/chat/rag/stream) plus:
       type: 'rag' (default) | 'plain'
     """
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     if not data.get('message', '').strip():
         return jsonify({'ok': False, 'error': 'Empty message'}), 400
 
@@ -1130,23 +1223,28 @@ def chat_submit():
 
     def _run():
         try:
+            if _chat_jobs.get(job_id, {}).get('status') == 'cancelled':
+                return
             if chat_type == 'plain':
                 messages, sources, llm_cfg = _build_plain_messages(data)
             else:
                 messages, sources, llm_cfg = _build_rag_messages(data)
 
             if not llm_cfg.get('api_base'):
-                _chat_jobs[job_id].update(
-                    answer='当前没有可用的 LLM 后端。\n请在 **LLM 设置** 页面配置后端（Ollama / 在线 API）。',
-                    status='done',
-                )
+                if _chat_jobs.get(job_id, {}).get('status') != 'cancelled':
+                    _chat_jobs[job_id].update(
+                        answer='当前没有可用的 LLM 后端。\n请在 **LLM 设置** 页面配置后端（Ollama / 在线 API）。',
+                        status='done',
+                    )
                 return
 
             answer = llm_call(messages, llm_cfg, max_tokens=2000,
                               images=images if images else None)
-            _chat_jobs[job_id].update(answer=answer, sources=sources, status='done')
+            if _chat_jobs.get(job_id, {}).get('status') != 'cancelled':
+                _chat_jobs[job_id].update(answer=answer, sources=sources, status='done')
         except Exception as exc:
-            _chat_jobs[job_id].update(status='error', error=str(exc))
+            if _chat_jobs.get(job_id, {}).get('status') != 'cancelled':
+                _chat_jobs[job_id].update(status='error', error=str(exc))
 
     threading.Thread(target=_run, daemon=True).start()
     return jsonify({'ok': True, 'job_id': job_id})
@@ -1165,3 +1263,14 @@ def chat_job_poll(job_id):
         'sources': job['sources'],
         'error':   job['error'],
     })
+
+
+@bp.route('/api/chat/job/<job_id>/cancel', methods=['POST'])
+def chat_job_cancel(job_id):
+    """Mark a background chat job as cancelled."""
+    job = _chat_jobs.get(job_id)
+    if not job:
+        return jsonify({'ok': False, 'error': 'Job not found or expired'}), 404
+    if job.get('status') == 'running':
+        job.update(status='cancelled', error='cancelled')
+    return jsonify({'ok': True, 'status': job.get('status')})

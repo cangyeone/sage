@@ -84,7 +84,7 @@ def llm_config_get():
 def update_llm_config():
     """Update LLM configuration"""
     from config_manager import get_config_manager
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     config = get_config_manager()
 
     try:
@@ -166,7 +166,7 @@ def get_ollama_models():
 @bp.route('/api/llm/ollama/pull', methods=['POST'])
 def pull_ollama_model():
     """Pull an Ollama model and track progress."""
-    data = request.json
+    data = request.get_json(silent=True) or {}
     model_name = data.get('model')
 
     if not model_name:

@@ -1,7 +1,12 @@
 """工作目录管理路由"""
 from flask import Blueprint, request, jsonify
 import os
-from helpers import get_workspace_config, save_workspace_config, inject_workspace_context
+from helpers import (
+    get_workspace_config,
+    save_workspace_config,
+    inject_workspace_context,
+    path_is_within_root,
+)
 
 bp = Blueprint('workspace', __name__)
 
@@ -13,7 +18,7 @@ def workspace_config_get():
 
 @bp.route('/api/workspace/config', methods=['POST'])
 def workspace_config_post():
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     save_workspace_config(bool(data.get('enabled')), data.get('path', ''))
     return jsonify({'ok': True})
 
@@ -32,7 +37,7 @@ def workspace_ls():
     # Sandbox: must be inside the configured root
     abs_root = os.path.realpath(root)
     abs_req  = os.path.realpath(req_path)
-    if not abs_req.startswith(abs_root):
+    if not path_is_within_root(abs_req, abs_root):
         return jsonify({'ok': False, 'error': '路径超出授权目录范围'}), 403
 
     if not os.path.exists(abs_req):
