@@ -56,6 +56,11 @@ body { background: #f5f7fa; min-height: 100vh; }
 .recommended-chip:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
 .pull-progress-row { display: none; }
 .progress-bar-animated { animation: progress-bar-stripes .75s linear infinite; }
+.model-scope-note {
+  background:#fff; border-left:4px solid var(--accent); border-radius:10px;
+  box-shadow:0 2px 8px rgba(0,0,0,.05); padding:.85rem 1rem;
+  color:#555; font-size:.86rem; line-height:1.55;
+}
 </style>
 </head>
 <body>
@@ -90,7 +95,7 @@ body { background: #f5f7fa; min-height: 100vh; }
 <div class="page-header">
   <div class="container">
     <h4 class="mb-1"><i class="bi bi-cpu me-2"></i><span data-i18n="page_title">LLM 模型设置</span></h4>
-    <p class="mb-0 opacity-75" style="font-size:.9rem" data-i18n="page_sub">配置 AI 后端，对话、RAG 问答均使用此设置</p>
+    <p class="mb-0 opacity-75" style="font-size:.9rem" data-i18n="page_sub">配置回答生成模型；知识库检索模型在知识库页单独设置</p>
   </div>
 </div>
 
@@ -107,6 +112,11 @@ body { background: #f5f7fa; min-height: 100vh; }
         <i class="bi bi-plug"></i> <span data-i18n="btn_test">测试连接</span>
       </button>
     </div>
+  </div>
+
+  <div class="model-scope-note mb-3">
+    <i class="bi bi-info-circle me-1 text-primary"></i>
+    <span data-i18n="model_scope_note">此页控制最终回答使用的 LLM。知识库向量化/检索使用知识库页的嵌入模型；使用在线 LLM 时，系统会把检索到的相关片段随问题发送给 API。</span>
   </div>
 
   <!-- 设置表单 -->
@@ -386,7 +396,8 @@ const I18N = {
   zh: {
     nav_chat: '对话', nav_geo: '地学解译', nav_knowledge: '知识库', nav_skills: '技能',
     page_title: 'LLM 模型设置',
-    page_sub: '配置 AI 后端，对话、RAG 问答均使用此设置',
+    page_sub: '配置回答生成模型；知识库检索模型在知识库页单独设置',
+    model_scope_note: '此页控制最终回答使用的 LLM。知识库向量化/检索使用知识库页的嵌入模型；使用在线 LLM 时，系统会把检索到的相关片段随问题发送给 API。',
     current_model: '当前模型：',
     loading: '读取中…',
     btn_test: '测试连接',
@@ -455,7 +466,8 @@ const I18N = {
   en: {
     nav_chat: 'Chat', nav_geo: 'Geo Agent', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
     page_title: 'LLM Model Settings',
-    page_sub: 'Configure the AI backend used by chat and RAG Q&A',
+    page_sub: 'Configure the answer-generation model; retrieval embeddings are set on the Knowledge page',
+    model_scope_note: 'This page controls the LLM that writes final answers. Knowledge indexing/retrieval uses the embedding model on the Knowledge page. When an online LLM is active, retrieved relevant snippets are sent to the API with the question.',
     current_model: 'Active model:',
     loading: 'Loading…',
     btn_test: 'Test Connection',

@@ -285,6 +285,9 @@ body { background: #f5f7fa; min-height: 100vh; }
             <i class="bi bi-circle-fill me-1" style="font-size:.5rem;color:#43a047;"></i>
             <span id="embModelName">BAAI/bge-m3 (HuggingFace)</span>
           </div>
+          <div class="mt-2" style="font-size:.76rem;color:#888;line-height:1.45;" data-i18n="emb_role_note">
+            负责文献向量化与检索，不会训练或替换当前聊天 LLM。
+          </div>
           <!-- settings panel (hidden by default) -->
           <div id="embSettingsPanel" style="display:none;margin-top:.75rem;">
             <label style="font-size:.8rem;color:#666;margin-bottom:.3rem;display:block;" data-i18n="emb_path_label">
@@ -365,6 +368,7 @@ const I18N = {
     dir_hint: '每个子文件夹 = 一个技能',
     emb_title: '嵌入模型', emb_path_label: '本地模型路径（留空则从 HuggingFace 下载）',
     emb_save: '保存', emb_hint: '支持本地路径或 ModelScope 下载路径。更改后下次构建时生效。',
+    emb_role_note: '负责文献向量化与检索，不会训练或替换当前聊天 LLM。',
     emb_ms_title: '国内用户 — 使用 ModelScope 下载：',
     emb_ms_then: '然后将绝对路径填入上方输入框并保存。',
     ref_title: '参考文献库', ref_hint: '每个子文件夹 = 一个文献集合',
@@ -391,6 +395,7 @@ const I18N = {
     dir_hint: 'Each subfolder = one skill',
     emb_title: 'Embedding Model', emb_path_label: 'Local model path (leave empty to download from HuggingFace)',
     emb_save: 'Save', emb_hint: 'Accepts a local path or ModelScope download path. Takes effect on next build.',
+    emb_role_note: 'Used for document vectorization and retrieval; it does not train or replace the active chat LLM.',
     emb_ms_title: 'China users — download via ModelScope:',
     emb_ms_then: 'Then enter the absolute path above and save.',
     ref_title: 'Reference Library', ref_hint: 'Each subfolder = one paper collection',
