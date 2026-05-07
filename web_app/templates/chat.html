@@ -1486,7 +1486,7 @@ function hasPendingJob(sessionId=SESSION_ID) {
 }
 
 function isSessionRunning(sessionId=SESSION_ID) {
-  return !!runningSessions[sessionId] || hasPendingJob(sessionId);
+  return !!runningSessions[sessionId];
 }
 
 function updateSendButtonState(sessionId=SESSION_ID) {
@@ -1518,6 +1518,11 @@ function sendOrStop() {
 }
 
 async function stopCurrentResponse() {
+  if (!isSessionRunning(SESSION_ID) && !activeAbortController && !activeChatJobId && !activeCodeJobId) {
+    clearPendingJob(SESSION_ID);
+    updateSendButtonState(SESSION_ID);
+    return;
+  }
   stopRequested = true;
   try { activeAbortController && activeAbortController.abort(); } catch(e) {}
   let chatJob = activeChatJobId;
@@ -2363,7 +2368,7 @@ function createStreamingBubble() {
 
   let lastThinkLen = 0;
   let lastContentLen = 0;
-  let prevContentMd = '';
+  let prevContentMd = null;
 
   return {
     msgDiv,
@@ -2387,7 +2392,7 @@ function createStreamingBubble() {
         // Nothing outside <think> yet — show faint hint so user sees progress
         contentDiv.innerHTML =
           '<span style="color:#bbb;font-style:italic;font-size:.85rem">' +
-          (currentLang === 'zh' ? '正在推理，结果即将显示…' : 'Reasoning, answer coming…') +
+          (currentLang === 'zh' ? '正在等待模型响应…' : 'Waiting for model response…') +
           '</span>';
       } else {
         contentDiv.innerHTML = formatText(text);
@@ -2630,6 +2635,7 @@ async function startRecoverableChatJob(body) {
 async function pollChatJobToBubble(jobId, meta={}) {
   const ownerSessionId = meta.session_id || SESSION_ID;
   const streamer = createStreamingBubble();
+  streamer.updateContent('');
   let sources = [];
   let lastRaw = '';
   let errored = false;
