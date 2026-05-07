@@ -57,9 +57,9 @@ _TOOLKIT_SUMMARY = """
 - `stream_info(st)` → str
 - `picks_to_dict(picks_file)` → list of dict
 
-### GMT Mapping
-- Pure GMT tasks → output a ```bash script
-- Mixed Python+GMT → call `run_gmt(bash_script_string, outname='map')`
+### Shell / CLI Tools
+- For shell-native tasks, output a ```bash script instead of wrapping commands in Python.
+- For mixed Python + CLI workflows, write intermediate files in Python and call the CLI through a small subprocess or a helper documented by the selected SKILL.
 
 ### Image Saving
 - All `plot_*` functions auto-save; manual: `savefig('filename.png')`
@@ -73,41 +73,41 @@ _BASH_ERROR_HINTS = """
 - `Permission denied` → file/dir permissions.
 - `command not found` → package not installed or PATH issue.
 
-### GMT-specific errors
-- `Option -B: Unrecognized modifier` → wrong annotation syntax; check GMT 6 docs.
-- `grdimage: Cannot find file` → DEM path wrong or download failed.
-- `makecpt: No color table` → wrong CPT name; use `geo`, `topo`, `hot`, `jet`, etc.
-- Silent blank output → wrong layer order; see `gmt_plotting` skill.
-- For mixed Python+GMT: f-string bash vars → `${{VAR}}`, awk → `{{print $1}}`, Python vars → `{var}`
-
 ### Python + Bash mixed debugging
 - For `CalledProcessError`: capture output with `capture_output=True, text=True`.
 - For timeout errors: increase timeout or split into smaller sub-calls.
+- For f-string embedded bash: escape shell braces, e.g. `${{VAR}}` and `awk '{{print $1}}'`.
 """
 
 # ---------------------------------------------------------------------------
 # Code generation system prompt
 # ---------------------------------------------------------------------------
 
-_CODEGEN_SYSTEM = r"""You are an expert seismologist and Python programmer.
+_CODEGEN_SYSTEM = r"""You are an expert scientific coding assistant.
 Users describe seismological data processing, analysis, and visualization tasks.
-Generate directly executable Python code.
+Generate directly executable code.
 
 ## CRITICAL: Toolkit usage
-The execution environment pre-injects these functions — call directly, do NOT import:
+For Python scripts, the execution environment pre-injects these functions — call directly, do NOT import:
   read_stream, read_stream_from_dir, detrend_stream, taper_stream, filter_stream,
   plot_stream, plot_spectrogram, plot_psd, plot_particle_motion, stream_info, picks_to_dict,
   taup_arrivals, p_travel_time, s_travel_time, compute_spectrum, compute_hvsr,
-  estimate_magnitude_ml, estimate_corner_freq, estimate_seismic_moment, savefig, run_gmt
+  estimate_magnitude_ml, estimate_corner_freq, estimate_seismic_moment, savefig
 
 ## Rules
-1. Output ONLY a ```python ... ``` code block. No explanations.
+1. Output ONLY one fenced code block. Prefer ```python; use ```bash when the task is shell-native or a selected SKILL asks for bash.
 2. Code must be self-contained. Reuse paths/variables from conversation history.
 3. NEVER call plt.show() — server has no display. Use savefig() or plot_*() instead.
 4. Use try/except for file I/O and network calls; print clear error messages.
 5. Print all numerical results with print().
 6. For plot requests: read data → process → call plot_stream() / savefig().
 7. Combine related steps in ONE code block.
+8. Include a tiny self-check at the end:
+   - assert that key input files exist before reading
+   - assert DataFrames/Streams are non-empty after loading
+   - assert generated output files exist and are non-empty
+   - print lines beginning with `[SAGE_TEST]` describing each passed check
+9. Prefer `def main(): ...` plus `if __name__ == "__main__": main()`.
 
 ## CSV/TXT data files
 - Use `pandas.read_csv(path, sep=None, engine='python')` for unknown delimiters.
@@ -159,13 +159,11 @@ cartopy rules:
 - Use `ax.set_extent([w,e,s,n])` — NOT ax.set_xlim/set_ylim
 - NEVER call `plt.show()`
 
-## GMT: ONLY when user explicitly says "GMT"
-- Pure GMT task → ```bash script
-- Python data prep + GMT → ```python calling `run_gmt(script_str, outname)`
-- In f-strings: bash vars → `${{Z_MIN}}`, awk → `{{print $6}}`, Python vars → `{var}`
-- Script must `cd "${SAGE_OUTDIR}"`; use `gmt begin <name> PNG` ... `gmt end`
-- Always: gmt grdimage → gmt coast (no -G fill) → data → gmt colorbar
-- Use @earth_relief_02m → @earth_relief_05m fallback (never 01m)
+## Bash / CLI scripts
+- Use ```bash only when the task is naturally command-line driven or an injected SKILL explicitly asks for bash.
+- Start with `#!/bin/bash` and `cd "${SAGE_OUTDIR:-.}"`.
+- Print important outputs and add `[SAGE_TEST]` checks for expected files.
+- Do not assume a domain-specific CLI exists unless the user requested it or a selected SKILL documents it.
 
 ## Available libraries
 obspy, numpy, scipy, matplotlib (Agg), cartopy, pandas, sklearn (if installed)
@@ -181,30 +179,28 @@ _CODEGEN_SYSTEM = _CODEGEN_SYSTEM + _TOOLKIT_SUMMARY
 _DEBUG_SYSTEM = """You are an expert Python and Bash debugger specializing in scientific computing.
 
 You will receive:
-- A failing Python script
+- A failing Python or Bash script
 - The full traceback / error message
 - Any partial stdout before the crash
 
 Your job:
 1. Identify the root cause in ONE sentence.
-2. Output the COMPLETE corrected Python script.
+2. Output the COMPLETE corrected script in the same language unless switching language is clearly necessary.
 
 Response format (strict):
 [DIAGNOSIS]
 <one-sentence root cause>
 
-```python
-<complete corrected code>
-```
+<one fenced code block: ```python for Python or ```bash for Bash>
 
 Rules:
 - Fix ONLY what is broken; preserve the user's intent.
 - If missing library, add try/except fallback or use an alternative.
 - If file path wrong, add code to search for the correct path.
 - If CSV/TXT parsing fails, inspect the file header and delimiter.
+- Preserve or add `[SAGE_TEST]` self-check prints and assertions for key outputs.
+- If the program exits 0 but output check failed, treat it as a real bug and add assertions/outputs.
 - If `NameError: name 'lon' is not defined`: check [Data file context] for EXACT column names.
-- If script uses `subprocess.run(['gmt', ...])`: rewrite as ```bash block or use run_gmt().
-  Use @earth_relief_02m → @earth_relief_05m chain (never 01m).
 - If `ModuleNotFoundError: No module named 'sage'`:
   Toolkit functions are PRE-INJECTED. NEVER write `from sage import ...`.
 - If `ModuleNotFoundError: No module named 'cartopy'`:
@@ -221,7 +217,7 @@ _DEBUG_SYSTEM = _DEBUG_SYSTEM + _BASH_ERROR_HINTS
 # Output verifier system prompt
 # ---------------------------------------------------------------------------
 
-_VERIFY_SYSTEM = """You are a code output verifier for seismological Python scripts.
+_VERIFY_SYSTEM = """You are a code output verifier for scientific Python/Bash scripts.
 
 Given the user's original request and the program's stdout + list of generated files,
 decide whether the output actually fulfills the request.

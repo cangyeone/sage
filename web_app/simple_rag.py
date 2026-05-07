@@ -31,7 +31,18 @@ class DocChunk:
         self.char_start = char_start
 
 class DocMeta:
-    def __init__(self, doc_id, doc_name, file_path, n_pages, n_chunks, added_at, size_bytes):
+    def __init__(
+        self,
+        doc_id,
+        doc_name,
+        file_path,
+        n_pages,
+        n_chunks,
+        added_at,
+        size_bytes,
+        proj_folder="",
+        source_type="upload",
+    ):
         self.doc_id = doc_id
         self.doc_name = doc_name
         self.file_path = file_path
@@ -39,6 +50,8 @@ class DocMeta:
         self.n_chunks = n_chunks
         self.added_at = added_at
         self.size_bytes = size_bytes
+        self.proj_folder = proj_folder
+        self.source_type = source_type
 
 # Define constants to match rag_engine
 KB_DIR = Path(__file__).parent.parent / "seismo_rag"
@@ -70,7 +83,9 @@ class SimpleRAG:
                             n_pages=doc_data['n_pages'],
                             n_chunks=doc_data['n_chunks'],
                             added_at=doc_data['added_at'],
-                            size_bytes=doc_data['size_bytes']
+                            size_bytes=doc_data['size_bytes'],
+                            proj_folder=doc_data.get('proj_folder', ''),
+                            source_type=doc_data.get('source_type', 'upload'),
                         )
             except Exception as e:
                 print(f"Error loading simple metadata: {e}")
@@ -87,7 +102,9 @@ class SimpleRAG:
                     'n_pages': doc_meta.n_pages,
                     'n_chunks': doc_meta.n_chunks,
                     'added_at': doc_meta.added_at,
-                    'size_bytes': doc_meta.size_bytes
+                    'size_bytes': doc_meta.size_bytes,
+                    'proj_folder': getattr(doc_meta, 'proj_folder', ''),
+                    'source_type': getattr(doc_meta, 'source_type', 'upload'),
                 }
             
             with SIMPLE_META_FILE.open('w', encoding='utf-8') as f:
@@ -109,6 +126,8 @@ class SimpleRAG:
                 "page":        chunk.page,
                 "chunk_id":    chunk.chunk_id,
                 "chunk_index": int(chunk.chunk_id.split('_')[-1]) if '_' in chunk.chunk_id else 0,
+                "proj_folder": doc_metadata.get("proj_folder", "") if doc_metadata else "",
+                "source_type": doc_metadata.get("source_type", "upload") if doc_metadata else "upload",
             }
             
             self.db.add_item(
@@ -126,7 +145,9 @@ class SimpleRAG:
                 n_pages=doc_metadata['n_pages'],
                 n_chunks=doc_metadata['n_chunks'],
                 added_at=doc_metadata['added_at'],
-                size_bytes=doc_metadata['size_bytes']
+                size_bytes=doc_metadata['size_bytes'],
+                proj_folder=doc_metadata.get('proj_folder', ''),
+                source_type=doc_metadata.get('source_type', 'upload'),
             )
             self.save_docs()
             self.db.save()   # 持久化向量到磁盘，重启后自动恢复

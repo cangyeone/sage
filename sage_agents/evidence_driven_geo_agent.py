@@ -68,15 +68,18 @@ Usage (CLI)
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
 import uuid
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -178,6 +181,8 @@ class AgentConfig:
     use_multimodal:    bool = False       # enable ImageAnalysisTool (analyze_image / extract_table)
     use_rag:           bool = True        # enable RAGIndexTool.search_rag
     use_local_files:   bool = True        # enable LocalFileSearchTool
+    produce_latex:     bool = True        # write a LaTeX manuscript draft + HTML preview
+    use_code_engine:   bool = True        # enable SAGE CodeEngine as a higher-level coding tool
 
     # ── Loop limits ──────────────────────────────────────────────────────────
     max_iterations:          int = 3
@@ -271,6 +276,63 @@ class ValidationCheck:
 
 
 @dataclass
+class ResearchArtifact:
+    """Intermediate scientific material produced or discovered by the agent."""
+    artifact_id:      str
+    artifact_type:    str   # question | figure | statistic | code_result | document_summary | table | note
+    title:            str
+    description:      str
+    path:             str = ""
+    content:          str = ""
+    source_tool:      str = ""
+    source_call_id:   str = ""
+    linked_evidence:  List[str] = field(default_factory=list)
+    iteration:        int = 0
+
+
+@dataclass(frozen=True)
+class CapabilitySpec:
+    """Declarative description of one agent capability exposed through ToolRegistry."""
+    name:        str
+    role:        str
+    methods:     List[str]
+    priority:    int = 50
+    gated_by:    str = ""
+    use_when:    str = ""
+
+
+class CapabilityCollection:
+    """
+    Cohesive capability manifest for EvidenceGeoAgent.
+
+    The agent loop, tool selector prompt, UI metadata, and registry all read
+    from this one collection instead of hard-coding tool names in many places.
+    """
+
+    def __init__(self, specs: List[CapabilitySpec]) -> None:
+        self._specs = sorted(specs, key=lambda s: (s.priority, s.name))
+
+    @property
+    def specs(self) -> List[CapabilitySpec]:
+        return list(self._specs)
+
+    def names(self) -> List[str]:
+        return [s.name for s in self._specs]
+
+    def prompt_block(self) -> str:
+        lines = ["You have access to these capability modules:"]
+        for spec in self._specs:
+            methods = " | ".join(spec.methods)
+            gate = f" gated_by={spec.gated_by};" if spec.gated_by else ""
+            when = f" Use when: {spec.use_when}" if spec.use_when else ""
+            lines.append(f"- {spec.name}: {spec.role}; methods: {methods};{gate}{when}")
+        return "\n".join(lines)
+
+    def to_dicts(self) -> List[Dict[str, Any]]:
+        return [asdict(s) for s in self._specs]
+
+
+@dataclass
 class ToolCall:
     """Immutable record of a single tool invocation."""
     call_id:          str
@@ -299,9 +361,15 @@ class GeoAgentResult:
     tool_log:             List[ToolCall]
     retrieved_sources:    List[str]
     generated_figures:    List[str]
+    artifacts:            List[ResearchArtifact]
+    scientific_questions: List[str]
+    statistical_results:  List[ResearchArtifact]
     missing_information:  List[str]
     suggested_validation: List[ValidationCheck]
     convergence_reason:   str
+    latex_paper:          str = ""
+    latex_path:           str = ""
+    paper_html:           str = ""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1334,6 +1402,97 @@ import matplotlib; matplotlib.use('Agg')
 """
 
 
+def _build_data_recon_code(workspace_root: str, question: str, study_area: str) -> str:
+    """Return a compact Python script that inventories and profiles user data."""
+    return f"""
+import json, os
+from pathlib import Path
+
+root = Path({json.dumps(workspace_root)}).expanduser().resolve()
+question = {json.dumps(question)}
+study_area = {json.dumps(study_area)}
+out_dir = Path(SAGE_OUTDIR)
+summary = {{
+    "workspace_root": str(root),
+    "question": question,
+    "study_area": study_area,
+    "files": [],
+    "tables": [],
+    "figures": [],
+    "notes": [],
+}}
+
+allowed = {{".csv", ".txt", ".dat", ".json", ".yaml", ".yml", ".sac", ".mseed", ".xml", ".pdf", ".png", ".jpg", ".jpeg"}}
+if not root.exists():
+    summary["notes"].append(f"workspace does not exist: {{root}}")
+else:
+    for fp in sorted(root.rglob("*")):
+        if fp.is_file() and fp.suffix.lower() in allowed:
+            try:
+                rel = str(fp.relative_to(root))
+            except Exception:
+                rel = str(fp)
+            summary["files"].append({{"path": str(fp), "relative": rel, "ext": fp.suffix.lower(), "size": fp.stat().st_size}})
+
+try:
+    import pandas as pd
+    import numpy as np
+    import matplotlib.pyplot as plt
+    for item in summary["files"]:
+        if item["ext"] not in [".csv", ".txt", ".dat"]:
+            continue
+        fp = Path(item["path"])
+        try:
+            df = pd.read_csv(fp, comment="#", sep=None, engine="python")
+        except Exception:
+            continue
+        table = {{
+            "path": str(fp),
+            "rows": int(len(df)),
+            "columns": [str(c) for c in df.columns],
+            "numeric_columns": [str(c) for c in df.select_dtypes(include="number").columns],
+            "head": df.head(5).to_dict(orient="records"),
+        }}
+        numeric = df.select_dtypes(include="number")
+        if not numeric.empty:
+            table["describe"] = json.loads(numeric.describe().round(4).to_json())
+        summary["tables"].append(table)
+
+        lower_cols = {{str(c).lower(): c for c in df.columns}}
+        lon = next((lower_cols[k] for k in lower_cols if "lon" in k or k in ("x", "longitude")), None)
+        lat = next((lower_cols[k] for k in lower_cols if "lat" in k or k in ("y", "latitude")), None)
+        dep = next((lower_cols[k] for k in lower_cols if "dep" in k or "depth" in k or k in ("z",)), None)
+        mag = next((lower_cols[k] for k in lower_cols if k in ("mag", "ml", "mw", "ms", "magnitude")), None)
+        if lon is not None and lat is not None and len(df) > 0:
+            fig, ax = plt.subplots(figsize=(8, 6))
+            color = df[dep] if dep is not None else None
+            size = (df[mag].fillna(1).clip(lower=0.5) * 3) ** 2 if mag is not None else 20
+            sc = ax.scatter(df[lon], df[lat], c=color, s=size, cmap="plasma_r", alpha=0.7, edgecolors="k", linewidths=0.2)
+            if dep is not None:
+                fig.colorbar(sc, ax=ax, label=str(dep))
+            ax.set_xlabel(str(lon)); ax.set_ylabel(str(lat))
+            ax.set_title("Automatic data reconnaissance map")
+            ax.grid(True, alpha=0.25)
+            out = out_dir / (fp.stem + "_recon_map.png")
+            fig.savefig(out, dpi=140, bbox_inches="tight")
+            plt.close(fig)
+            summary["figures"].append(str(out))
+        if dep is not None and len(df) > 0:
+            fig, ax = plt.subplots(figsize=(7, 4))
+            df[dep].dropna().hist(ax=ax, bins=30)
+            ax.set_xlabel(str(dep)); ax.set_ylabel("count")
+            ax.set_title("Automatic depth distribution")
+            out = out_dir / (fp.stem + "_depth_hist.png")
+            fig.savefig(out, dpi=140, bbox_inches="tight")
+            plt.close(fig)
+            summary["figures"].append(str(out))
+except Exception as exc:
+    summary["notes"].append("table profiling failed: " + str(exc))
+
+print(json.dumps(summary, ensure_ascii=False, default=str))
+"""
+
+
 class CodeExecutionTool:
     """
     Execute Python code or (optionally) shell commands in a sandboxed subprocess.
@@ -1432,7 +1591,311 @@ class CodeExecutionTool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ── Tool 7: StateMemoryTool ───────────────────────────────────────────────────
+# ── Tool 7: CodeEngineTool ────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+
+class CodeEngineTool:
+    """
+    Higher-level autonomous coding tool backed by seismo_code.CodeEngine.
+
+    Use this when the agent needs to inspect data, write code, execute it,
+    debug failures, and return generated figures/files in one tool call.
+    """
+
+    NAME = "code_engine"
+
+    def __init__(self, config: AgentConfig, llm_cfg: Dict[str, Any]) -> None:
+        self._cfg = config
+        self._llm = llm_cfg
+        Path(config.output_dir).mkdir(parents=True, exist_ok=True)
+
+    def run_task(self, prompt: str, data_hint: str = "") -> Dict[str, Any]:
+        """Run a full CodeEngine task with self-debugging enabled."""
+        if not self._cfg.use_code_engine:
+            return {"error": "CodeEngine is disabled (use_code_engine=false)."}
+        if not self._cfg.allow_python:
+            return {"error": "CodeEngine requires allow_python=true."}
+        try:
+            _root = str(Path(__file__).parent.parent)
+            if _root not in sys.path:
+                sys.path.insert(0, _root)
+            from seismo_code.code_engine import CodeEngine
+            engine = CodeEngine(llm_config=self._llm, project_root=_root)
+            result = engine.run(
+                prompt,
+                data_hint=data_hint or None,
+                max_debug_rounds=4,
+                timeout=self._cfg.code_timeout_s,
+                run_verify=False,
+            )
+            return {
+                "ok": result.success,
+                "response": result.response,
+                "code": result.code,
+                "stdout": result.stdout[: self._cfg.code_max_output],
+                "figures": result.figures,
+                "output_files": result.output_files,
+                "attempts": result.attempts,
+                "script_path": result.script_path,
+                "debug_trace": [
+                    {
+                        "attempt": d.attempt,
+                        "diagnosis": d.diagnosis,
+                        "success": d.success,
+                        "error": d.error[:600],
+                    }
+                    for d in result.debug_trace
+                ],
+            }
+        except Exception as exc:
+            return {"error": str(exc)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ── Tool 8: SkillTool + QATool + DocumentAnalysisTool ─────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SkillTool:
+    """Search and inject seismo_skill capabilities for task-specific reasoning."""
+
+    NAME = "skill_manager"
+
+    def __init__(self, config: AgentConfig) -> None:
+        self._cfg = config
+
+    def search_skills(self, query: str, top_k: int = 5) -> Dict[str, Any]:
+        try:
+            from seismo_skill import search_skills, invalidate_cache
+            invalidate_cache()
+            hits = search_skills(query, top_k=top_k)
+            return {
+                "query": query,
+                "skills": [
+                    {
+                        "name": s.get("name"),
+                        "description": s.get("description", ""),
+                        "category": s.get("category", ""),
+                        "keywords": s.get("keywords", [])[:12],
+                        "rag_sources": s.get("rag_sources", []),
+                        "is_folder": s.get("is_folder", False),
+                        "ref_names": list((s.get("references") or {}).keys())[:12],
+                    }
+                    for s in hits
+                ],
+                "count": len(hits),
+            }
+        except Exception as exc:
+            return {"error": str(exc)}
+
+    def build_context(self, query: str, max_skill_chars: int = 6000, max_rag_chars: int = 2500) -> Dict[str, Any]:
+        try:
+            from seismo_skill import build_skill_context_with_rag
+            skill_ctx, rag_ctx = build_skill_context_with_rag(
+                query,
+                max_skill_chars=max_skill_chars,
+                max_rag_chars=max_rag_chars,
+                top_k=5,
+            )
+            return {
+                "query": query,
+                "skill_context": skill_ctx,
+                "rag_context": rag_ctx,
+                "chars": len(skill_ctx) + len(rag_ctx),
+            }
+        except Exception as exc:
+            return {"error": str(exc)}
+
+
+class QATool:
+    """LLM QA tool that can answer using RAG + SKILL context without running code."""
+
+    NAME = "qa_reasoner"
+
+    def __init__(self, config: AgentConfig, llm_cfg: Dict[str, Any]) -> None:
+        self._cfg = config
+        self._llm = llm_cfg
+
+    def answer(self, question: str, context: str = "") -> Dict[str, Any]:
+        try:
+            skill_ctx = ""
+            rag_ctx = ""
+            try:
+                from seismo_skill import build_skill_context_with_rag
+                skill_ctx, rag_ctx = build_skill_context_with_rag(
+                    question, max_skill_chars=4000, max_rag_chars=3000, top_k=4
+                )
+            except Exception:
+                pass
+
+            messages = [
+                {"role": "system", "content": (
+                    "You are a rigorous geoscience QA reasoner. Answer with explicit "
+                    "observations, assumptions, uncertainties, and suggested checks. "
+                    "Do not invent citations or numbers."
+                )},
+                {"role": "user", "content": (
+                    f"Question:\n{question}\n\n"
+                    f"User/agent context:\n{context[:4000]}\n\n"
+                    f"SKILL context:\n{skill_ctx[:4000]}\n\n"
+                    f"RAG context:\n{rag_ctx[:3000]}"
+                )},
+            ]
+            answer = _llm_call(messages, self._llm, max_tokens=1200, temperature=0.2)
+            return {"question": question, "answer": answer}
+        except Exception as exc:
+            return {"error": str(exc)}
+
+
+class DocumentAnalysisTool:
+    """Summarise and extract evidence from text/PDF/Markdown documents."""
+
+    NAME = "document_analysis"
+
+    def __init__(self, config: AgentConfig, llm_cfg: Dict[str, Any]) -> None:
+        self._cfg = config
+        self._llm = llm_cfg
+        self._literature = LiteratureLibraryTool(config)
+
+    def analyze_document(self, path: str, question: str = "", max_chars: int = 16000) -> Dict[str, Any]:
+        p = _safe_path(path, self._cfg.workspace_root, self._cfg.literature_root, self._cfg.output_dir)
+        if p is None:
+            return {"error": f"Path '{path}' is outside configured roots."}
+        if not p.exists():
+            return {"error": f"File not found: {p}"}
+        try:
+            if p.suffix.lower() == ".pdf":
+                content = self._literature.read_pdf(str(p), max_chars=max_chars).get("content", "")
+            else:
+                content = p.read_text(encoding="utf-8", errors="replace")[:max_chars]
+            messages = [
+                {"role": "system", "content": (
+                    "You are a scientific document analyst. Extract methods, datasets, "
+                    "results, limitations, and evidence relevant to the question. Return JSON."
+                )},
+                {"role": "user", "content": (
+                    f"Question: {question}\nDocument: {p.name}\n\n"
+                    f"Text:\n{content}\n\n"
+                    "Return JSON with keys: summary, datasets, methods, key_findings, "
+                    "limitations, evidence_entries."
+                )},
+            ]
+            raw = _llm_call(messages, self._llm, max_tokens=1600, temperature=0.15)
+            try:
+                m = re.search(r"\{.*\}", raw, re.DOTALL)
+                parsed = json.loads(m.group(0)) if m else {"raw": raw}
+            except Exception:
+                parsed = {"raw": raw}
+            parsed["path"] = str(p)
+            return parsed
+        except Exception as exc:
+            return {"error": str(exc)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ── Tool 9: ResearchPaperTool ────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ResearchPaperTool:
+    """Save and compile LaTeX manuscripts with bibliography support."""
+
+    NAME = "research_paper"
+
+    def __init__(self, config: AgentConfig) -> None:
+        self._cfg = config
+        Path(config.output_dir).mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _html_preview(latex: str) -> str:
+        title = "SAGE Research Paper"
+        m = re.search(r"\\title\{(.+?)\}", latex, re.DOTALL)
+        if m:
+            title = re.sub(r"\s+", " ", m.group(1)).strip()
+        body = html.escape(latex)
+        for sec in ("section", "subsection", "subsubsection"):
+            body = re.sub(
+                rf"\\{sec}\{{(.+?)\}}",
+                lambda mm: f"<h{'2' if sec == 'section' else '3'}>{html.escape(mm.group(1))}</h{'2' if sec == 'section' else '3'}>",
+                body,
+            )
+        body = body.replace("\n", "<br>\n")
+        return (
+            "<!doctype html><html><head><meta charset='utf-8'>"
+            f"<title>{html.escape(title)}</title>"
+            "<style>body{font-family:Arial,sans-serif;max-width:980px;margin:32px auto;"
+            "line-height:1.55;color:#222}pre{white-space:pre-wrap;background:#f7f7f9;"
+            "padding:16px;border-radius:8px}h2{margin-top:1.4em;border-bottom:1px solid #ddd}</style>"
+            "</head><body>"
+            f"<h1>{html.escape(title)}</h1><pre>{html.escape(latex)}</pre>"
+            "</body></html>"
+        )
+
+    @staticmethod
+    def _ensure_bibliography(latex: str, bib_name: str = "references") -> str:
+        if "\\bibliography{" in latex or "\\begin{thebibliography}" in latex:
+            return latex
+        insert = f"\n\\bibliographystyle{{plainnat}}\n\\bibliography{{{bib_name}}}\n"
+        if "\\end{document}" in latex:
+            return latex.replace("\\end{document}", insert + "\n\\end{document}")
+        return latex + insert + "\n\\end{document}\n"
+
+    def save_and_compile(self, task_id: str, latex: str, bibtex: str = "") -> Dict[str, Any]:
+        """Write paper.tex/references.bib, render HTML preview, and compile PDF if tools exist."""
+        task_dir = Path(self._cfg.output_dir) / task_id
+        task_dir.mkdir(parents=True, exist_ok=True)
+        latex = self._ensure_bibliography(latex)
+        tex_path = task_dir / "paper.tex"
+        bib_path = task_dir / "references.bib"
+        html_path = task_dir / "paper_preview.html"
+        pdf_path = task_dir / "paper.pdf"
+        tex_path.write_text(latex, encoding="utf-8")
+        bib_path.write_text(bibtex or "% Bibliography entries can be added here.\n", encoding="utf-8")
+        html_path.write_text(self._html_preview(latex), encoding="utf-8")
+
+        compiler = shutil.which("latexmk") or shutil.which("tectonic") or shutil.which("pdflatex")
+        compile_log = ""
+        ok = False
+        if compiler:
+            try:
+                if Path(compiler).name == "latexmk":
+                    cmd = [compiler, "-pdf", "-interaction=nonstopmode", tex_path.name]
+                    proc = subprocess.run(cmd, cwd=str(task_dir), capture_output=True, text=True, timeout=120)
+                elif Path(compiler).name == "tectonic":
+                    proc = subprocess.run([compiler, tex_path.name], cwd=str(task_dir), capture_output=True, text=True, timeout=120)
+                else:
+                    # Run pdflatex/bibtex/pdflatex/pdflatex so citations can resolve when possible.
+                    logs = []
+                    for cmd in (
+                        [compiler, "-interaction=nonstopmode", tex_path.name],
+                        [shutil.which("bibtex") or "bibtex", tex_path.stem],
+                        [compiler, "-interaction=nonstopmode", tex_path.name],
+                        [compiler, "-interaction=nonstopmode", tex_path.name],
+                    ):
+                        try:
+                            p = subprocess.run(cmd, cwd=str(task_dir), capture_output=True, text=True, timeout=120)
+                            logs.append((p.stdout or "") + (p.stderr or ""))
+                        except Exception as exc:
+                            logs.append(str(exc))
+                    proc = type("Proc", (), {"returncode": 0 if pdf_path.exists() else 1, "stdout": "\n".join(logs), "stderr": ""})()
+                compile_log = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-6000:]
+                ok = pdf_path.exists() and pdf_path.stat().st_size > 0
+            except Exception as exc:
+                compile_log = str(exc)
+        else:
+            compile_log = "No LaTeX compiler found (latexmk, tectonic, or pdflatex)."
+
+        return {
+            "ok": ok,
+            "latex_path": str(tex_path),
+            "bib_path": str(bib_path),
+            "html_path": str(html_path),
+            "pdf_path": str(pdf_path) if pdf_path.exists() else "",
+            "compiler": str(compiler or ""),
+            "compile_log": compile_log,
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ── Tool 10: StateMemoryTool ──────────────────────────────────────────────────
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1687,7 +2150,7 @@ class WebSearchTool:
         if err:
             return err
         try:
-            encoded = urllib.request.quote(query)
+            encoded = urllib.parse.quote(query)
             url     = f"https://html.duckduckgo.com/html/?q={encoded}"
             req     = urllib.request.Request(
                 url,
@@ -1720,6 +2183,22 @@ class WebSearchTool:
         except Exception as exc:
             return {"query": query, "results": [], "error": str(exc)}
 
+    @staticmethod
+    def _web_results_to_papers(result: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Convert generic web results into paper-like records for downstream evidence extraction."""
+        papers = []
+        for item in result.get("results", []) or []:
+            papers.append({
+                "title": item.get("title", ""),
+                "authors": [],
+                "year": None,
+                "abstract": item.get("snippet", ""),
+                "url": item.get("url", ""),
+                "doi": "",
+                "source": "web_search_fallback",
+            })
+        return papers
+
     def scholar_search(self, query: str, max_results: int = 8) -> Dict[str, Any]:
         """
         Search Semantic Scholar (public API, no key required).
@@ -1728,36 +2207,69 @@ class WebSearchTool:
         err = self._check_allowed()
         if err:
             return err
-        try:
-            encoded = urllib.request.quote(query)
-            url = (
-                f"https://api.semanticscholar.org/graph/v1/paper/search"
-                f"?query={encoded}&limit={max_results}"
-                f"&fields=title,authors,year,abstract,url,externalIds"
-            )
-            req = urllib.request.Request(
-                url,
-                headers={
-                    "User-Agent": "SeismicX/1.0",
-                    "Accept":     "application/json",
-                },
-            )
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                body = json.loads(resp.read().decode())
 
-            papers = []
-            for p in body.get("data", []):
-                papers.append({
-                    "title":   p.get("title", ""),
-                    "authors": [a.get("name", "") for a in p.get("authors", [])[:4]],
-                    "year":    p.get("year"),
-                    "abstract": (p.get("abstract") or "")[:400],
-                    "url":     p.get("url", ""),
-                    "doi":     p.get("externalIds", {}).get("DOI", ""),
-                })
-            return {"query": query, "papers": papers, "count": len(papers)}
-        except Exception as exc:
-            return {"query": query, "papers": [], "error": str(exc)}
+        encoded = urllib.parse.quote(query)
+        url = (
+            f"https://api.semanticscholar.org/graph/v1/paper/search"
+            f"?query={encoded}&limit={max_results}"
+            f"&fields=title,authors,year,abstract,url,externalIds"
+        )
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "SeismicX/1.0 (research assistant; local app)",
+                "Accept":     "application/json",
+            },
+        )
+        last_error = ""
+        for attempt in range(2):
+            try:
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    body = json.loads(resp.read().decode())
+
+                papers = []
+                for p in body.get("data", []):
+                    papers.append({
+                        "title":   p.get("title", ""),
+                        "authors": [a.get("name", "") for a in p.get("authors", [])[:4]],
+                        "year":    p.get("year"),
+                        "abstract": (p.get("abstract") or "")[:600],
+                        "url":     p.get("url", ""),
+                        "doi":     p.get("externalIds", {}).get("DOI", ""),
+                        "source":  "semantic_scholar",
+                    })
+                return {"query": query, "papers": papers, "count": len(papers), "source": "semantic_scholar"}
+            except urllib.error.HTTPError as exc:
+                last_error = f"Semantic Scholar HTTP {exc.code}: {exc.reason}"
+                if exc.code == 429:
+                    retry_after = exc.headers.get("Retry-After")
+                    wait_s = min(3.0, float(retry_after) if retry_after and retry_after.isdigit() else 1.5 * (attempt + 1))
+                    time.sleep(wait_s)
+                    continue
+                break
+            except Exception as exc:
+                last_error = str(exc)
+                break
+
+        fallback_query = f"{query} earthquake geology paper OR seismicity"
+        fallback = self.web_search(fallback_query, max_results=max_results)
+        papers = self._web_results_to_papers(fallback)
+        if papers:
+            return {
+                "query": query,
+                "papers": papers,
+                "count": len(papers),
+                "source": "web_search_fallback",
+                "warning": f"Semantic Scholar unavailable or rate-limited ({last_error}); used web search fallback.",
+            }
+        return {
+            "query": query,
+            "papers": [],
+            "count": 0,
+            "source": "semantic_scholar",
+            "warning": "Semantic Scholar is rate-limited; no fallback results found." if "429" in last_error else "",
+            "error": last_error,
+        }
 
     def download_pdf(self, url: str, filename: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -1827,6 +2339,23 @@ class StateMemoryTool:
         except Exception as exc:
             return {"error": str(exc)}
 
+    def save_latex_paper(self, task_id: str, latex: str, html_preview: str = "") -> Dict[str, Any]:
+        """Save LaTeX manuscript and optional HTML preview to disk."""
+        d = self._task_dir(task_id)
+        tex = d / "paper.tex"
+        html_path = d / "paper_preview.html"
+        try:
+            tex.write_text(latex, encoding="utf-8")
+            if html_preview:
+                html_path.write_text(html_preview, encoding="utf-8")
+            return {
+                "ok": True,
+                "latex_path": str(tex),
+                "html_path": str(html_path) if html_preview else "",
+            }
+        except Exception as exc:
+            return {"error": str(exc)}
+
     def save_evidence_table(self, task_id: str, table: List[Dict]) -> Dict[str, Any]:
         """Save evidence table as JSON."""
         p = self._task_dir(task_id) / "evidence_table.json"
@@ -1853,6 +2382,114 @@ class StateMemoryTool:
 class ToolRegistry:
     """Manages tool instances, dispatches calls, and records every invocation."""
 
+    CAPABILITIES = CapabilityCollection([
+        CapabilitySpec(
+            name="skill_manager",
+            role="Find task-specific SKILL/RAG context and coding conventions.",
+            methods=["search_skills(query,top_k)", "build_context(query,max_skill_chars,max_rag_chars)"],
+            priority=1,
+            use_when="Before coding, plotting, literature synthesis, or method-specific reasoning.",
+        ),
+        CapabilitySpec(
+            name="seismo_data",
+            role="Read structured geophysical datasets.",
+            methods=["read_catalog(path)", "read_station_file(path)", "read_waveform(path)", "read_velocity_model(path)", "read_focal_mechanisms(path)"],
+            priority=2,
+            use_when="Local catalogs, stations, waveforms, velocity models, or focal mechanisms are available.",
+        ),
+        CapabilitySpec(
+            name="code_engine",
+            role="Autonomous coding, execution, debugging, statistics, and figure generation.",
+            methods=["run_task(prompt,data_hint)"],
+            priority=3,
+            gated_by="use_code_engine + allow_python",
+            use_when="Need exploratory programming, statistics, reproducible analyses, or self-debugging.",
+        ),
+        CapabilitySpec(
+            name="rag_index",
+            role="Search and update local knowledge-base passages.",
+            methods=["search_rag(query,top_k)", "add_document(path)", "index_documents(path)", "rebuild_index()"],
+            priority=4,
+            gated_by="use_rag",
+            use_when="Need local literature, uploaded documents, or indexed knowledge.",
+        ),
+        CapabilitySpec(
+            name="literature_library",
+            role="Search/read local PDFs and BibTeX files.",
+            methods=["search_papers(query)", "read_pdf(path)", "extract_pdf_metadata(path)", "extract_references(path)", "search_bibtex(query)"],
+            priority=5,
+            use_when="Need local paper text, metadata, references, or bibliography entries.",
+        ),
+        CapabilitySpec(
+            name="document_analysis",
+            role="Summarise documents and extract paper-relevant evidence.",
+            methods=["analyze_document(path,question,max_chars)"],
+            priority=6,
+            use_when="A PDF/Markdown/text document appears central to the scientific argument.",
+        ),
+        CapabilitySpec(
+            name="image_analysis",
+            role="Vision-model interpretation of figures, maps, sections, and table images.",
+            methods=["analyze_image(path,question)", "extract_table(path,question)"],
+            priority=7,
+            gated_by="use_multimodal",
+            use_when="PNG/JPG figures or scanned tables are present.",
+        ),
+        CapabilitySpec(
+            name="web_search",
+            role="Online web and scholarly literature discovery.",
+            methods=["web_search(query,max_results)", "scholar_search(query,max_results)", "download_pdf(url,filename)"],
+            priority=8,
+            gated_by="allow_web_search",
+            use_when="Local/RAG evidence is insufficient or current literature is needed.",
+        ),
+        CapabilitySpec(
+            name="qa_reasoner",
+            role="Focused QA synthesis using SKILL and RAG context.",
+            methods=["answer(question,context)"],
+            priority=9,
+            use_when="Need a quick reasoning check or literature/data synthesis without code.",
+        ),
+        CapabilitySpec(
+            name="geo_plot",
+            role="Deterministic built-in geoscience plotting helpers.",
+            methods=["plot_catalog_map(...)", "plot_depth_section(...)", "plot_velocity_slice(...)", "plot_fault_distance(...)", "plot_evidence_map(...)"],
+            priority=10,
+            use_when="A standard map/section/summary figure is needed without custom coding.",
+        ),
+        CapabilitySpec(
+            name="code_execution",
+            role="Small deterministic Python or shell snippets.",
+            methods=["run_python(code)", "run_shell(command)"],
+            priority=11,
+            gated_by="allow_python / allow_shell",
+            use_when="Use only for short scripts; prefer code_engine for autonomous analysis.",
+        ),
+        CapabilitySpec(
+            name="research_paper",
+            role="Save LaTeX/BibTeX, render HTML preview, and compile PDF if LaTeX is installed.",
+            methods=["save_and_compile(task_id,latex,bibtex)"],
+            priority=90,
+            gated_by="produce_latex",
+            use_when="Final paper manuscript production.",
+        ),
+        CapabilitySpec(
+            name="state_memory",
+            role="Persist report, evidence table, hypotheses, and state.",
+            methods=["save_state(task_id,state)", "load_state(task_id)", "save_report(task_id,report)", "save_latex_paper(task_id,latex,html_preview)"],
+            priority=99,
+            use_when="Persist final or reusable state only.",
+        ),
+        CapabilitySpec(
+            name="local_file_search",
+            role="List/search/read workspace files.",
+            methods=["list_dir(path)", "read_file(path)", "search_files(query,root)", "grep(pattern,root)", "get_file_metadata(path)"],
+            priority=100,
+            gated_by="use_local_files",
+            use_when="Need file discovery or metadata before selecting specialized tools.",
+        ),
+    ])
+
     def __init__(
         self,
         config: AgentConfig,
@@ -1867,6 +2504,11 @@ class ToolRegistry:
         self.seismo     = SeismoDataTool(config)
         self.geo_plot   = GeoPlotTool(config)
         self.code       = CodeExecutionTool(config)
+        self.code_engine = CodeEngineTool(config, _llm)
+        self.skills     = SkillTool(config)
+        self.qa         = QATool(config, _llm)
+        self.docs       = DocumentAnalysisTool(config, _llm)
+        self.paper      = ResearchPaperTool(config)
         self.memory     = StateMemoryTool(config)
         self.images     = ImageAnalysisTool(config, _llm)
         self.web        = WebSearchTool(config)
@@ -1878,10 +2520,22 @@ class ToolRegistry:
             "seismo_data":         self.seismo,
             "geo_plot":            self.geo_plot,
             "code_execution":      self.code,
+            "code_engine":         self.code_engine,
+            "skill_manager":       self.skills,
+            "qa_reasoner":         self.qa,
+            "document_analysis":   self.docs,
+            "research_paper":      self.paper,
             "state_memory":        self.memory,
             "image_analysis":      self.images,
             "web_search":          self.web,
         }
+
+    @property
+    def capabilities(self) -> CapabilityCollection:
+        return self.CAPABILITIES
+
+    def tool_selector_system(self) -> str:
+        return _TOOL_SELECTOR_BASE.replace("{capability_block}", self.CAPABILITIES.prompt_block())
 
     def dispatch(
         self,
@@ -1921,6 +2575,10 @@ class ToolRegistry:
             summary = f"Read {result.get('size', '?')} chars from {result.get('path', '?')}"
         elif "chunks" in result:
             summary = f"RAG: {len(result.get('chunks', []))} chunks for '{args.get('query', '?')[:40]}'"
+        elif "skills" in result:
+            summary = f"Skills: {', '.join(s.get('name','?') for s in result.get('skills', [])[:4])}"
+        elif "answer" in result:
+            summary = f"QA answer: {result.get('answer','')[:100]}"
         elif "matches" in result:
             summary = f"Found {result.get('count', 0)} matches for '{args.get('query', '?')[:40]}'"
         elif "entries" in result:
@@ -1953,7 +2611,7 @@ class ToolRegistry:
 # ── LLM-based reasoning components ────────────────────────────────────────────
 # ─────────────────────────────────────────────────────────────────────────────
 
-_TOOL_SELECTOR_SYSTEM = """\
+_TOOL_SELECTOR_BASE = """\
 You are an autonomous geoscience reasoning agent.
 Your goal is to gather structured evidence to answer a scientific question.
 You must NEVER skip evidence structuring.  Build evidence first; reason second.
@@ -1965,25 +2623,17 @@ DATA SOURCE PRIORITY (strict order):
 4. image_analysis (figures, maps, cross-sections in workspace)
 5. web_search — ONLY if all local sources are insufficient AND you explicitly state why
 
-You have access to these tools:
-- local_file_search   : list_dir(path) | read_file(path) | search_files(query,root) | grep(pattern,root) | get_file_metadata(path)
-- literature_library  : search_papers(query) | read_pdf(path) | extract_pdf_metadata(path) | extract_references(path) | search_bibtex(query)
-- rag_index           : search_rag(query,top_k) | add_document(path) | index_documents(path) | rebuild_index()
-- seismo_data         : read_catalog(path) | read_station_file(path) | read_waveform(path) | read_velocity_model(path) | read_focal_mechanisms(path)
-- geo_plot            : plot_catalog_map(catalog_path,region,title,output) | plot_depth_section(catalog_path,profile,title,output) | plot_velocity_slice(model_path,depth,title,output) | plot_fault_distance(catalog_path,fault_path,title,output) | plot_evidence_map(evidence_list,region,title,output)
-- code_execution      : run_python(code) | run_shell(command)
-- state_memory        : save_state(task_id,state) | save_report(task_id,report) | save_evidence_table(task_id,table) | save_hypotheses(task_id,hypotheses)
-- image_analysis      : analyze_image(path,question) | extract_table(path,question)
-- web_search          : web_search(query,max_results) | scholar_search(query,max_results) | download_pdf(url,filename)
+{capability_block}
 
 Strategy rules:
-1. Start iteration 1 with: seismo_data → rag_index.search_rag → local_file_search → literature_library.
+1. Start iteration 1 with: skill_manager → seismo_data → rag_index.search_rag → local_file_search → literature_library.
 2. Use image_analysis for any PNG/JPG figures found in the workspace.
-3. Use code_execution only for analyses not possible with other tools.
+3. Use code_engine for autonomous statistical programming/debugging; use code_execution only for small deterministic scripts.
 4. Escalate to web_search only when local + RAG + literature are insufficient; include the reason in "reason".
 5. Use geo_plot to generate figures after reading data.
-6. Never call state_memory unless persisting for later reuse.
-7. Return {"done": true} when enough evidence gathered for this iteration.
+6. Use document_analysis for PDFs/Markdown that look central to the paper.
+7. Never call state_memory/research_paper until writing or persisting final outputs.
+8. Return {"done": true} when enough evidence gathered for this iteration.
 
 Output EXACTLY this JSON (no extra text):
 {
@@ -2075,6 +2725,15 @@ Output JSON:
 }
 """
 
+_QUESTION_MINER_SYSTEM = """\
+You are a geoscience research-question miner. Given the current evidence and artifacts,
+identify concrete scientific questions that can become paper contributions.
+Rules:
+- Each question must be testable with the available data/artifacts or clearly state missing data.
+- Prefer mechanism, uncertainty, spatial pattern, temporal pattern, and validation questions.
+- Return ONLY a JSON array of short question strings.
+"""
+
 
 _REPORT_SYSTEM = """\
 Write a structured geoscience interpretation report in Markdown.
@@ -2085,6 +2744,19 @@ Rules:
 - Use hedging language where appropriate (consistent with, suggests, may indicate).
 - Structure: ## Problem Definition | ## Evidence Summary | ## Competing Hypotheses | ## Preferred Interpretation | ## Uncertainty & Limitations | ## Recommended Analyses | ## References
 - Keep under 1400 words.
+"""
+
+_LATEX_PAPER_SYSTEM = """\
+You are a geoscience manuscript writer. Draft a concise research paper in LaTeX.
+Use ONLY the supplied evidence IDs, artifacts, figures, statistics, and hypotheses.
+Do not invent data, locations, dates, citations, or methods.
+
+Return ONLY a complete LaTeX document using article class.
+Required sections:
+Abstract, Introduction, Data and Methods, Results, Discussion, Limitations, Conclusions, References.
+Include intermediate figures with \\includegraphics when paths are provided.
+Mention statistics/artifacts by artifact IDs and evidence IDs.
+Use placeholders like \\cite{missing_reference} only when citation metadata is unavailable.
 """
 
 
@@ -2188,6 +2860,220 @@ class LoopController:
         self._figures: List[str] = []
         self._sources: List[str] = []
         self._missing: List[str] = []
+        self._artifacts: List[ResearchArtifact] = []
+        self._scientific_questions: List[str] = []
+        self._latex_paper = ""
+        self._latex_path = ""
+        self._paper_html = ""
+
+    def _add_artifact(
+        self,
+        artifact_type: str,
+        title: str,
+        description: str,
+        path: str = "",
+        content: str = "",
+        source_tool: str = "",
+        source_call_id: str = "",
+        linked_evidence: Optional[List[str]] = None,
+        iteration: int = 0,
+    ) -> ResearchArtifact:
+        base = f"{artifact_type}:{title}:{path}:{content[:80]}:{source_call_id}"
+        aid = "art_" + hashlib.md5(base.encode()).hexdigest()[:10]
+        if any(a.artifact_id == aid for a in self._artifacts):
+            return next(a for a in self._artifacts if a.artifact_id == aid)
+        artifact = ResearchArtifact(
+            artifact_id=aid,
+            artifact_type=artifact_type,
+            title=title,
+            description=description,
+            path=path,
+            content=content[:4000],
+            source_tool=source_tool,
+            source_call_id=source_call_id,
+            linked_evidence=linked_evidence or [],
+            iteration=iteration,
+        )
+        self._artifacts.append(artifact)
+        if artifact_type == "question" and title not in self._scientific_questions:
+            self._scientific_questions.append(title)
+        return artifact
+
+    def _artifact_markdown(self) -> str:
+        if not self._artifacts:
+            return "_No intermediate artifacts recorded._"
+        rows = [
+            "| ID | Type | Title | Source | Path / Summary |",
+            "|---|---|---|---|---|",
+        ]
+        for a in self._artifacts:
+            summary = a.path or a.description or a.content[:80]
+            summary = str(summary).replace("|", "∣")[:120]
+            rows.append(
+                f"| {a.artifact_id} | {a.artifact_type} | {a.title.replace('|','∣')[:60]} | "
+                f"{a.source_tool[:30]} | {summary} |"
+            )
+        return "\n".join(rows)
+
+    def _record_tool_artifacts(
+        self,
+        result: Dict[str, Any],
+        tool: str,
+        method: str,
+        call: ToolCall,
+        question: str,
+        iteration: int,
+        evidence_ids: Optional[List[str]] = None,
+    ) -> None:
+        evidence_ids = evidence_ids or []
+        for fig in result.get("figures", []) or []:
+            self._add_artifact(
+                "figure",
+                Path(fig).name,
+                f"Generated figure from {tool}.{method}",
+                path=str(fig),
+                source_tool=f"{tool}.{method}",
+                source_call_id=call.call_id,
+                linked_evidence=evidence_ids,
+                iteration=iteration,
+            )
+        if result.get("figure"):
+            fig = result["figure"]
+            self._add_artifact(
+                "figure",
+                Path(fig).name,
+                f"Generated figure from {tool}.{method}",
+                path=str(fig),
+                source_tool=f"{tool}.{method}",
+                source_call_id=call.call_id,
+                linked_evidence=evidence_ids,
+                iteration=iteration,
+            )
+        for fp in result.get("output_files", []) or []:
+            self._add_artifact(
+                "code_result",
+                Path(fp).name,
+                f"Generated output file from {tool}.{method}",
+                path=str(fp),
+                source_tool=f"{tool}.{method}",
+                source_call_id=call.call_id,
+                linked_evidence=evidence_ids,
+                iteration=iteration,
+            )
+        stdout = (result.get("stdout") or "").strip()
+        if stdout:
+            stat_lines = [
+                line for line in stdout.splitlines()
+                if re.search(r"\b(mean|median|min|max|std|count|rows|columns|range|correlation|slope|p-value|统计|均值|数量|范围)\b", line, re.I)
+                or line.strip().startswith("{")
+                or line.strip().startswith("[SAGE_TEST]")
+            ]
+            if stat_lines:
+                self._add_artifact(
+                    "statistic",
+                    f"Statistics from {tool}.{method}",
+                    "Printed numerical/statistical results from code execution.",
+                    content="\n".join(stat_lines)[-3500:],
+                    source_tool=f"{tool}.{method}",
+                    source_call_id=call.call_id,
+                    linked_evidence=evidence_ids,
+                    iteration=iteration,
+                )
+        if "summary" in result or "key_findings" in result or "evidence_entries" in result:
+            content = json.dumps({
+                k: result.get(k)
+                for k in ("summary", "datasets", "methods", "key_findings", "limitations", "evidence_entries")
+                if k in result
+            }, ensure_ascii=False, indent=2)
+            self._add_artifact(
+                "document_summary",
+                f"Document analysis from {tool}.{method}",
+                "Structured document-analysis result.",
+                path=str(result.get("path", "")),
+                content=content,
+                source_tool=f"{tool}.{method}",
+                source_call_id=call.call_id,
+                linked_evidence=evidence_ids,
+                iteration=iteration,
+            )
+
+    def _bootstrap_data_exploration(
+        self,
+        question: str,
+        study_area: str,
+        on_progress: Optional[Callable[[Dict], None]] = None,
+    ) -> int:
+        """
+        Deterministically inspect user-provided data before the LLM planner starts.
+        This makes the agent behave less like a passive tool caller and more like
+        a field assistant: inventory first, profile data, then reason from evidence.
+        """
+        def _emit(phase: str, msg: str) -> None:
+            if on_progress:
+                on_progress({"phase": phase, "message": msg})
+
+        added_total = 0
+
+        _emit("data_recon", "Scanning workspace and profiling uploaded data files…")
+        code = _build_data_recon_code(self._cfg.workspace_root, question, study_area)
+        result, call = self._reg.dispatch(
+            "code_execution",
+            "run_python",
+            {"code": code},
+            "Automatic reconnaissance of the provided data before literature reasoning.",
+            0,
+        )
+
+        if result.get("figures"):
+            for fig in result.get("figures", []):
+                if fig not in self._figures:
+                    self._figures.append(fig)
+
+        new_evidence = self._extract_evidence(
+            result, "code_execution", "run_python", question, 0, call.call_id
+        )
+        added = self._ev.add(new_evidence)
+        added_total += len(added)
+        call.evidence_added = [e.evidence_id for e in added]
+        call.figures_added = result.get("figures", [])
+        self._record_tool_artifacts(
+            result, "code_execution", "run_python", call, question, 0, call.evidence_added
+        )
+        if added:
+            _emit("evidence", f"Data reconnaissance added {len(added)} evidence record(s).")
+        elif result.get("stdout"):
+            _emit("data_recon", "Workspace inventory completed; no structured evidence extracted yet.")
+        elif result.get("error"):
+            _emit("warning", f"Data reconnaissance failed: {result.get('error')[:120]}")
+
+        # Add obvious uploaded literature or tabular files to RAG when enabled.
+        if self._cfg.use_rag:
+            roots = [self._cfg.workspace_root, self._cfg.literature_root]
+            seen = set()
+            for root in roots:
+                if not root:
+                    continue
+                rp = Path(root).expanduser().resolve(strict=False)
+                if not rp.exists():
+                    continue
+                for fp in sorted(rp.rglob("*")):
+                    if fp.suffix.lower() not in {".pdf", ".md", ".txt"}:
+                        continue
+                    key = str(fp)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    res, tc = self._reg.dispatch(
+                        "rag_index",
+                        "add_document",
+                        {"path": str(fp)},
+                        "Index uploaded/local literature so later reasoning can retrieve passages.",
+                        0,
+                    )
+                    if not res.get("error"):
+                        _emit("rag_index", f"Indexed {fp.name}")
+
+        return added_total
 
     # ── LLM helpers ───────────────────────────────────────────────────────
 
@@ -2210,10 +3096,12 @@ class LoopController:
             f"Iteration {iteration}, tool call {calls_this_iter + 1} of {self._cfg.max_tool_calls_per_iter}.\n"
             f"Evidence so far: {ev_summary}  Types: {ev_types}\n\n"
             f"Recent tool results:\n{recent_txt or '(none yet)'}\n\n"
-            "Select the next tool call as JSON."
+            "Select the next tool call as JSON. If local data files are present, prefer concrete "
+            "data-reading/plotting/code calls before broad interpretive statements. If evidence is "
+            "thin and web search is enabled, search scholarly literature and extract evidence from abstracts."
         )
         messages = [
-            {"role": "system", "content": _TOOL_SELECTOR_SYSTEM},
+            {"role": "system", "content": self._reg.tool_selector_system()},
             {"role": "user",   "content": prompt},
         ]
         try:
@@ -2462,6 +3350,138 @@ class LoopController:
         pref_rat = d.get("preferred_rationale", "")
         return hypotheses, missing, pref_id, pref_rat
 
+    def _mine_scientific_questions(self, question: str, study_area: str) -> List[str]:
+        ev_txt = "\n".join(
+            f"[{e.evidence_id}] {e.observation[:100]} ({e.data_type})"
+            for e in self._ev.table[-25:]
+        )
+        art_txt = "\n".join(
+            f"[{a.artifact_id}] {a.artifact_type}: {a.title} — {a.description[:100]}"
+            for a in self._artifacts[-25:]
+        )
+        messages = [
+            {"role": "system", "content": _QUESTION_MINER_SYSTEM},
+            {"role": "user", "content": (
+                f"Original question: {question}\nStudy area: {study_area}\n\n"
+                f"Evidence:\n{ev_txt}\n\nArtifacts:\n{art_txt}\n\n"
+                "Mine paper-level scientific questions."
+            )},
+        ]
+        try:
+            raw = _llm_call(messages, self._llm, max_tokens=700, temperature=0.25)
+            m = re.search(r"\[.*\]", raw, re.DOTALL)
+            items = json.loads(m.group(0)) if m else []
+            questions = [str(x).strip() for x in items if str(x).strip()]
+        except Exception:
+            questions = []
+        if not questions:
+            questions = [question]
+        for q in questions[:8]:
+            self._add_artifact(
+                "question",
+                q,
+                "Mined scientific question for manuscript framing.",
+                content=q,
+                source_tool="question_miner",
+            )
+        return list(dict.fromkeys(self._scientific_questions + questions))
+
+    def _collect_bibtex(self) -> str:
+        entries: List[str] = []
+        seen = set()
+        for src in self._sources:
+            key = re.sub(r"[^A-Za-z0-9]+", "_", Path(str(src)).stem or "source").strip("_")[:40] or "source"
+            if key in seen:
+                continue
+            seen.add(key)
+            entries.append(
+                "@misc{" + key + ",\n"
+                f"  title = {{{Path(str(src)).name or str(src)}}},\n"
+                "  note = {Source discovered by SAGE evidence-geo-agent},\n"
+                "}\n"
+            )
+        if not entries:
+            entries.append(
+                "@misc{sage_intermediate_results,\n"
+                "  title = {SAGE intermediate analysis artifacts},\n"
+                "  note = {Automatically generated figures, statistics, and evidence table},\n"
+                "}\n"
+            )
+        return "\n".join(entries)
+
+    def _write_latex_paper(
+        self,
+        question: str,
+        study_area: str,
+        hypotheses: List[GeoHypothesis],
+        missing: List[str],
+        preferred_id: str,
+        preferred_rat: str,
+    ) -> Tuple[str, str, str]:
+        questions = self._mine_scientific_questions(question, study_area)
+        ev_txt = "\n".join(
+            f"[{e.evidence_id}] {e.source_type}|{e.data_type}|{e.source}: "
+            f"{e.observation} Interpretation: {e.interpretation}"
+            for e in self._ev.table
+        )[:12000]
+        hyp_txt = "\n".join(
+            f"[{h.hypothesis_id}] {h.statement} confidence={h.confidence} status={h.status}"
+            for h in hypotheses
+        )
+        art_txt = "\n".join(
+            f"[{a.artifact_id}] {a.artifact_type}: {a.title}\n"
+            f"Path: {a.path}\nDescription: {a.description}\nContent: {a.content[:800]}"
+            for a in self._artifacts
+        )[:14000]
+        fig_txt = "\n".join(f"- {f}" for f in self._figures)
+        messages = [
+            {"role": "system", "content": _LATEX_PAPER_SYSTEM},
+            {"role": "user", "content": (
+                f"Study area: {study_area}\nOriginal question: {question}\n"
+                f"Mined scientific questions:\n" + "\n".join(f"- {q}" for q in questions) + "\n\n"
+                f"Evidence:\n{ev_txt}\n\nArtifacts/statistics/code results:\n{art_txt}\n\n"
+                f"Figures:\n{fig_txt}\n\nHypotheses:\n{hyp_txt}\n\n"
+                f"Preferred: {preferred_id} — {preferred_rat}\n\nMissing/limitations:\n"
+                + "\n".join(f"- {m}" for m in missing)
+            )},
+        ]
+        try:
+            latex = _llm_call(messages, self._llm, max_tokens=5000, temperature=0.25)
+            m = re.search(r"\\documentclass.*?\\end\{document\}", latex, re.DOTALL)
+            latex = m.group(0) if m else latex
+        except Exception as exc:
+            latex = (
+                "\\documentclass{article}\n\\usepackage{graphicx}\n\\usepackage{natbib}\n"
+                "\\title{SAGE Evidence-Driven Geoscience Interpretation}\n\\begin{document}\n\\maketitle\n"
+                f"\\section{{Problem}} {question}\n"
+                f"\\section{{Evidence}}\\begin{{verbatim}}\n{ev_txt[:3000]}\n\\end{{verbatim}}\n"
+                f"\\section{{Limitations}} Paper drafting failed: {exc}\n"
+                "\\bibliographystyle{plainnat}\\bibliography{references}\n\\end{document}\n"
+            )
+
+        bibtex = self._collect_bibtex()
+        res, call = self._reg.dispatch(
+            "research_paper",
+            "save_and_compile",
+            {"task_id": "latest", "latex": latex, "bibtex": bibtex},
+            "Save LaTeX manuscript, bibliography, HTML preview, and compile PDF.",
+            self._cfg.max_iterations + 1,
+        )
+        self._record_tool_artifacts(res, "research_paper", "save_and_compile", call, question, self._cfg.max_iterations + 1)
+        self._latex_paper = latex
+        self._latex_path = res.get("latex_path", "")
+        self._paper_html = res.get("html_path", "")
+        if res.get("pdf_path"):
+            self._add_artifact(
+                "paper_pdf",
+                "Compiled research paper PDF",
+                "Final compiled PDF manuscript.",
+                path=res.get("pdf_path", ""),
+                source_tool="research_paper.save_and_compile",
+                source_call_id=call.call_id,
+            )
+        return latex, self._latex_path, self._paper_html
+
     def _update_report(
         self,
         question: str,
@@ -2524,6 +3544,8 @@ class LoopController:
         preferred_id   = ""
         preferred_rat  = ""
 
+        self._bootstrap_data_exploration(question, study_area, on_progress=on_progress)
+
         for iteration in range(1, self._cfg.max_iterations + 1):
             _emit("iteration_start", f"Iteration {iteration}/{self._cfg.max_iterations}")
             added_this_iter = 0
@@ -2584,6 +3606,9 @@ class LoopController:
                 # Tag evidence IDs in the call record (mutate in place)
                 call.evidence_added = [e.evidence_id for e in added]
                 call.figures_added  = [result["figure"]] if "figure" in result else result.get("figures", [])
+                self._record_tool_artifacts(
+                    result, tool, method, call, question, iteration, call.evidence_added
+                )
 
                 if added:
                     _emit("evidence", f"Added {len(added)} evidence record(s).")
@@ -2618,11 +3643,20 @@ class LoopController:
 
         _emit("done", "Agent loop complete.")
 
+        if self._cfg.produce_latex:
+            _emit("writing", "Drafting LaTeX manuscript and compiling PDF when possible…")
+            self._write_latex_paper(
+                question, study_area, hypotheses,
+                self._missing, preferred_id, preferred_rat
+            )
+
         # Append evidence table to report
         final_report = (
             self._report
             + "\n\n---\n\n## Evidence Table\n\n"
             + self._ev.to_markdown()
+            + "\n\n---\n\n## Intermediate Research Artifacts\n\n"
+            + self._artifact_markdown()
         )
 
         # Build ValidationCheck suggestions from missing_info
@@ -2648,9 +3682,15 @@ class LoopController:
             tool_log=self._log.log,
             retrieved_sources=self._sources,
             generated_figures=self._figures,
+            artifacts=self._artifacts,
+            scientific_questions=self._scientific_questions,
+            statistical_results=[a for a in self._artifacts if a.artifact_type == "statistic"],
             missing_information=self._missing,
             suggested_validation=suggested_validation,
             convergence_reason=convergence,
+            latex_paper=self._latex_paper,
+            latex_path=self._latex_path,
+            paper_html=self._paper_html,
         )
 
 
@@ -2726,7 +3766,9 @@ class EvidenceDrivenGeoAgent:
         )
 
         result = ctrl.run(question, study_area, on_progress=on_progress)
-        return self._to_dict(result)
+        data = self._to_dict(result)
+        data["capabilities"] = registry.capabilities.to_dicts()
+        return data
 
     @staticmethod
     def _to_dict(result: GeoAgentResult) -> Dict[str, Any]:
@@ -2746,6 +3788,9 @@ class EvidenceDrivenGeoAgent:
         def _val(v: ValidationCheck) -> Dict:
             return asdict(v)
 
+        def _art(a: ResearchArtifact) -> Dict:
+            return asdict(a)
+
         return {
             "question":             result.question,
             "study_area":           result.study_area,
@@ -2756,7 +3801,13 @@ class EvidenceDrivenGeoAgent:
             "tool_log":             [_call(c) for c in result.tool_log],
             "retrieved_sources":    result.retrieved_sources,
             "generated_figures":    result.generated_figures,
+            "artifacts":            [_art(a) for a in result.artifacts],
+            "scientific_questions": result.scientific_questions,
+            "statistical_results":  [_art(a) for a in result.statistical_results],
             "missing_information":  result.missing_information,
             "suggested_validation": [_val(v) for v in result.suggested_validation],
             "convergence_reason":   result.convergence_reason,
+            "latex_paper":          result.latex_paper,
+            "latex_path":           result.latex_path,
+            "paper_html":           result.paper_html,
         }

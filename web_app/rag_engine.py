@@ -35,12 +35,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # Re-export backends so callers can do: from rag_engine import EmbeddingModel
@@ -256,7 +257,9 @@ class KnowledgeBase:
             raise ValueError(f"No text extracted from: {doc_name}")
 
         # Try vector backend; fall back to TF-IDF
-        use_faiss = self._try_faiss_ingest(all_chunks, log)
+        use_faiss = self._try_faiss_ingest(
+            all_chunks, log, proj_folder=proj_folder, source_type=source_type
+        )
 
         # Store file copy (only for FAISS path; TF-IDF stores its own data)
         if use_faiss:
@@ -286,7 +289,13 @@ class KnowledgeBase:
     def add_pdf(self, pdf_path: str, progress_cb=None, **kwargs) -> DocMeta:
         return self.add_document(pdf_path, progress_cb, **kwargs)
 
-    def _try_faiss_ingest(self, chunks: List[DocChunk], log) -> bool:
+    def _try_faiss_ingest(
+        self,
+        chunks: List[DocChunk],
+        log,
+        proj_folder: str = "",
+        source_type: str = "upload",
+    ) -> bool:
         """
         Try to encode chunks with BGE-M3 and add to FAISS.
         Returns True on success, False if the embedding model is unavailable
@@ -322,6 +331,8 @@ class KnowledgeBase:
                 "n_chunks":  len(chunks),
                 "added_at":  datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "size_bytes": 0,
+                "proj_folder": proj_folder,
+                "source_type": source_type,
             })
             return False
 
@@ -443,6 +454,40 @@ class KnowledgeBase:
         except Exception:
             return []
 
+    @staticmethod
+    def _norm_source(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", str(value).lower())
+
+    def _chunk_matches_filters(
+        self,
+        chunk: DocChunk,
+        sources: Optional[Iterable[str]] = None,
+        source_types: Optional[Iterable[str]] = None,
+    ) -> bool:
+        """Return True when chunk belongs to one of the requested logical sources."""
+        meta = self._docs.get(chunk.doc_id)
+        if source_types:
+            wanted_types = {str(s) for s in source_types if str(s)}
+            if not meta or meta.source_type not in wanted_types:
+                return False
+        if not sources:
+            return True
+
+        wanted = {self._norm_source(s) for s in sources if str(s).strip()}
+        if not wanted:
+            return True
+
+        fields = [
+            chunk.doc_id,
+            chunk.doc_name,
+            meta.doc_id if meta else "",
+            meta.doc_name if meta else "",
+            meta.proj_folder if meta else "",
+            meta.source_type if meta else "",
+        ]
+        hay = {self._norm_source(v) for v in fields if v}
+        return any(w in hay or any(w in h or h in w for h in hay) for w in wanted)
+
     # ------------------------------------------------------------------
     # Public retrieval API
     # ------------------------------------------------------------------
@@ -452,9 +497,19 @@ class KnowledgeBase:
         query: str,
         top_k: int = 5,
         score_threshold: float = 0.3,
+        sources: Optional[Iterable[str]] = None,
+        source_types: Optional[Iterable[str]] = None,
     ) -> List[Tuple[DocChunk, float]]:
         """Return [(DocChunk, score), ...] sorted by score descending."""
-        results = self._retrieve_core(query, top_k, score_threshold)
+        candidate_k = top_k
+        if sources or source_types:
+            candidate_k = max(top_k * 8, 40)
+        results = self._retrieve_core(query, candidate_k, score_threshold)
+        if sources or source_types:
+            results = [
+                (chunk, score) for chunk, score in results
+                if self._chunk_matches_filters(chunk, sources=sources, source_types=source_types)
+            ][:top_k]
         return sorted(results, key=lambda x: x[1], reverse=True)
 
     def retrieve_relevant_docs(
@@ -462,6 +517,8 @@ class KnowledgeBase:
         query: str,
         top_k: int = 8,
         score_threshold: float = 0.5,
+        sources: Optional[Iterable[str]] = None,
+        source_types: Optional[Iterable[str]] = None,
     ) -> List[dict]:
         """
         Return structured retrieval results suitable for display.
@@ -477,7 +534,9 @@ class KnowledgeBase:
                 "chunk_id": c.chunk_id,
                 "doc_id":   c.doc_id,
             }
-            for c, s in self.retrieve(query, top_k, score_threshold)
+            for c, s in self.retrieve(
+                query, top_k, score_threshold, sources=sources, source_types=source_types
+            )
         ]
 
     def build_rag_context(
@@ -486,13 +545,17 @@ class KnowledgeBase:
         top_k: int = 5,
         max_chars: int = 3000,
         score_threshold: float = 0.5,
+        sources: Optional[Iterable[str]] = None,
+        source_types: Optional[Iterable[str]] = None,
     ) -> str:
         """
         Retrieve and format as a concise LLM context block (English).
 
         Returns an empty string when no relevant chunks are found.
         """
-        hits = self.retrieve(query, top_k, score_threshold)
+        hits = self.retrieve(
+            query, top_k, score_threshold, sources=sources, source_types=source_types
+        )
         if not hits:
             return ""
 

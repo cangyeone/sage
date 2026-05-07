@@ -15,13 +15,22 @@ body { background: #f5f7fa; min-height: 100vh; }
 .page-header { background: linear-gradient(135deg,var(--accent),var(--accent2));
   color:#fff; padding: 2rem 0 1.5rem; }
 
+.provider-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .75rem;
+}
 .provider-card {
   border: 2px solid #e0e0e0; border-radius: 12px;
-  padding: 1rem 1.25rem; margin-bottom: .75rem;
+  padding: 1rem 1.1rem;
   cursor: pointer; transition: all .2s;
+  min-height: 88px;
 }
 .provider-card:hover { border-color: var(--accent); background: #f8f9ff; }
 .provider-card.selected { border-color: var(--accent); background: #eef0ff; }
+@media (max-width: 640px) {
+  .provider-grid { grid-template-columns: 1fr; }
+}
 
 .model-list { max-height: 280px; overflow-y: auto; }
 
@@ -108,6 +117,7 @@ body { background: #f5f7fa; min-height: 100vh; }
         <!-- Provider -->
         <div class="mb-4">
           <label class="form-label fw-bold" data-i18n="label_backend">选择后端</label>
+          <div class="provider-grid">
           <div class="provider-card selected" data-provider="ollama" onclick="selectProvider(this)">
             <div class="d-flex align-items-center gap-2">
               <i class="bi bi-hdd-network text-primary fs-5"></i>
@@ -136,6 +146,42 @@ body { background: #f5f7fa; min-height: 100vh; }
               </div>
             </div>
           </div>
+          <div class="provider-card" data-provider="siliconflow" onclick="selectProvider(this)">
+            <div class="d-flex align-items-center gap-2">
+              <i class="bi bi-lightning-charge text-warning fs-5"></i>
+              <div>
+                <div class="fw-bold">SiliconFlow</div>
+                <div class="text-muted" style="font-size:.85rem" data-i18n="siliconflow_sub">Qwen / DeepSeek 等国产模型，需要 API Key</div>
+              </div>
+            </div>
+          </div>
+          <div class="provider-card" data-provider="moonshot" onclick="selectProvider(this)">
+            <div class="d-flex align-items-center gap-2">
+              <i class="bi bi-moon-stars text-dark fs-5"></i>
+              <div>
+                <div class="fw-bold">Moonshot / Kimi</div>
+                <div class="text-muted" style="font-size:.85rem" data-i18n="moonshot_sub">moonshot-v1 系列，需要 API Key</div>
+              </div>
+            </div>
+          </div>
+          <div class="provider-card" data-provider="dashscope" onclick="selectProvider(this)">
+            <div class="d-flex align-items-center gap-2">
+              <i class="bi bi-cloud-check text-success fs-5"></i>
+              <div>
+                <div class="fw-bold">DashScope / 通义</div>
+                <div class="text-muted" style="font-size:.85rem" data-i18n="dashscope_sub">阿里云百炼 OpenAI 兼容接口</div>
+              </div>
+            </div>
+          </div>
+          <div class="provider-card" data-provider="zhipu" onclick="selectProvider(this)">
+            <div class="d-flex align-items-center gap-2">
+              <i class="bi bi-cpu text-danger fs-5"></i>
+              <div>
+                <div class="fw-bold">Zhipu AI / GLM</div>
+                <div class="text-muted" style="font-size:.85rem" data-i18n="zhipu_sub">GLM 系列，需要 API Key</div>
+              </div>
+            </div>
+          </div>
           <div class="provider-card" data-provider="custom" onclick="selectProvider(this)">
             <div class="d-flex align-items-center gap-2">
               <i class="bi bi-gear text-secondary fs-5"></i>
@@ -144,6 +190,7 @@ body { background: #f5f7fa; min-height: 100vh; }
                 <div class="text-muted" style="font-size:.85rem" data-i18n="custom_sub">SiliconFlow / 月之暗面 / 本地 vLLM 等</div>
               </div>
             </div>
+          </div>
           </div>
           <input type="hidden" id="provider" value="ollama">
         </div>
@@ -302,6 +349,7 @@ body { background: #f5f7fa; min-height: 100vh; }
             <input type="password" class="form-control" id="apiKey"
                    data-i18n-placeholder="api_key_placeholder"
                    placeholder="sk-… （留空表示不变）">
+            <div id="apiKeySavedHint" class="form-text text-muted" style="display:none"></div>
           </div>
 
         </div>
@@ -347,6 +395,10 @@ const I18N = {
     ollama_sub: '本地运行，保护隐私，支持离线使用',
     openai_sub: 'GPT-4o / GPT-4o-mini，需要 API Key',
     deepseek_sub: 'deepseek-chat / deepseek-reasoner，需要 API Key',
+    siliconflow_sub: 'Qwen / DeepSeek 等国产模型，需要 API Key',
+    moonshot_sub: 'moonshot-v1 系列，需要 API Key',
+    dashscope_sub: '阿里云百炼 OpenAI 兼容接口',
+    zhipu_sub: 'GLM 系列，需要 API Key',
     deepseek_hint: '在 <a href="https://platform.deepseek.com" target="_blank">platform.deepseek.com</a> 注册并获取 API Key',
     badge_recommend: '推荐',
     badge_reasoning: '推理',
@@ -395,6 +447,7 @@ const I18N = {
     fetch_models_fail: '获取失败: ',
     fetch_models_need_key: '请先填写 API Key 再获取模型列表',
     fetch_models_need_base: '请先填写 API Base URL',
+    api_key_saved: '已保存 {key}，留空将继续使用当前密钥',
     ollama_timeout: 'Ollama 响应超时，请确认 <code>ollama serve</code> 已启动',
   },
   en: {
@@ -409,6 +462,10 @@ const I18N = {
     ollama_sub: 'Runs locally — private, works offline',
     openai_sub: 'GPT-4o / GPT-4o-mini — requires an API Key',
     deepseek_sub: 'deepseek-chat / deepseek-reasoner — requires an API Key',
+    siliconflow_sub: 'Qwen / DeepSeek and other China-hosted models — requires an API Key',
+    moonshot_sub: 'moonshot-v1 models — requires an API Key',
+    dashscope_sub: 'Alibaba Cloud Model Studio OpenAI-compatible API',
+    zhipu_sub: 'GLM models — requires an API Key',
     deepseek_hint: 'Sign up at <a href="https://platform.deepseek.com" target="_blank">platform.deepseek.com</a> to get your API Key',
     badge_recommend: 'Recommended',
     badge_reasoning: 'Reasoning',
@@ -457,6 +514,7 @@ const I18N = {
     fetch_models_fail: 'Failed: ',
     fetch_models_need_key: 'Please enter your API Key before fetching models',
     fetch_models_need_base: 'Please enter the API Base URL first',
+    api_key_saved: 'Saved {key}; leave blank to keep the current key',
     ollama_timeout: 'Ollama timed out — make sure <code>ollama serve</code> is running',
   }
 };
@@ -502,11 +560,12 @@ document.addEventListener('DOMContentLoaded', () => { applyLang(); loadConfig();
 
 // ── Provider presets ──────────────────────────────────────────────────────────
 const PRESETS = {
-  openai:      { base: 'https://api.openai.com/v1',              model: 'gpt-4o' },
-  siliconflow: { base: 'https://api.siliconflow.cn/v1',          model: 'Qwen/Qwen2.5-72B-Instruct' },
-  moonshot:    { base: 'https://api.moonshot.cn/v1',             model: 'moonshot-v1-8k' },
-  dashscope:   { base: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-turbo' },
-  zhipu:       { base: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-4' },
+  openai:      { label: 'OpenAI', base: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+  deepseek:    { label: 'DeepSeek', base: 'https://api.deepseek.com/v1', model: 'deepseek-v4-flash' },
+  siliconflow: { label: 'SiliconFlow', base: 'https://api.siliconflow.cn/v1', model: 'Qwen/Qwen2.5-7B-Instruct' },
+  moonshot:    { label: 'Moonshot / Kimi', base: 'https://api.moonshot.cn/v1', model: 'moonshot-v1-8k' },
+  dashscope:   { label: 'DashScope / 通义', base: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-turbo' },
+  zhipu:       { label: 'Zhipu AI / GLM', base: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-flash' },
 };
 
 function applyPreset(key) {
@@ -541,14 +600,14 @@ function selectProvider(el) {
     document.getElementById('genericOnlineSection').style.display = isDeepseek ? 'none'  : 'block';
     document.getElementById('presetRow').style.display            = p === 'custom' ? 'flex' : 'none';
 
-    // Pre-fill OpenAI base for openai provider
-    if (p === 'openai' && !document.getElementById('apiBase').value) {
-      document.getElementById('apiBase').value         = PRESETS.openai.base;
-      document.getElementById('onlineModelGeneric').value = PRESETS.openai.model;
+    // Pre-fill provider defaults when switching to a named online provider.
+    if (!isDeepseek && p !== 'custom' && PRESETS[p]) {
+      document.getElementById('apiBase').value = PRESETS[p].base;
+      document.getElementById('onlineModelGeneric').value = PRESETS[p].model;
     }
-    if (isDeepseek && !document.getElementById('onlineModel').value) {
-      document.getElementById('onlineModel').value = 'deepseek-chat';
-      document.getElementById('apiBase').value     = 'https://api.deepseek.com/v1';
+    if (isDeepseek) {
+      document.getElementById('onlineModel').value = PRESETS.deepseek.model;
+      document.getElementById('apiBase').value     = PRESETS.deepseek.base;
     }
   }
 }
@@ -580,6 +639,14 @@ async function loadConfig() {
       document.getElementById('onlineModelGeneric').value = currentConfig.model    || '';
     }
 
+    const keyHint = document.getElementById('apiKeySavedHint');
+    if (currentConfig.api_key_masked && provider !== 'ollama') {
+      keyHint.textContent = T('api_key_saved').replace('{key}', currentConfig.api_key_masked);
+      keyHint.style.display = 'block';
+    } else {
+      keyHint.style.display = 'none';
+    }
+
     updateOllamaStatus(d.ollama_available);
     updateCurrentBadge();
   } catch(e) {
@@ -593,11 +660,8 @@ function updateCurrentBadge() {
     badge.textContent = T('unconfigured');
     badge.style.background = '#fce4e4'; badge.style.color = '#c62828';
   } else {
-    const provLabel = currentConfig.provider === 'ollama'
-      ? 'Ollama'
-      : currentConfig.provider === 'deepseek'
-        ? 'DeepSeek'
-        : currentConfig.provider;
+    const provLabel = PRESETS[currentConfig.provider]?.label
+      || (currentConfig.provider === 'ollama' ? 'Ollama' : currentConfig.provider);
     badge.textContent = `${provLabel} / ${currentConfig.model}`;
     badge.style.background = '#e8f5e9'; badge.style.color = '#2e7d32';
   }
@@ -763,8 +827,8 @@ document.getElementById('llmForm').addEventListener('submit', async e => {
     payload.model    = model;
     payload.api_base = 'http://localhost:11434';
   } else if (provider === 'deepseek') {
-    payload.api_base = 'https://api.deepseek.com/v1';
-    payload.model    = document.getElementById('onlineModel').value.trim() || 'deepseek-chat';
+    payload.api_base = PRESETS.deepseek.base;
+    payload.model    = document.getElementById('onlineModel').value.trim() || PRESETS.deepseek.model;
     const key = document.getElementById('apiKey').value.trim();
     if (key) payload.api_key = key;
     if (!payload.model) { showToast(T('save_validate_model'), 'warning'); return; }
@@ -786,7 +850,7 @@ document.getElementById('llmForm').addEventListener('submit', async e => {
     });
     const d = await r.json();
     if (r.ok) {
-      currentConfig = { ...currentConfig, ...payload };
+      currentConfig = d.config || { ...currentConfig, ...payload };
       updateCurrentBadge();
       showToast(T('save_ok'), 'success');
     } else {
@@ -797,11 +861,44 @@ document.getElementById('llmForm').addEventListener('submit', async e => {
   }
 });
 
+function buildCurrentPayload() {
+  const provider = document.getElementById('provider').value;
+  const payload = { provider };
+
+  if (provider === 'ollama') {
+    const radio = document.querySelector('input[name="ollamaModel"]:checked');
+    const custom = document.getElementById('ollamaCustomModel').value.trim();
+    payload.model = custom || (radio ? radio.value : '');
+    payload.api_base = 'http://localhost:11434';
+  } else if (provider === 'deepseek') {
+    payload.api_base = PRESETS.deepseek.base;
+    payload.model = document.getElementById('onlineModel').value.trim() || PRESETS.deepseek.model;
+    const key = document.getElementById('apiKey').value.trim();
+    if (key) payload.api_key = key;
+  } else {
+    payload.api_base = document.getElementById('apiBase').value.trim();
+    payload.model = document.getElementById('onlineModelGeneric').value.trim();
+    const key = document.getElementById('apiKey').value.trim();
+    if (key) payload.api_key = key;
+  }
+
+  return payload;
+}
+
 // ── Test connection ───────────────────────────────────────────────────────────
 async function testConnection() {
   showToast(T('test_pending'), 'info');
   try {
-    const r = await fetch('/api/llm/test', { method: 'POST' });
+    const payload = buildCurrentPayload();
+    if (!payload.model) { showToast(T('save_validate_model'), 'warning'); return; }
+    if (payload.provider !== 'ollama' && !payload.api_base) {
+      showToast(T('save_validate_online'), 'warning'); return;
+    }
+    const r = await fetch('/api/llm/test', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
     const d = await r.json();
     if (d.ok) {
       showToast(d.message || T('test_ok'), 'success');
@@ -816,8 +913,9 @@ async function testConnection() {
 // ── Fetch online model list ───────────────────────────────────────────────────
 async function fetchOnlineModels(isDeepseek = false) {
   const apiBase = document.getElementById('apiBase').value.trim()
-               || (isDeepseek ? 'https://api.deepseek.com/v1' : '');
+               || (isDeepseek ? PRESETS.deepseek.base : '');
   const apiKey  = document.getElementById('apiKey').value.trim();
+  const provider = document.getElementById('provider').value;
 
   if (!apiBase) { showToast(T('fetch_models_need_base'), 'warning'); return; }
 
@@ -832,7 +930,7 @@ async function fetchOnlineModels(isDeepseek = false) {
   dropWrap.style.display = 'none';
 
   try {
-    const params = new URLSearchParams({ api_base: apiBase });
+    const params = new URLSearchParams({ provider, api_base: apiBase });
     if (apiKey) params.append('api_key', apiKey);
     const r = await fetch('/api/llm/online/models?' + params.toString());
     const d = await r.json();

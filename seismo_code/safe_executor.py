@@ -249,7 +249,7 @@ def execute_bash(
     """
     Execute a bash script in an isolated temp directory.
 
-    Designed for GMT and other shell-native tools.  The script runs with
+    Designed for shell-native tools.  The script runs with
     SAGE_OUTDIR set to the temp directory so relative file writes land there.
     All PNG / PDF / SVG files produced in that directory are collected as figures.
 
@@ -261,7 +261,7 @@ def execute_bash(
     project_root : str, optional
         Path added to PATH so project-local tools are discoverable.
     timeout : int
-        Maximum execution time in seconds.  Default 180 (GMT downloads grids).
+        Maximum execution time in seconds.  Default 180 for heavier CLI jobs.
     keep_dir : bool
         Keep temp directory after execution (useful for debugging).
     extra_env : dict, optional
@@ -277,10 +277,8 @@ def execute_bash(
     tmp = tempfile.mkdtemp(prefix="sage_bash_")
     script_path = os.path.join(tmp, "run.sh")
 
-    # Prepend shebang only — do NOT use set -e for GMT scripts.
-    # GMT commands often emit warnings that return non-zero exit codes;
-    # set -e would abort the script before gmt end runs and the PNG is created.
-    # Success is determined by the return code of the last command (gmt end → 0).
+    # Prepend shebang only. Do not force `set -e`: many scientific CLI tools
+    # use non-zero statuses for recoverable probes before a later fallback succeeds.
     header = ""
     if not script.strip().startswith("#!"):
         header = "#!/bin/bash\n"
@@ -291,7 +289,6 @@ def execute_bash(
     os.chmod(script_path, 0o755)
 
     # Build environment — inherit current env, then layer our additions
-    import shutil as _sh
     env = os.environ.copy()
     env["SAGE_PROJECT_ROOT"] = project_root
     env["SAGE_OUTDIR"] = tmp              # scripts cd here or write relative paths
@@ -305,25 +302,19 @@ def execute_bash(
     env.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
     env["OBJC_DISABLE_INITIALIZE_FORK_SAFETY"] = "YES"   # macOS: prevent SIGSEGV on fork
 
-    # ── GMT library path (macOS SIP strips DYLD_LIBRARY_PATH from child procs) ──
-    # GMT loads coast/grdimage/etc. as shared library modules at runtime.
-    # If DYLD_LIBRARY_PATH isn't set, gmt reports "Shared GMT module not found".
-    _gmt_exe = _sh.which("gmt")
-    if _gmt_exe:
-        # Follow symlinks to find the real prefix (Homebrew: /opt/homebrew or /usr/local)
-        _gmt_real   = os.path.realpath(_gmt_exe)
-        _gmt_prefix = os.path.dirname(os.path.dirname(_gmt_real))
-        _gmt_lib    = os.path.join(_gmt_prefix, "lib")
-        if os.path.isdir(_gmt_lib):
-            _cur_dyld = env.get("DYLD_LIBRARY_PATH", "")
-            env["DYLD_LIBRARY_PATH"] = (
-                f"{_gmt_lib}:{_cur_dyld}" if _cur_dyld else _gmt_lib
-            )
-            # DYLD_FALLBACK_LIBRARY_PATH is honoured even when SIP is active
-            _cur_fall = env.get("DYLD_FALLBACK_LIBRARY_PATH", "")
-            env["DYLD_FALLBACK_LIBRARY_PATH"] = (
-                f"{_gmt_lib}:{_cur_fall}" if _cur_fall else _gmt_lib
-            )
+    # Common scientific CLI tools installed through Homebrew may need their
+    # sibling lib directory visible in non-interactive child processes on macOS.
+    lib_candidates = []
+    for prefix in ("/opt/homebrew", "/usr/local"):
+        lib = os.path.join(prefix, "lib")
+        if os.path.isdir(lib):
+            lib_candidates.append(lib)
+    if lib_candidates:
+        joined = os.pathsep.join(lib_candidates)
+        cur_dyld = env.get("DYLD_LIBRARY_PATH", "")
+        env["DYLD_LIBRARY_PATH"] = f"{joined}{os.pathsep}{cur_dyld}" if cur_dyld else joined
+        cur_fall = env.get("DYLD_FALLBACK_LIBRARY_PATH", "")
+        env["DYLD_FALLBACK_LIBRARY_PATH"] = f"{joined}{os.pathsep}{cur_fall}" if cur_fall else joined
 
     if extra_env:
         env.update(extra_env)
@@ -356,20 +347,27 @@ def execute_bash(
         stderr  = str(exc)
         error   = str(exc)
 
-    # Collect generated files from the temp directory
+    # Collect generated files from the execution temp directory and, when the
+    # caller overrides SAGE_OUTDIR, from that shared output directory too.
     figures:      List[str] = []
     output_files: List[str] = []
 
-    if os.path.isdir(tmp):
-        for fname in sorted(os.listdir(tmp)):
-            fpath = os.path.join(tmp, fname)
-            if fname in ("run.sh",) or not os.path.isfile(fpath):
-                continue
-            ext = os.path.splitext(fname)[1].lower()
-            if ext in (".png", ".pdf", ".svg"):
-                figures.append(fpath)
-            elif ext not in (".sh",):
-                output_files.append(fpath)
+    scan_dirs = [tmp]
+    outdir = env.get("SAGE_OUTDIR", tmp)
+    if outdir and outdir not in scan_dirs:
+        scan_dirs.append(outdir)
+
+    for scan_dir in scan_dirs:
+        if os.path.isdir(scan_dir):
+            for fname in sorted(os.listdir(scan_dir)):
+                fpath = os.path.join(scan_dir, fname)
+                if fname in ("run.sh",) or not os.path.isfile(fpath):
+                    continue
+                ext = os.path.splitext(fname)[1].lower()
+                if ext in (".png", ".pdf", ".svg") and fpath not in figures:
+                    figures.append(fpath)
+                elif ext not in (".sh",) and fpath not in output_files:
+                    output_files.append(fpath)
 
     # Emit [FIGURE] markers to stdout so helpers.serialize_code_result can find them
     for fig in figures:

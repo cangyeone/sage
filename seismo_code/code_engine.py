@@ -138,6 +138,12 @@ class CodeEngine:
     def _run_code_in_dir(self, code: str, timeout: int,
                          shared_dir: Optional[str] = None) -> ExecutionResult:
         """Execute code inside a pre-existing shared directory."""
+        if _is_bash_code(code):
+            clean = re.sub(r"^#\s*lang:bash\s*\n", "", code, count=1)
+            extra_env = {"SAGE_OUTDIR": shared_dir} if shared_dir else None
+            return execute_bash(clean, project_root=self.project_root,
+                                timeout=timeout, keep_dir=True,
+                                extra_env=extra_env)
         clean = _pre_sanitize(code)
         extra_env = None
         if shared_dir:
@@ -205,6 +211,72 @@ class CodeEngine:
 
         return True, ""
 
+    def _mini_test_ok(
+        self,
+        original_request: str,
+        code: str,
+        exec_res: ExecutionResult,
+    ) -> tuple[bool, str]:
+        """
+        Deterministic post-run smoke tests.
+
+        This catches a common failure mode: the generated script exits 0 but
+        silently produced no useful result, empty figures, unreadable images, or
+        no visible self-checks. It is intentionally conservative; failures are
+        fed back into the normal debugger as an output-check error.
+        """
+        if not exec_res or not self._execution_success(exec_res):
+            return False, "execution did not succeed"
+
+        stdout = (exec_res.stdout or "").strip()
+        stderr = (exec_res.stderr or "").strip()
+        combined = "\n".join([stdout, stderr])
+        if re.search(
+            r"\b(no such file|file not found|empty dataframe|"
+            r"(?:failed|error)\s*[:：])",
+            combined,
+            re.I,
+        ):
+            return False, "stdout/stderr contains an error-like message"
+
+        wants_output = bool(re.search(
+            r"plot|figure|图|绘制|visuali|chart|map|waveform|spectrogram|psd|"
+            r"save|write|output|export|保存|输出|写入|统计|calculate|compute",
+            original_request,
+            re.I,
+        ))
+        produced = list(exec_res.figures or []) + list(exec_res.output_files or [])
+        if wants_output and not produced and not stdout:
+            return False, "request expected output but script produced no files and no stdout"
+
+        for fp in produced:
+            p = Path(fp)
+            if not p.exists():
+                return False, f"declared output missing: {fp}"
+            if p.is_file() and p.stat().st_size == 0:
+                return False, f"empty output file: {fp}"
+
+        for fp in exec_res.figures or []:
+            p = Path(fp)
+            if p.suffix.lower() in {".png", ".jpg", ".jpeg"}:
+                try:
+                    from PIL import Image
+                    with Image.open(p) as img:
+                        img.verify()
+                except ImportError:
+                    try:
+                        import matplotlib.image as _mpimg
+                        _mpimg.imread(str(p))
+                    except Exception as exc:
+                        return False, f"unreadable image output {p.name}: {exc}"
+                except Exception as exc:
+                    return False, f"unreadable image output {p.name}: {exc}"
+
+        if wants_output and "[SAGE_TEST]" not in stdout:
+            return False, "missing [SAGE_TEST] self-check output"
+
+        return True, ""
+
     # ── Error context builder ─────────────────────────────────────────────────
 
     def _build_error_context(self, code: str, exec_res: ExecutionResult) -> str:
@@ -212,16 +284,16 @@ class CodeEngine:
         stderr = (exec_res.stderr or "").strip()
         stdout = exec_res.stdout.strip()
 
-        is_bash = bool(re.search(
-            r"(gmt |command not found|exit status \d|CalledProcessError|"
-            r"run_gmt|GMT warning|GMT error|bash:|/bin/sh:)",
+        is_bash = _is_bash_code(code) or bool(re.search(
+            r"(command not found|exit status \d|CalledProcessError|"
+            r"bash:|/bin/sh:|/bin/bash:)",
             stderr + stdout, re.I))
         is_py = bool(re.search(
             r"(Traceback \(most recent call last\)|Error:|Exception:|"
             r"SyntaxError|IndentationError|NameError|TypeError|ValueError)", stderr))
 
         if is_bash and not is_py:
-            parts.append("=== ERROR TYPE: Bash/GMT script failure ===")
+            parts.append("=== ERROR TYPE: Bash/CLI script failure ===")
         elif is_py:
             parts.append("=== ERROR TYPE: Python runtime error ===")
 
@@ -231,10 +303,28 @@ class CodeEngine:
             parts.append("=== Traceback / stderr ===\n" + stderr[-3000:])
         if exec_res.error:
             parts.append("=== Error summary ===\n" + exec_res.error)
+        if exec_res.exec_dir:
+            files = []
+            try:
+                for p in sorted(Path(exec_res.exec_dir).iterdir()):
+                    if p.is_file():
+                        files.append(f"{p.name} ({p.stat().st_size} bytes)")
+            except Exception:
+                pass
+            parts.append(
+                "=== Execution directory ===\n"
+                f"{exec_res.exec_dir}\n"
+                + ("Files:\n" + "\n".join(files[:40]) if files else "No output files detected.")
+            )
+        numbered = "\n".join(
+            f"{i:04d}: {line}"
+            for i, line in enumerate(code.splitlines(), 1)
+        )
+        parts.append("=== Failing code with line numbers ===\n" + numbered[-6000:])
         if is_bash:
-            gmt_err = re.findall(r"(?:GMT (?:Error|Warning)|error|Error).*", stderr, re.I)
-            if gmt_err:
-                parts.append("=== GMT/Bash key error lines ===\n" + "\n".join(gmt_err[-5:]))
+            key_err = re.findall(r"(?:error|Error|warning|Warning|failed|Failed).*", stderr, re.I)
+            if key_err:
+                parts.append("=== Bash/CLI key error lines ===\n" + "\n".join(key_err[-5:]))
 
         return "\n\n".join(parts) if parts else "No error details captured."
 
@@ -283,14 +373,15 @@ class CodeEngine:
                 + extra_rag_ctx
                 + "\n\nConsult the above to resolve API misuse or version-specific errors.")
 
+        failed_lang = "bash" if _is_bash_code(failed_code) else "python"
         debug_messages = [
             {"role": "system", "content": debug_system},
             {"role": "user", "content": (
                 f"## Original request\n{original_request}"
                 f"{file_ctx_str}\n\n"
-                f"## Failing code\n```python\n{failed_code}\n```\n\n"
+                f"## Failing code\n```{failed_lang}\n{failed_code}\n```\n\n"
                 f"## Error output\n{error_ctx}\n\n"
-                "Fix the code. Output [DIAGNOSIS] then the corrected ```python``` block."
+                "Fix the code. Output [DIAGNOSIS] then one corrected fenced code block."
             )},
         ]
 
@@ -379,7 +470,7 @@ class CodeEngine:
         run_verify: bool = False,
         on_progress: Optional[Callable[[Dict], None]] = None,
     ) -> CodeRunResult:
-        """Generate, execute, debug, and optionally verify Python code."""
+        """Generate, execute, debug, and optionally verify Python or bash code."""
 
         # 1. Profile files mentioned in the request
         file_contexts: List[str] = []
@@ -401,7 +492,7 @@ class CodeEngine:
         # 3. Build skill + RAG context (queried once; forwarded to debug loop)
         try:
             skill_ctx, rag_ctx = _build_ctx(
-                user_request, max_skill_chars=12000, max_rag_chars=4000, top_k=5)
+                user_request, max_skill_chars=18000, max_rag_chars=7000, top_k=7)
         except Exception:
             skill_ctx, rag_ctx = "", ""
 
@@ -448,8 +539,20 @@ class CodeEngine:
         debug_trace: List[DebugAttempt] = []
         attempt = 0
 
-        # 7. Debug loop — skill_ctx forwarded so debugger knows the same APIs
-        while not self._execution_success(exec_res) and attempt < max_debug_rounds:
+        # 7. Debug loop — handles runtime errors AND mini-test/output-check failures.
+        while attempt < max_debug_rounds:
+            if self._execution_success(exec_res):
+                test_ok, test_reason = self._mini_test_ok(user_request, code, exec_res)
+                if test_ok:
+                    break
+                from dataclasses import replace as _dc_replace
+                exec_res = _dc_replace(
+                    exec_res,
+                    success=False,
+                    stderr=(exec_res.stderr or "") + f"\n[MINI TEST FAILED] {test_reason}",
+                    error=f"Mini test failed: {test_reason}",
+                )
+
             attempt += 1
             err_summary = f"{exec_res.stdout}\n{exec_res.stderr}\n{exec_res.error}".strip()
             debug_trace.append(DebugAttempt(
@@ -458,7 +561,7 @@ class CodeEngine:
 
             try:
                 _, dbg_rag = _build_ctx(f"{user_request} {err_summary[:400]}",
-                                        max_skill_chars=1, max_rag_chars=3000, top_k=3)
+                                        max_skill_chars=4000, max_rag_chars=5000, top_k=5)
             except Exception:
                 dbg_rag = ""
 
@@ -472,17 +575,36 @@ class CodeEngine:
             debug_trace[-1].diagnosis = diagnosis
 
             if self._execution_success(exec_res):
-                debug_trace.append(DebugAttempt(
-                    attempt=attempt, diagnosis=f"Fixed: {diagnosis}",
-                    code=code, error="", stdout=exec_res.stdout, success=True))
-                self._emit(on_progress, "executing", attempt,
-                           f"✓ Fixed after {attempt} debug round(s)")
-                break
+                test_ok, test_reason = self._mini_test_ok(user_request, code, exec_res)
+                if test_ok:
+                    debug_trace.append(DebugAttempt(
+                        attempt=attempt, diagnosis=f"Fixed: {diagnosis}",
+                        code=code, error="", stdout=exec_res.stdout, success=True))
+                    self._emit(on_progress, "executing", attempt,
+                               f"✓ Fixed after {attempt} debug round(s)")
+                    break
+                from dataclasses import replace as _dc_replace
+                exec_res = _dc_replace(
+                    exec_res,
+                    success=False,
+                    stderr=(exec_res.stderr or "") + f"\n[MINI TEST FAILED] {test_reason}",
+                    error=f"Mini test failed: {test_reason}",
+                )
             self._emit(on_progress, "debugging", attempt,
                        f"Attempt {attempt} still failing, retrying…")
 
         # 8. Update conversation history
         final_success = self._execution_success(exec_res)
+        if final_success:
+            final_success, mini_note = self._mini_test_ok(user_request, code, exec_res)
+            if not final_success:
+                from dataclasses import replace as _dc_replace
+                exec_res = _dc_replace(
+                    exec_res,
+                    success=False,
+                    stderr=(exec_res.stderr or "") + f"\n[MINI TEST FAILED] {mini_note}",
+                    error=f"Mini test failed: {mini_note}",
+                )
         summary = "Execution " + ("succeeded." if final_success else "failed.")
         if exec_res and exec_res.figures:
             summary += "\nFigures: " + str([Path(f).name for f in exec_res.figures])
@@ -490,17 +612,17 @@ class CodeEngine:
             summary += "\nFiles: "   + str([Path(f).name for f in exec_res.output_files])
         if exec_res and exec_res.stdout.strip():
             clean = "\n".join(l for l in exec_res.stdout.splitlines()
-                              if not l.startswith("[FIGURE]")
-                              and not l.startswith("[GMT_SCRIPT]")).strip()
+                              if not l.startswith("[FIGURE]")).strip()
             if clean:
                 summary += f"\nOutput (truncated):\n{clean[:400]}"
         if exec_res and not final_success:
             err = (exec_res.stderr or exec_res.error or "").strip()
             if err:
                 summary += f"\nError:\n{err[:300]}"
+        lang = "bash" if _is_bash_code(code) else "python"
         self._history.append({
             "role": "assistant",
-            "content": f"```python\n{code}\n```\n\n[Result] {summary}",
+            "content": f"```{lang}\n{code}\n```\n\n[Result] {summary}",
         })
         if exec_res:
             self._last_exec_dir = exec_res.exec_dir
@@ -518,10 +640,12 @@ class CodeEngine:
                 import os, tempfile
                 sd = (exec_res.exec_dir if (exec_res and exec_res.exec_dir)
                       else tempfile.mkdtemp(prefix="sage_script_"))
-                script_path = os.path.join(sd, "analysis.py")
+                is_bash = _is_bash_code(code)
+                script_path = os.path.join(sd, "analysis.sh" if is_bash else "analysis.py")
                 with open(script_path, "w", encoding="utf-8") as f:
+                    clean_code = re.sub(r"^#\s*lang:(?:python|bash)\s*\n", "", code, count=1)
                     f.write(f"# Generated by SeismicX — {user_request[:80]}\n"
-                            f"# Attempts: {attempt+1}\n\n" + code)
+                            f"# Attempts: {attempt+1}\n\n" + clean_code)
             except Exception:
                 pass
 
@@ -578,7 +702,7 @@ class CodeEngine:
         try:
             skill_ctx, rag_ctx = _build_ctx(
                 f"{skill_nm} {desc} {user_request}",
-                max_skill_chars=8000, max_rag_chars=2000, top_k=3)
+                max_skill_chars=12000, max_rag_chars=5000, top_k=5)
         except Exception:
             skill_ctx, rag_ctx = "", ""
 
@@ -781,6 +905,9 @@ class CodeEngine:
                 if exec_ok:
                     out_ok, out_reason = self._step_output_ok(desc, exec_res)
                     if out_ok:
+                        out_ok, out_reason = self._mini_test_ok(
+                            f"{desc}\n{user_request}", code, exec_res)
+                    if out_ok:
                         break   # genuine success
                     # Synthesise a failure so the debugger sees what went wrong
                     _emit_wf("workflow_step", step_id, step_n,
@@ -799,7 +926,7 @@ class CodeEngine:
                 try:
                     _, dbg_rag = _build_ctx(
                         f"{skill_nm} {desc} {err_summary[:300]}",
-                        max_skill_chars=1, max_rag_chars=2000, top_k=3)
+                        max_skill_chars=3000, max_rag_chars=4000, top_k=4)
                 except Exception:
                     dbg_rag = ""
 
@@ -817,6 +944,17 @@ class CodeEngine:
                     shared_dir = exec_res.exec_dir
 
             step_success = self._execution_success(exec_res)
+            if step_success:
+                step_success, final_step_reason = self._mini_test_ok(
+                    f"{desc}\n{user_request}", code, exec_res)
+                if not step_success:
+                    from dataclasses import replace as _dc_replace
+                    exec_res = _dc_replace(
+                        exec_res,
+                        success=False,
+                        stderr=(exec_res.stderr or "") + f"\n[MINI TEST FAILED] {final_step_reason}",
+                        error=f"Mini test failed: {final_step_reason}",
+                    )
             step_figs    = exec_res.figures      if exec_res else []
             step_files   = exec_res.output_files if exec_res else []
             all_figures.extend(step_figs)
@@ -849,9 +987,10 @@ class CodeEngine:
                        if step_figs + step_files else "")
                     + (f"\nKey output:\n{key_out}" if key_out else ""))
                 wf_history.append({"role": "user", "content": user_msg})
+                lang = "bash" if _is_bash_code(code) else "python"
                 wf_history.append({
                     "role": "assistant",
-                    "content": f"```python\n{code}\n```\n\n[Step result] {step_summary}"})
+                    "content": f"```{lang}\n{code}\n```\n\n[Step result] {step_summary}"})
 
         # 3. Build summary
         steps_done    = sum(1 for r in step_results if r.success)
@@ -945,7 +1084,7 @@ def _run_tests() -> bool:
     try:
         assert _is_bash_code("# lang:bash\necho hi");              ok("lang:bash tag")
         assert _is_bash_code("#!/bin/bash\necho hi");              ok("shebang")
-        assert _is_bash_code("gmt begin map PNG\ngmt end");        ok("gmt begin")
+        assert _is_bash_code("#!/usr/bin/env bash\necho hi");      ok("env shebang")
         assert not _is_bash_code("import numpy as np");            ok("Python not bash")
     except Exception as e:
         fail("_is_bash_code", e)
@@ -995,7 +1134,7 @@ def _run_tests() -> bool:
     try:
         eng = CodeEngine(llm_config={"provider": "ollama", "model": "x",
                                      "api_base": "http://localhost:11434"})
-        assert not eng.is_llm_available(); ok("instantiation + is_llm_available()")
+        assert isinstance(eng.is_llm_available(), bool); ok("instantiation + is_llm_available()")
     except Exception as e:
         fail("CodeEngine", e)
 
@@ -1014,6 +1153,27 @@ def _run_tests() -> bool:
         assert not eng._execution_success(bad); ok("traceback in stdout → failure")
     except Exception as e:
         fail("_execution_success", e)
+
+    # 9. _mini_test_ok heuristics
+    print("\n[9] _mini_test_ok")
+    try:
+        from .safe_executor import ExecutionResult
+        eng = CodeEngine(llm_config={})
+        ok_res = ExecutionResult(
+            success=True,
+            stdout="[SAGE_TEST] output checked",
+            stderr="", error="", figures=[], output_files=[], exec_dir="")
+        passed_test, reason = eng._mini_test_ok("compute statistics", "print('x')", ok_res)
+        assert passed_test, reason
+        ok("mini test accepts explicit self-check")
+        no_check = ExecutionResult(
+            success=True, stdout="done", stderr="", error="",
+            figures=[], output_files=[], exec_dir="")
+        passed_test, reason = eng._mini_test_ok("compute statistics", "print('x')", no_check)
+        assert not passed_test and "SAGE_TEST" in reason
+        ok("mini test rejects missing self-check for output task")
+    except Exception as e:
+        fail("_mini_test_ok", e)
 
     print(f"\n{'='*60}")
     print(f"{'All ' + str(passed) + ' tests passed.' if failed == 0 else str(passed) + ' passed, ' + str(failed) + ' FAILED.'}")

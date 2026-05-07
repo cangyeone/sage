@@ -351,6 +351,59 @@ def evidence_geo_agent():
         "ts":       _time.time(),
     }
 
+    def _prefetch_web_literature(data, cfg, progress_cb):
+        """Search scholarly web sources and write a seed literature note into the workspace."""
+        if not cfg.allow_web_search:
+            return ""
+        try:
+            from sage_agents.evidence_driven_geo_agent import WebSearchTool
+            query_bits = [question]
+            if study_area:
+                query_bits.append(study_area)
+            query_bits.append("geology geophysics seismicity")
+            query = " ".join(query_bits)
+            progress_cb({"phase": "web_search", "message": f"Searching online literature: {query[:120]}"})
+            tool = WebSearchTool(cfg)
+            result = tool.scholar_search(query=query, max_results=int(data.get("web_max_results", 8)))
+            if result.get("warning"):
+                progress_cb({"phase": "web_search", "message": result["warning"]})
+            papers = result.get("papers", [])
+            if not papers:
+                msg = result.get("warning") or result.get("error") or "No online literature found."
+                progress_cb({"phase": "warning", "message": msg})
+                return ""
+
+            ws = Path(cfg.workspace_root).expanduser()
+            seed_dir = ws / "literature"
+            seed_dir.mkdir(parents=True, exist_ok=True)
+            seed = seed_dir / "web_literature_seed.md"
+            lines = [
+                "# Online Literature Seed",
+                "",
+                f"Query: {query}",
+                "",
+                "These records were fetched before the interpretation loop so the agent can treat online literature as traceable evidence.",
+                "",
+            ]
+            for i, p in enumerate(papers, 1):
+                authors = ", ".join(p.get("authors", []) or [])
+                lines.extend([
+                    f"## [{i}] {p.get('title', 'Untitled')}",
+                    f"- Year: {p.get('year') or ''}",
+                    f"- Authors: {authors}",
+                    f"- DOI: {p.get('doi') or ''}",
+                    f"- URL: {p.get('url') or ''}",
+                    "",
+                    p.get("abstract") or "(No abstract returned.)",
+                    "",
+                ])
+            seed.write_text("\n".join(lines), encoding="utf-8")
+            progress_cb({"phase": "web_search", "message": f"Saved {len(papers)} online literature records to {seed}"})
+            return str(seed)
+        except Exception as exc:
+            progress_cb({"phase": "warning", "message": f"Online literature prefetch failed: {str(exc)[:160]}"})
+            return ""
+
     def _run():
         try:
             import sys as _sys
@@ -371,6 +424,8 @@ def evidence_geo_agent():
                 use_multimodal=bool(data.get("use_multimodal", False)),
                 use_rag=bool(data.get("use_rag", True)),
                 use_local_files=bool(data.get("use_local_files", True)),
+                produce_latex=bool(data.get("produce_latex", True)),
+                use_code_engine=bool(data.get("use_code_engine", True)),
                 max_iterations=int(data.get("max_iterations", 3)),
                 max_tool_calls_per_iter=int(data.get("max_tool_calls_per_iter", 8)),
                 rag_top_k=int(data.get("rag_top_k", 8)),
@@ -384,6 +439,10 @@ def evidence_geo_agent():
                 _geo_agent_jobs[job_id]["progress"].append(
                     {"phase": phase, "message": msg, "ts": _time.time()}
                 )
+
+            seed_path = _prefetch_web_literature(data, cfg, _prog)
+            if seed_path and not cfg.literature_root:
+                cfg.literature_root = str(Path(seed_path).parent)
 
             agent  = EvidenceDrivenGeoAgent(config=cfg, llm_cfg=get_llm_config())
             result = agent.run(question, study_area, on_progress=_prog)
@@ -675,9 +734,13 @@ def chat_rag():
         from helpers import get_skill_loader
         sl = get_skill_loader()
         if sl is not None:
-            skill_ctx = sl.build_skill_context(user_msg, max_chars=3000, top_k=2)
+            skill_ctx, skill_rag_ctx = sl.build_skill_context_with_rag(
+                user_msg, max_skill_chars=3000, max_rag_chars=2500, top_k=2
+            )
             if skill_ctx:
                 context_parts.append("===== 可用技能与函数示例 =====\n" + skill_ctx)
+            if skill_rag_ctx:
+                context_parts.append("===== 技能绑定知识库 =====\n" + skill_rag_ctx)
     except Exception:
         pass
 
@@ -805,9 +868,13 @@ def _build_rag_messages(data: dict):
         from helpers import get_skill_loader
         sl = get_skill_loader()
         if sl is not None:
-            skill_ctx = sl.build_skill_context(user_msg, max_chars=3000, top_k=2)
+            skill_ctx, skill_rag_ctx = sl.build_skill_context_with_rag(
+                user_msg, max_skill_chars=3000, max_rag_chars=2500, top_k=2
+            )
             if skill_ctx:
                 context_parts.append("===== 可用技能与函数示例 =====\n" + skill_ctx)
+            if skill_rag_ctx:
+                context_parts.append("===== 技能绑定知识库 =====\n" + skill_rag_ctx)
     except Exception:
         pass
 
@@ -887,6 +954,7 @@ def chat_rag_stream():
     if not data.get("message", "").strip():
         return jsonify({"ok": False, "error": "Empty message"}), 400
 
+    images = data.get("images") or []
     messages, sources, llm_cfg = _build_rag_messages(data)
 
     if not llm_cfg.get("api_base"):
@@ -906,7 +974,8 @@ def chat_rag_stream():
         yield f"data: {_json.dumps({'type':'sources','sources':sources})}\n\n"
         try:
             from helpers import llm_stream
-            for chunk in llm_stream(messages, llm_cfg, max_tokens=2000):
+            for chunk in llm_stream(messages, llm_cfg, max_tokens=2000,
+                                    images=images if images else None):
                 yield f"data: {_json.dumps({'type':'chunk','text':chunk})}\n\n"
         except Exception as exc:
             yield f"data: {_json.dumps({'type':'error','message':str(exc)})}\n\n"
@@ -931,6 +1000,7 @@ def chat_stream():
     if not user_msg:
         return jsonify({"ok": False, "error": "Empty message"}), 400
 
+    images = data.get("images") or []
     llm_cfg = get_llm_config()
 
     enable_think = bool(data.get("enable_think", False))
@@ -975,7 +1045,8 @@ def chat_stream():
             return
         try:
             from helpers import llm_stream
-            for chunk in llm_stream(messages, llm_cfg, max_tokens=2000):
+            for chunk in llm_stream(messages, llm_cfg, max_tokens=2000,
+                                    images=images if images else None):
                 yield f"data: {_json.dumps({'type':'chunk','text':chunk})}\n\n"
         except Exception as exc:
             yield f"data: {_json.dumps({'type':'error','message':str(exc)})}\n\n"

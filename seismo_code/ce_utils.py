@@ -173,7 +173,6 @@ def _is_bash_code(code: str) -> bool:
         first.startswith("#!/bin/bash")
         or first.startswith("#!/usr/bin/env bash")
         or first.startswith("#!/bin/sh")
-        or bool(re.match(r"^gmt\s+begin\b", stripped, re.I))
     )
 
 
@@ -364,22 +363,12 @@ def _pre_sanitize(code: str) -> str:
     code = re.sub(r"^\s*from\s+seismo_code\.toolkit\s+import\s+.*$",
                   "pass  # toolkit pre-injected", code, flags=re.MULTILINE)
 
-    if re.search(r"subprocess\.\w+\(\s*\[.{0,20}['\"]gmt['\"]", code):
-        code = re.sub(
-            r"subprocess\.\w+\(\s*\[.{0,20}['\"]gmt['\"][^\n]*",
-            "raise RuntimeError('SAGE_HINT: use run_gmt(script) not subprocess for GMT')",
-            code,
-        )
-
-    if re.search(r"gmt\s+grdimage", code) and re.search(r"gmt\s+coast.*-G\w", code):
-        code = re.sub(r"(gmt\s+coast\b[^\n]*?)\s+-G[a-zA-Z/0-9@]+", r"\1", code)
-
     if re.search(r"\$\{[A-Za-z_]+\[", code) or re.search(r"<<\s*EOF", code):
         hint = ("raise RuntimeError('SAGE_HINT: bash array/EOF syntax inside Python "
                 "string — write data with np.savetxt() then use ${{bash_var}} in f-string')")
         code = hint + "\n" + code
 
-    if "gmt" in code and re.search(r"f(['\"]{{3}})", code):
+    if re.search(r"f(['\"]{{3}})", code):
         code = re.sub(r"awk\s+(['\"])\{print\s+([^}]+)\}(['\"])",
                       r"awk \1{{print \2}}\3", code)
         code = re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", r"${{\1}}", code)

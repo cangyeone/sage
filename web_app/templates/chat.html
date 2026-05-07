@@ -310,6 +310,9 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
           <span class="pill-dot"></span>
           <span id="thinkPillLabel">🧠 <span data-i18n="think_off">思考：关</span></span>
         </div>
+        <a class="qbtn" id="llmStatusPill" href="/llm-settings" title="当前 LLM 后端">
+          <i class="bi bi-cpu"></i> <span id="llmStatusText">LLM</span>
+        </a>
         <button class="qbtn" onclick="clearChat()">🗑 <span data-i18n="qbtn_clear">清空</span></button>
       </div>
       <div id="imgPreviews" class="img-preview-strip" style="display:none;"></div>
@@ -323,7 +326,7 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
           </button>
           <textarea id="userInput" rows="1" data-i18n-placeholder="input_placeholder" placeholder="输入问题或指令…" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
         </div>
-        <button class="send-btn" onclick="sendMessage()"><i class="bi bi-send-fill"></i></button>
+        <button class="send-btn" id="sendBtn" onclick="sendMessage()"><i class="bi bi-send-fill"></i></button>
       </div>
     </div>
   </div>
@@ -551,6 +554,7 @@ async function uploadFiles(files) {
 
 // ── Image upload / paste (VL models) ──────────────────────────────────────
 let pendingImages = [];   // [{id, b64, mime, objectUrl}]
+let isSending = false;
 
 function triggerImageUpload() { document.getElementById('imageFileInput').click(); }
 
@@ -855,6 +859,30 @@ async function updateWsStatus(path) {
   } catch { el.textContent = '无法访问'; }
 }
 
+async function loadLlmStatus() {
+  const el = document.getElementById('llmStatusText');
+  if (!el) return;
+  try {
+    const r = await fetch('/api/llm/config');
+    const d = await r.json();
+    const cfg = d.config || {};
+    const labels = {
+      ollama: 'Ollama',
+      openai: 'OpenAI',
+      deepseek: 'DeepSeek',
+      siliconflow: 'SiliconFlow',
+      moonshot: 'Moonshot',
+      dashscope: 'DashScope',
+      zhipu: 'Zhipu',
+      custom: 'Custom',
+    };
+    const provider = labels[cfg.provider] || cfg.provider || 'LLM';
+    el.textContent = cfg.model ? `${provider} · ${cfg.model}` : `${provider} · ${currentLang === 'zh' ? '未配置' : 'Not set'}`;
+  } catch(e) {
+    el.textContent = currentLang === 'zh' ? 'LLM 未连接' : 'LLM offline';
+  }
+}
+
 // ── Typing indicator ───────────────────────────────────────────────────────
 function showTyping(text = null) {
   const typingText = document.getElementById('typingText');
@@ -909,6 +937,7 @@ async function classifyIntent(text) {
 
 // ── Send message ───────────────────────────────────────────────────────────
 async function sendMessage() {
+  if (isSending) return;
   const input = document.getElementById('userInput');
   const text  = input.value.trim();
   if (!text && pendingImages.length === 0) return;
@@ -917,6 +946,9 @@ async function sendMessage() {
     input.value = '';
   }
   const msgText = text || (currentLang === 'zh' ? '请描述这张图片。' : 'Please describe this image.');
+  const sendBtn = document.getElementById('sendBtn');
+  isSending = true;
+  if (sendBtn) sendBtn.disabled = true;
 
   // Capture and clear pending images before rendering
   const imgs       = pendingImages.map(x => x.b64);
@@ -967,6 +999,9 @@ async function sendMessage() {
   } catch(e) {
     hideTyping();
     addMsg('assistant', `✗ Request failed: ${e.message}`);
+  } finally {
+    isSending = false;
+    if (sendBtn) sendBtn.disabled = false;
   }
 }
 
@@ -1539,6 +1574,14 @@ async function streamToMsg(url, body) {
       headers: {'Content-Type': 'application/json'},
       body:    JSON.stringify(body),
     });
+    if (!resp.ok || !resp.body) {
+      let msg = `HTTP ${resp.status}`;
+      try {
+        const err = await resp.json();
+        msg = err.error || msg;
+      } catch(e) {}
+      throw new Error(msg);
+    }
 
     const reader  = resp.body.getReader();
     const decoder = new TextDecoder();
@@ -1650,12 +1693,11 @@ async function sendRag(text) {
   const mode = isPaperMode ? 'paper_read' : 'rag';
 
   hideTyping();
-  showTyping(currentLang === 'zh' ? '🧠 AI 正在思考…' : '🧠 Thinking…');
 
   let answer = '', sources = [];
   try {
-    ({answer, sources} = await submitAndPoll({
-      type: 'rag', message: text, session_id: SESSION_ID, mode,
+    ({answer, sources} = await streamToMsg('/api/chat/rag/stream', {
+      message: text, session_id: SESSION_ID, mode,
       history: chatHistory.slice(-8), workspace: wsEnabled ? wsPath : '',
       enable_think: thinkEnabled,
     }));
@@ -1665,7 +1707,6 @@ async function sendRag(text) {
     return;
   }
   hideTyping();
-  addMsg('assistant', answer || '（无回复）', sources);
 
   chatHistory.push({role:'assistant', content: answer || '（无回复）'});
   _persistHistory();
@@ -1716,21 +1757,21 @@ async function sendChainRagCode(originalText) {
   lastIntentWasCode  = false;
   lastIntentWasPaper = false;
 
-  // ── Phase 1：RAG — 提取论文方法 (background job) ─────────────────────────
+  // ── Phase 1：RAG — 提取论文方法 ─────────────────────────────────────────
   showTyping(currentLang === 'zh' ? '📄 提取论文方法…' : '📄 Extracting paper methods…');
 
   let ragAnswer  = '';
   let ragSources = [];
   try {
-    const {answer: _ra, sources: _rs} = await submitAndPoll({
-      type: 'rag', message: originalText, session_id: SESSION_ID,
+    hideTyping();
+    const {answer: _ra, sources: _rs} = await streamToMsg('/api/chat/rag/stream', {
+      message: originalText, session_id: SESSION_ID,
       mode: 'paper_read', history: chatHistory.slice(-8),
       workspace: wsEnabled ? wsPath : '', enable_think: thinkEnabled,
     });
     ragAnswer  = _ra || '';
     ragSources = _rs || [];
     hideTyping();
-    if (ragAnswer) addMsg('assistant', ragAnswer, ragSources);
   } catch(e) {
     hideTyping();
     // RAG 失败不致命，直接用原始文本去 code
@@ -1784,24 +1825,23 @@ async function sendChainRagCode(originalText) {
 }
 
 async function sendNormal(text, images=[]) {
-  showTyping(currentLang === 'zh' ? '🧠 AI 正在思考…' : '🧠 Thinking…');
+  hideTyping();
 
   let answer = '';
   try {
     const body = {
-      type: 'plain', message: text,
+      message: text,
       history: chatHistory.slice(-8), workspace: wsEnabled ? wsPath : '',
       enable_think: thinkEnabled,
     };
     if (images && images.length > 0) body.images = images;
-    ({answer} = await submitAndPoll(body));
+    ({answer} = await streamToMsg('/api/chat/stream', body));
   } catch(e) {
     hideTyping();
     addMsg('assistant', `✗ ${e.message}`);
     return;
   }
   hideTyping();
-  addMsg('assistant', answer || '（无回复）');
 
   chatHistory.push({role:'assistant', content: answer || '（无回复）'});
   _persistHistory();
@@ -2020,6 +2060,7 @@ document.addEventListener('DOMContentLoaded', _resumePendingJob);
 // Init
 loadKbStatus();
 loadWorkspace();
+loadLlmStatus();
 document.getElementById('userInput').focus();
 </script>
 </body>

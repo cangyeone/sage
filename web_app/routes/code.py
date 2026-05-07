@@ -66,7 +66,7 @@ def chat_code():
             result = engine.run(
                 user_msg,
                 timeout=180,
-                max_debug_rounds=4,
+                max_debug_rounds=6,
                 run_verify=False,
                 on_progress=_on_progress,
             )
@@ -155,7 +155,7 @@ def chat_workflow():
                     workflow_name=workflow_name,
                     user_request=user_msg,
                     data_hint=data_hint,
-                    max_debug_rounds=3,
+                    max_debug_rounds=5,
                     timeout=180,
                     skip_on_failure=skip_on_fail,
                     on_progress=_on_progress,

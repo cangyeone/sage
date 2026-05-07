@@ -24,7 +24,43 @@ def get_llm_config() -> dict:
     """统一获取 LLM 配置（每次重新读取以反映最新设置）。"""
     try:
         from config_manager import LLMConfigManager
-        return LLMConfigManager().get_llm_config()
+        manager = LLMConfigManager()
+        raw = manager.config
+        active = raw.get("active_backend")
+
+        if active == "online" and raw.get("online"):
+            cfg = raw.get("online", {})
+            return {
+                "provider": cfg.get("provider", "custom"),
+                "model": cfg.get("model", ""),
+                "api_base": cfg.get("api_base", ""),
+                "api_key": cfg.get("api_key", ""),
+                "temperature": raw.get("llm", {}).get("temperature", 0.6),
+                "max_tokens": raw.get("llm", {}).get("max_tokens", 2000),
+            }
+        if active == "vllm" and raw.get("vllm"):
+            cfg = raw.get("vllm", {})
+            port = cfg.get("port", 8001)
+            return {
+                "provider": "openai",
+                "model": cfg.get("model", ""),
+                "api_base": cfg.get("api_base") or f"http://localhost:{port}/v1",
+                "api_key": cfg.get("api_key", ""),
+                "temperature": raw.get("llm", {}).get("temperature", 0.6),
+                "max_tokens": raw.get("llm", {}).get("max_tokens", 2000),
+            }
+        if active == "ollama" and raw.get("ollama"):
+            cfg = raw.get("ollama", {})
+            return {
+                "provider": "ollama",
+                "model": cfg.get("model", ""),
+                "api_base": cfg.get("api_base", "http://localhost:11434"),
+                "api_key": "",
+                "temperature": raw.get("llm", {}).get("temperature", 0.6),
+                "max_tokens": raw.get("llm", {}).get("max_tokens", 2000),
+            }
+
+        return manager.get_llm_config()
     except Exception:
         return {}
 
@@ -73,10 +109,11 @@ def llm_call(messages: list, llm_cfg: dict, max_tokens: int = 2000,
     import urllib.request
     import json as _json
 
-    provider = llm_cfg.get("provider", "ollama")
+    provider = (llm_cfg.get("provider", "ollama") or "ollama").lower()
     model    = llm_cfg.get("model", "")
     api_base = llm_cfg.get("api_base", "")
     api_key  = llm_cfg.get("api_key", "")
+    temperature = llm_cfg.get("temperature", 0.6)
 
     if not api_base:
         raise ValueError("未配置 LLM 后端地址，请在 LLM 设置页面中选择模型")
@@ -88,11 +125,11 @@ def llm_call(messages: list, llm_cfg: dict, max_tokens: int = 2000,
     if provider == "ollama":
         endpoint = api_base.rstrip("/") + "/api/chat"
         payload  = {"model": model, "messages": msgs, "stream": False,
-                    "options": {"temperature": 0.6, "num_predict": max_tokens}}
+                    "options": {"temperature": temperature, "num_predict": max_tokens}}
     else:
         endpoint = api_base.rstrip("/") + "/chat/completions"
         payload  = {"model": model, "messages": msgs,
-                    "temperature": 0.6, "max_tokens": max_tokens}
+                    "temperature": temperature, "max_tokens": max_tokens}
 
     data    = _json.dumps(payload).encode()
     headers = {"Content-Type": "application/json",
@@ -116,10 +153,11 @@ def llm_stream(messages: list, llm_cfg: dict, max_tokens: int = 2000,
     import urllib.request
     import json as _json
 
-    provider = llm_cfg.get("provider", "ollama")
+    provider = (llm_cfg.get("provider", "ollama") or "ollama").lower()
     model    = llm_cfg.get("model", "")
     api_base = llm_cfg.get("api_base", "")
     api_key  = llm_cfg.get("api_key", "")
+    temperature = llm_cfg.get("temperature", 0.6)
 
     if not api_base:
         raise ValueError("未配置 LLM 后端地址")
@@ -131,11 +169,11 @@ def llm_stream(messages: list, llm_cfg: dict, max_tokens: int = 2000,
     if provider == "ollama":
         url     = api_base.rstrip("/") + "/api/chat"
         payload = {"model": model, "messages": msgs, "stream": True,
-                   "options": {"temperature": 0.6, "num_predict": max_tokens}}
+                   "options": {"temperature": temperature, "num_predict": max_tokens}}
     else:
         url     = api_base.rstrip("/") + "/chat/completions"
         payload = {"model": model, "messages": msgs, "stream": True,
-                   "temperature": 0.6, "max_tokens": max_tokens}
+                   "temperature": temperature, "max_tokens": max_tokens}
 
     data    = _json.dumps(payload).encode()
     headers = {"Content-Type": "application/json",
@@ -143,6 +181,7 @@ def llm_stream(messages: list, llm_cfg: dict, max_tokens: int = 2000,
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
 
     with urllib.request.urlopen(req, timeout=120) as resp:
+        in_reasoning = False
         for raw_line in resp:
             line = raw_line.decode("utf-8", errors="replace").strip()
             if not line:
@@ -151,22 +190,51 @@ def llm_stream(messages: list, llm_cfg: dict, max_tokens: int = 2000,
             if line.startswith("data: "):
                 line = line[6:]
                 if line == "[DONE]":
+                    if in_reasoning:
+                        yield "</think>"
                     return
                 try:
-                    obj   = _json.loads(line)
-                    chunk = obj.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                    obj = _json.loads(line)
+                    delta = obj.get("choices", [{}])[0].get("delta", {})
+                    reasoning = (
+                        delta.get("reasoning_content")
+                        or delta.get("reasoning")
+                        or delta.get("reasoning_text")
+                        or ""
+                    )
+                    chunk = delta.get("content", "")
+                    if reasoning:
+                        if not in_reasoning:
+                            yield "<think>"
+                            in_reasoning = True
+                        yield reasoning
                     if chunk:
+                        if in_reasoning:
+                            yield "</think>"
+                            in_reasoning = False
                         yield chunk
                 except Exception:
                     continue
             else:
                 # Ollama plain NDJSON (no "data: " prefix)
                 try:
-                    obj   = _json.loads(line)
-                    chunk = obj.get("message", {}).get("content", "")
+                    obj = _json.loads(line)
+                    msg = obj.get("message", {})
+                    reasoning = msg.get("thinking", "") or msg.get("reasoning", "")
+                    chunk = msg.get("content", "")
+                    if reasoning:
+                        if not in_reasoning:
+                            yield "<think>"
+                            in_reasoning = True
+                        yield reasoning
                     if chunk:
+                        if in_reasoning:
+                            yield "</think>"
+                            in_reasoning = False
                         yield chunk
                     if obj.get("done"):
+                        if in_reasoning:
+                            yield "</think>"
                         return
                 except Exception:
                     continue

@@ -293,7 +293,7 @@ body{background:var(--bg);height:100vh;display:flex;flex-direction:column;overfl
       </div>
       <div id="webSearchHint" style="display:none;font-size:.73rem;color:#e65100;margin-top:.3rem;
            background:#fff8e1;border-radius:6px;padding:.2rem .5rem;line-height:1.4;" data-i18n="web_hint">
-        ⚠ 仅在本地数据、RAG、文献库均不足时才使用 Web 检索
+        将先联网检索文献摘要，再结合本地数据自主编程分析和推理
       </div>
     </div>
 
@@ -411,6 +411,10 @@ body{background:var(--bg);height:100vh;display:flex;flex-direction:column;overfl
           <i class="bi bi-image"></i> <span data-i18n="tab_figures">图像</span>
           <span class="badge" id="figCount">0</span>
         </button>
+        <button class="rtab" data-tab="paper" onclick="switchTab('paper')">
+          <i class="bi bi-filetype-tex"></i> <span>论文</span>
+          <span class="badge" id="paperCount">0</span>
+        </button>
         <button class="rtab" data-tab="toollog" onclick="switchTab('toollog')">
           <i class="bi bi-terminal"></i> <span data-i18n="tab_toollog">工具日志</span>
           <span class="badge" id="tlCount">0</span>
@@ -432,6 +436,9 @@ body{background:var(--bg);height:100vh;display:flex;flex-direction:column;overfl
       </div>
       <div id="tab_figures" class="tab-pane">
         <div id="figuresContent" class="fig-grid"></div>
+      </div>
+      <div id="tab_paper" class="tab-pane">
+        <div id="paperContent" class="report-md"></div>
       </div>
       <div id="tab_toollog" class="tab-pane">
         <div id="toollogContent"></div>
@@ -635,9 +642,12 @@ async function runAgent() {
     allow_python:         document.getElementById('togPython').checked,
     allow_shell:          false,
     allow_web_search:     document.getElementById('togWebSearch').checked,
+    web_max_results:      8,
     use_multimodal:       document.getElementById('togMultimodal').checked,
     use_rag:              document.getElementById('togRag').checked,
     use_local_files:      document.getElementById('togLocalFiles').checked,
+    produce_latex:        true,
+    use_code_engine:      true,
     session_id:           SESSION_WS,
     uploaded_files:       uploadedFiles.map(f => f.path),
   };
@@ -751,6 +761,7 @@ function renderResults(res) {
   document.getElementById('hypCount').textContent = (res.hypotheses       || []).length;
   document.getElementById('figCount').textContent = (res.generated_figures|| []).length;
   document.getElementById('tlCount').textContent  = (res.tool_log         || []).length;
+  document.getElementById('paperCount').textContent = res.latex_path || res.paper_html ? 1 : 0;
 
   // Show tabs
   document.getElementById('resultTabs').style.display = 'flex';
@@ -768,11 +779,40 @@ function renderResults(res) {
   // 4. Figures
   renderFigures(res.generated_figures || [], res._figure_data || {});
 
-  // 5. Tool log
+  // 5. Paper artifacts
+  renderPaper(res);
+
+  // 6. Tool log
   renderToolLog(res.tool_log || []);
 
-  // 6. Missing info
+  // 7. Missing info
   renderMissing(res.missing_information || []);
+}
+
+function renderPaper(res) {
+  const el = document.getElementById('paperContent');
+  const links = [];
+  if (res.latex_path) {
+    links.push(`<div><strong>LaTeX:</strong> <code>${escHtml(res.latex_path)}</code></div>`);
+  }
+  if (res.paper_html) {
+    links.push(`<div><strong>HTML preview:</strong> <code>${escHtml(res.paper_html)}</code></div>`);
+  }
+  const pdfArtifact = (res.artifacts || []).find(a => a.artifact_type === 'paper_pdf');
+  if (pdfArtifact && pdfArtifact.path) {
+    links.push(`<div><strong>PDF:</strong> <code>${escHtml(pdfArtifact.path)}</code></div>`);
+  }
+  const questions = (res.scientific_questions || []).map(q => `<li>${escHtml(q)}</li>`).join('');
+  const stats = (res.statistical_results || []).map(a =>
+    `<details><summary>${escHtml(a.title || a.artifact_id)}</summary><pre>${escHtml(a.content || '')}</pre></details>`
+  ).join('');
+  const tex = res.latex_paper ? `<h3>LaTeX Draft</h3><pre>${escHtml(res.latex_paper)}</pre>` : '';
+  el.innerHTML = `
+    ${links.length ? `<div style="margin-bottom:.8rem">${links.join('')}</div>` : '<div style="color:#aaa">暂无论文产物</div>'}
+    ${questions ? `<h3>挖掘的科学问题</h3><ul>${questions}</ul>` : ''}
+    ${stats ? `<h3>统计结果</h3>${stats}` : ''}
+    ${tex}
+  `;
 }
 
 function convLabel(key) {
@@ -933,7 +973,7 @@ const I18N_GEO = {
     sb_caps:'能力开关',
     tog_python:'🐍 Python 代码执行', tog_rag:'📚 RAG 知识库',
     tog_local:'📁 本地文件访问', tog_multimodal:'🖼 多模态图像分析', tog_web:'🌐 Web 文献检索',
-    web_hint:'⚠ 仅在本地数据、RAG、文献库均不足时才使用 Web 检索',
+    web_hint:'将先联网检索文献摘要，再结合本地数据自主编程分析和推理',
     sb_upload:'上传研究文件',
     uz_text:'拖拽或点击上传<br><small style="font-size:.7rem;color:#bbb">PDF · PNG/JPG · CSV</small>',
     sb_search:'即时文献检索', ph_websearch:'搜索关键词…',
@@ -942,7 +982,7 @@ const I18N_GEO = {
     lbl_study_area:'研究区', ph_study_area:'如：威远，四川盆地，中国西南',
     btn_run:'运行解译 Agent', btn_run_again:'重新运行', btn_running:'运行中…',
     es_title:'证据驱动地学解译 Agent',
-    es_desc:'输入科学问题，上传相关数据文件或 PDF，点击「运行」启动自主解译。<br>Agent 将依次搜索数据 → 提取证据 → 生成假设 → 验证 → 撰写报告。',
+    es_desc:'输入科学问题，上传相关数据文件或 PDF，点击「运行」启动自主解译。<br>Agent 将自动探索数据 → 编程分析 → 查找文献 → 提取证据 → 生成假设 → 撰写最终报告。',
     ex_weiyuan:'威远诱发地震示例', ex_generic:'通用地球物理问题示例',
     tab_report:'解译报告', tab_evidence:'证据表', tab_hypotheses:'假设',
     tab_figures:'图像', tab_toollog:'工具日志', tab_missing:'缺失信息',
@@ -973,7 +1013,7 @@ const I18N_GEO = {
     sb_caps:'Capabilities',
     tog_python:'🐍 Python Execution', tog_rag:'📚 RAG Knowledge Base',
     tog_local:'📁 Local File Access', tog_multimodal:'🖼 Multimodal Analysis', tog_web:'🌐 Web Literature Search',
-    web_hint:'⚠ Use web search only when local data, RAG, and literature library are all insufficient',
+    web_hint:'Search online literature first, then combine it with autonomous data coding and reasoning',
     sb_upload:'Upload Research Files',
     uz_text:'Drag & drop or click to upload<br><small style="font-size:.7rem;color:#bbb">PDF · PNG/JPG · CSV</small>',
     sb_search:'Instant Literature Search', ph_websearch:'Search keywords…',
@@ -982,7 +1022,7 @@ const I18N_GEO = {
     lbl_study_area:'Study Area', ph_study_area:'e.g. Weiyuan, Sichuan Basin, SW China',
     btn_run:'Run Interpretation Agent', btn_run_again:'Re-run', btn_running:'Running…',
     es_title:'Evidence-Driven Geoscience Interpretation Agent',
-    es_desc:'Enter a scientific question, upload data files or PDFs, then click Run to start autonomous interpretation.<br>The agent will search data → extract evidence → generate hypotheses → validate → write a report.',
+    es_desc:'Enter a scientific question, upload data files or PDFs, then click Run to start autonomous interpretation.<br>The agent will explore data → code analyses → search literature → extract evidence → generate hypotheses → write the final report.',
     ex_weiyuan:'Weiyuan induced seismicity example', ex_generic:'Generic geophysics example',
     tab_report:'Report', tab_evidence:'Evidence', tab_hypotheses:'Hypotheses',
     tab_figures:'Figures', tab_toollog:'Tool Log', tab_missing:'Missing Info',

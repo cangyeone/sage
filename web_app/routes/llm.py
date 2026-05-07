@@ -10,22 +10,71 @@ from state import _pull_status
 
 bp = Blueprint('llm', __name__)
 
+try:
+    from backend_manager import ONLINE_PROVIDERS
+except Exception:
+    ONLINE_PROVIDERS = {
+        "openai": {"display": "OpenAI", "api_base": "https://api.openai.com/v1", "default_model": "gpt-4o-mini", "need_key": True},
+        "deepseek": {"display": "DeepSeek", "api_base": "https://api.deepseek.com/v1", "default_model": "deepseek-v4-flash", "need_key": True},
+        "siliconflow": {"display": "SiliconFlow", "api_base": "https://api.siliconflow.cn/v1", "default_model": "Qwen/Qwen2.5-7B-Instruct", "need_key": True},
+        "moonshot": {"display": "Moonshot / Kimi", "api_base": "https://api.moonshot.cn/v1", "default_model": "moonshot-v1-8k", "need_key": True},
+        "dashscope": {"display": "DashScope", "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1", "default_model": "qwen-turbo", "need_key": True},
+        "zhipu": {"display": "Zhipu AI", "api_base": "https://open.bigmodel.cn/api/paas/v4", "default_model": "glm-4-flash", "need_key": True},
+        "custom": {"display": "Custom OpenAI-compatible", "api_base": "", "default_model": "", "need_key": True},
+    }
+
+
+def _public_online_providers():
+    """Provider metadata safe to send to the browser."""
+    return {
+        key: {
+            'display': value.get('display', key),
+            'api_base': value.get('api_base', ''),
+            'default_model': value.get('default_model', ''),
+            'need_key': value.get('need_key', True),
+        }
+        for key, value in ONLINE_PROVIDERS.items()
+        if key != 'anthropic'
+    }
+
+
+def _mask_api_key(config):
+    config = dict(config or {})
+    if config.get('api_key'):
+        key = config['api_key']
+        config['api_key_masked'] = '****' + key[-4:] if len(key) > 4 else '****'
+        config['api_key'] = ''
+    return config
+
 
 @bp.route('/api/llm/config', methods=['GET'])
 def llm_config_get():
     """Get current LLM configuration (reads directly from config.json)"""
     from config_manager import LLMConfigManager
     cfg_mgr = LLMConfigManager()
-    llm_config = dict(cfg_mgr.config.get('llm', {}))
+    raw_config = cfg_mgr.config
+    llm_config = dict(raw_config.get('llm', {}))
 
-    # Hide API key for security
-    if llm_config.get('api_key'):
-        k = llm_config['api_key']
-        llm_config['api_key_masked'] = '****' + k[-4:] if len(k) > 4 else '****'
-        llm_config['api_key'] = ''   # don't send raw key to browser
+    if raw_config.get('active_backend') == 'online' and raw_config.get('online'):
+        online = raw_config.get('online', {})
+        llm_config.update({
+            'provider': online.get('provider', llm_config.get('provider', 'custom')),
+            'model': online.get('model', llm_config.get('model', '')),
+            'api_base': online.get('api_base', llm_config.get('api_base', '')),
+            'api_key': online.get('api_key', llm_config.get('api_key', '')),
+        })
+    elif raw_config.get('active_backend') == 'ollama' and raw_config.get('ollama'):
+        ollama = raw_config.get('ollama', {})
+        llm_config.update({
+            'provider': 'ollama',
+            'model': ollama.get('model', llm_config.get('model', '')),
+            'api_base': ollama.get('api_base', llm_config.get('api_base', 'http://localhost:11434')),
+            'api_key': '',
+        })
 
     return jsonify({
-        'config': llm_config,
+        'config': _mask_api_key(llm_config),
+        'online_providers': _public_online_providers(),
         'first_run': cfg_mgr.is_first_run(),
         'ollama_available': cfg_mgr.check_ollama_available()
     })
@@ -35,35 +84,66 @@ def llm_config_get():
 def update_llm_config():
     """Update LLM configuration"""
     from config_manager import get_config_manager
-    data = request.json
+    data = request.json or {}
     config = get_config_manager()
 
     try:
-        if 'provider' in data:
-            config.set_llm_provider(data['provider'])
+        cfg = config.config
+        llm = cfg.setdefault('llm', {})
+        provider = (data.get('provider') or llm.get('provider') or 'ollama').strip()
+        if provider not in ['ollama', 'openai', 'deepseek', 'siliconflow', 'moonshot', 'dashscope', 'zhipu', 'custom']:
+            raise ValueError(f'Invalid provider: {provider}')
 
-        if 'model' in data:
-            config.set_llm_model(data['model'])
+        if provider == 'ollama':
+            api_base = (data.get('api_base') or 'http://localhost:11434').strip().rstrip('/')
+            model = (data.get('model') or llm.get('model') or '').strip()
+            llm.update({
+                'provider': 'ollama',
+                'model': model,
+                'api_base': api_base,
+                'api_key': '',
+            })
+            cfg['active_backend'] = 'ollama'
+            cfg.setdefault('ollama', {}).update({
+                'model': model,
+                'api_base': api_base,
+            })
+        else:
+            preset = ONLINE_PROVIDERS.get(provider, {})
+            online = cfg.setdefault('online', {})
+            api_base = (data.get('api_base') or preset.get('api_base') or online.get('api_base') or llm.get('api_base') or '').strip().rstrip('/')
+            model = (data.get('model') or preset.get('default_model') or online.get('model') or llm.get('model') or '').strip()
+            api_key = data.get('api_key')
+            if api_key is None or api_key == '':
+                api_key = online.get('api_key') or llm.get('api_key', '')
+            else:
+                api_key = api_key.strip()
 
-        if 'api_key' in data and data['api_key']:
-            config.set_api_key(data['api_key'])
-
-        if 'api_base' in data:
-            config.set_api_base(data['api_base'])
+            llm.update({
+                'provider': provider,
+                'model': model,
+                'api_base': api_base,
+                'api_key': api_key,
+            })
+            cfg['active_backend'] = 'online'
+            online.update({
+                'provider': provider,
+                'api_base': api_base,
+                'api_key': api_key,
+                'model': model,
+            })
 
         if 'temperature' in data:
-            config.config['llm']['temperature'] = data['temperature']
-            config.save_config()
-
+            llm['temperature'] = data['temperature']
         if 'max_tokens' in data:
-            config.config['llm']['max_tokens'] = data['max_tokens']
-            config.save_config()
+            llm['max_tokens'] = data['max_tokens']
 
         # Mark first run complete if this is the first setup
         if config.is_first_run():
-            config.mark_first_run_complete()
+            cfg['first_run'] = False
 
-        return jsonify({'message': 'Configuration updated successfully'})
+        config.save_config()
+        return jsonify({'message': 'Configuration updated successfully', 'config': _mask_api_key(llm)})
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 
@@ -131,16 +211,23 @@ def pull_ollama_model():
 
 @bp.route('/api/llm/online/models', methods=['GET'])
 def get_online_api_models():
-    """从在线 API 获取可用模型列表。支持 GET 参数: api_base, api_key (可选，优先用已保存的 key)"""
+    """从在线 API 获取可用模型列表。支持 GET 参数: provider, api_base, api_key。"""
     from config_manager import get_config_manager
 
+    provider = request.args.get('provider', '').strip()
     api_base = request.args.get('api_base', '').strip()
     api_key  = request.args.get('api_key', '').strip()
 
-    # 如果请求没带 api_key，使用已保存的
+    if not api_base and provider in ONLINE_PROVIDERS:
+        api_base = ONLINE_PROVIDERS[provider].get('api_base', '')
+
+    # 如果请求没带 api_key，使用已保存的 online/llm key
     if not api_key:
         cfg = get_config_manager()
-        api_key = cfg.config.get('llm', {}).get('api_key', '')
+        api_key = (
+            cfg.config.get('online', {}).get('api_key')
+            or cfg.config.get('llm', {}).get('api_key', '')
+        )
 
     if not api_base:
         return jsonify({'error': '请提供 api_base 参数', 'models': []}), 400
@@ -167,6 +254,12 @@ def get_online_api_models():
             models = [m['id'] for m in data['data'] if isinstance(m, dict) and m.get('id')]
         elif isinstance(data.get('models'), list):
             models = [m.get('id') or m.get('name', '') for m in data['models'] if isinstance(m, dict)]
+        elif isinstance(data, list):
+            models = [
+                m.get('id') or m.get('name', '')
+                for m in data
+                if isinstance(m, dict)
+            ]
 
         models = sorted([m for m in models if m])
         if not models:
@@ -189,7 +282,22 @@ def test_llm_connection():
     """轻量测试 LLM 连接：发送一条最短的 chat 消息，返回详细错误信息。"""
     from config_manager import get_config_manager
 
-    cfg = get_config_manager().get_llm_config()
+    manager = get_config_manager()
+    cfg = dict(manager.get_llm_config())
+    body = request.get_json(silent=True) or {}
+    if body:
+        saved_online = manager.config.get('online', {})
+        saved_llm = manager.config.get('llm', {})
+        cfg.update({
+            'provider': body.get('provider', cfg.get('provider', 'ollama')),
+            'model': body.get('model', cfg.get('model', '')),
+            'api_base': body.get('api_base', cfg.get('api_base', '')),
+        })
+        if body.get('api_key'):
+            cfg['api_key'] = body.get('api_key')
+        else:
+            cfg['api_key'] = saved_online.get('api_key') or saved_llm.get('api_key') or cfg.get('api_key', '')
+
     provider = cfg.get('provider', 'ollama')
     model    = cfg.get('model', '')
     api_base = cfg.get('api_base', 'http://localhost:11434')

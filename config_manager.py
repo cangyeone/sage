@@ -13,6 +13,38 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 
+ONLINE_PROVIDER_DEFAULTS = {
+    "openai": {
+        "api_base": "https://api.openai.com/v1",
+        "model": "gpt-4o-mini",
+    },
+    "deepseek": {
+        "api_base": "https://api.deepseek.com/v1",
+        "model": "deepseek-v4-flash",
+    },
+    "siliconflow": {
+        "api_base": "https://api.siliconflow.cn/v1",
+        "model": "Qwen/Qwen2.5-7B-Instruct",
+    },
+    "moonshot": {
+        "api_base": "https://api.moonshot.cn/v1",
+        "model": "moonshot-v1-8k",
+    },
+    "dashscope": {
+        "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "model": "qwen-turbo",
+    },
+    "zhipu": {
+        "api_base": "https://open.bigmodel.cn/api/paas/v4",
+        "model": "glm-4-flash",
+    },
+    "anthropic": {
+        "api_base": "https://api.anthropic.com/v1",
+        "model": "claude-3-5-haiku-20241022",
+    },
+}
+
+
 class LLMConfigManager:
     """Manages LLM configuration for SeismicX"""
 
@@ -64,22 +96,25 @@ class LLMConfigManager:
 
     def set_llm_provider(self, provider: str):
         """Set LLM provider"""
-        valid_providers = ['ollama', 'openai', 'deepseek', 'anthropic', 'azure', 'custom']
+        valid_providers = [
+            'ollama', 'openai', 'deepseek', 'siliconflow', 'moonshot',
+            'dashscope', 'zhipu', 'anthropic', 'azure', 'custom'
+        ]
         if provider not in valid_providers:
             raise ValueError(f"Invalid provider: {provider}. Must be one of {valid_providers}")
 
+        old_provider = self.config.get('llm', {}).get('provider')
         self.config['llm']['provider'] = provider
 
         # Set default API base for providers
         if provider == 'ollama':
             self.config['llm']['api_base'] = 'http://localhost:11434'
             self.config['llm']['api_key'] = ''
-        elif provider == 'openai':
-            self.config['llm']['api_base'] = 'https://api.openai.com/v1'
-        elif provider == 'deepseek':
-            self.config['llm']['api_base'] = 'https://api.deepseek.com/v1'
-        elif provider == 'anthropic':
-            self.config['llm']['api_base'] = 'https://api.anthropic.com'
+        elif provider in ONLINE_PROVIDER_DEFAULTS:
+            preset = ONLINE_PROVIDER_DEFAULTS[provider]
+            self.config['llm']['api_base'] = preset['api_base']
+            if old_provider != provider:
+                self.config['llm']['model'] = preset['model']
         elif provider == 'azure':
             self.config['llm']['api_base'] = 'https://YOUR_RESOURCE.openai.azure.com/'
 
