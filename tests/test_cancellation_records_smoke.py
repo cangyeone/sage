@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import shutil
 import tempfile
 import threading
 import time
@@ -17,6 +18,7 @@ for path in (str(WEB_APP_DIR), str(PROJECT_ROOT)):
         sys.path.insert(0, path)
 
 import run_records
+import app as web_app
 from examples.sage_smoke_demo import run_smoke_demo
 from seismo_code.safe_executor import execute_code
 
@@ -80,6 +82,32 @@ class TestRunRecordsAndSmokeDemo(unittest.TestCase):
                 self.assertEqual(rec["status"], "succeeded")
             finally:
                 run_records.RUN_RECORD_DIR = old_dir
+
+    def test_smoke_route_records_and_serves_artifact(self):
+        with tempfile.TemporaryDirectory() as rec_tmp:
+            old_dir = run_records.RUN_RECORD_DIR
+            run_records.RUN_RECORD_DIR = Path(rec_tmp)
+            run_records.RUN_RECORD_DIR.mkdir(parents=True, exist_ok=True)
+            client = web_app.app.test_client()
+            output_dir = None
+            try:
+                resp = client.post("/api/smoke_demo/run", json={})
+                self.assertEqual(resp.status_code, 200)
+                body = resp.get_json()
+                self.assertTrue(body["ok"])
+                output_dir = Path(body["output_dir"])
+
+                runs = client.get("/api/runs?limit=5").get_json()
+                self.assertTrue(runs["ok"])
+                self.assertTrue(any(r["run_id"] == body["run_id"] for r in runs["runs"]))
+
+                artifact = client.get(f"/api/runs/{body['run_id']}/artifact/0")
+                self.assertEqual(artifact.status_code, 200)
+                self.assertGreater(len(artifact.data), 0)
+            finally:
+                run_records.RUN_RECORD_DIR = old_dir
+                if output_dir and output_dir.exists():
+                    shutil.rmtree(output_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -53,6 +53,7 @@ def run_smoke_demo(output_dir: Path) -> dict:
         metadata={"output_dir": str(output_dir)},
     )
     append_event(run_id, "start", "Creating synthetic waveform sequence")
+    steps = []
 
     rng = np.random.default_rng(20260507)
     dt = 0.02
@@ -81,6 +82,13 @@ def run_smoke_demo(output_dir: Path) -> dict:
             waveform_rows.append({"station": sta["station"], "time_s": float(ti), "amplitude": float(yi)})
 
     append_event(run_id, "picking", f"Picked {len(picks)} phases from {len(stations)} stations")
+    steps.append({
+        "id": "synthesize_and_pick",
+        "title": "Synthetic waveforms and phase picks",
+        "status": "done",
+        "n_stations": len(stations),
+        "n_picks": len(picks),
+    })
 
     waveforms_csv = output_dir / "synthetic_waveforms.csv"
     with waveforms_csv.open("w", newline="", encoding="utf-8") as f:
@@ -114,6 +122,12 @@ def run_smoke_demo(output_dir: Path) -> dict:
         writer.writerow(catalog)
 
     append_event(run_id, "association", "Associated picks into one synthetic event", catalog)
+    steps.append({
+        "id": "associate_catalog",
+        "title": "Associate picks into an event catalog",
+        "status": "done",
+        "catalog": catalog,
+    })
 
     import matplotlib
     matplotlib.use("Agg")
@@ -159,6 +173,12 @@ def run_smoke_demo(output_dir: Path) -> dict:
 
     artifacts = [waveforms_csv, picks_csv, catalog_csv, figure_png, report_md]
     append_event(run_id, "report", "Generated figure and report")
+    steps.append({
+        "id": "report_artifacts",
+        "title": "Generate report and artifacts",
+        "status": "done",
+        "artifacts": [p.name for p in artifacts],
+    })
     finish_run(
         run_id,
         "succeeded",
@@ -170,6 +190,7 @@ def run_smoke_demo(output_dir: Path) -> dict:
         "ok": True,
         "run_id": run_id,
         "output_dir": str(output_dir),
+        "steps": steps,
         "catalog": catalog,
         "artifacts": [str(p) for p in artifacts],
     }
