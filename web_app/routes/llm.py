@@ -47,6 +47,55 @@ def _mask_api_key(config):
     return config
 
 
+def _parse_model_list(data):
+    models = []
+    if isinstance(data, dict) and isinstance(data.get('data'), list):
+        models = [m['id'] for m in data['data'] if isinstance(m, dict) and m.get('id')]
+    elif isinstance(data, dict) and isinstance(data.get('models'), list):
+        models = [m.get('id') or m.get('name', '') for m in data['models'] if isinstance(m, dict)]
+    elif isinstance(data, list):
+        models = [
+            m.get('id') or m.get('name', '')
+            for m in data
+            if isinstance(m, dict)
+        ]
+    return sorted({m for m in models if m})
+
+
+def _fallback_model_candidates(provider, api_base, current_model):
+    candidates = []
+    if current_model:
+        candidates.append(current_model)
+    preset = ONLINE_PROVIDERS.get(provider, {})
+    if preset.get('default_model'):
+        candidates.append(preset['default_model'])
+    base_l = (api_base or '').lower()
+    if 'aliyuncs.com' in base_l or 'dashscope' in base_l:
+        candidates.extend(['qwen3.6-plus', 'qwen-plus', 'qwen-turbo'])
+    return list(dict.fromkeys(candidates))
+
+
+def _chat_model_available(api_base, api_key, model):
+    payload = json.dumps({
+        'model': model,
+        'messages': [{'role': 'user', 'content': 'hi'}],
+        'max_tokens': 1,
+        'temperature': 0,
+    }).encode('utf-8')
+    req = _ur.Request(
+        f'{api_base.rstrip("/")}/chat/completions',
+        data=payload,
+        headers={
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {api_key}',
+        },
+        method='POST',
+    )
+    with _ur.urlopen(req, timeout=20) as resp:
+        data = json.loads(resp.read().decode('utf-8'))
+    return bool(data.get('choices'))
+
+
 @bp.route('/api/llm/config', methods=['GET'])
 def llm_config_get():
     """Get current LLM configuration (reads directly from config.json)"""
@@ -211,12 +260,13 @@ def pull_ollama_model():
 
 @bp.route('/api/llm/online/models', methods=['GET'])
 def get_online_api_models():
-    """从在线 API 获取可用模型列表。支持 GET 参数: provider, api_base, api_key。"""
+    """从在线 API 获取可用模型列表。支持 GET 参数: provider, api_base, api_key, model。"""
     from config_manager import get_config_manager
 
     provider = request.args.get('provider', '').strip()
     api_base = request.args.get('api_base', '').strip()
     api_key  = request.args.get('api_key', '').strip()
+    current_model = request.args.get('model', '').strip()
 
     if not api_base and provider in ONLINE_PROVIDERS:
         api_base = ONLINE_PROVIDERS[provider].get('api_base', '')
@@ -224,6 +274,11 @@ def get_online_api_models():
     # 如果请求没带 api_key，使用已保存的 online/llm key
     if not api_key:
         cfg = get_config_manager()
+        if not current_model:
+            current_model = (
+                cfg.config.get('online', {}).get('model')
+                or cfg.config.get('llm', {}).get('model', '')
+            )
         api_key = (
             cfg.config.get('online', {}).get('api_key')
             or cfg.config.get('llm', {}).get('api_key', '')
@@ -249,28 +304,47 @@ def get_online_api_models():
         with _urq.urlopen(req, timeout=12) as resp:
             data = json.loads(resp.read().decode('utf-8'))
 
-        models = []
-        if isinstance(data.get('data'), list):
-            models = [m['id'] for m in data['data'] if isinstance(m, dict) and m.get('id')]
-        elif isinstance(data.get('models'), list):
-            models = [m.get('id') or m.get('name', '') for m in data['models'] if isinstance(m, dict)]
-        elif isinstance(data, list):
-            models = [
-                m.get('id') or m.get('name', '')
-                for m in data
-                if isinstance(m, dict)
-            ]
-
-        models = sorted([m for m in models if m])
+        models = _parse_model_list(data)
         if not models:
             return jsonify({'error': '接口返回了空模型列表', 'models': []}), 502
 
-        return jsonify({'models': models})
+        return jsonify({'models': models, 'source': 'models_endpoint'})
 
     except _ure.HTTPError as e:
-        msgs = {401: 'API Key 无效或已过期 (401)', 403: '访问被拒绝，请检查权限 (403)',
-                404: '该平台不支持模型列表接口 (404)'}
-        return jsonify({'error': msgs.get(e.code, f'HTTP {e.code}: {e.reason}'), 'models': []}), 502
+        body = ''
+        try:
+            body = e.read().decode('utf-8', errors='ignore')[:240]
+        except Exception:
+            pass
+        msgs = {
+            401: 'API Key 无效或已过期 (401)',
+            403: '访问被拒绝，请检查权限 (403)',
+            404: '该平台不支持模型列表接口 (404)',
+        }
+        candidates = _fallback_model_candidates(provider, api_base, current_model)
+        if e.code in {400, 404, 405, 501} and candidates:
+            verified = []
+            for model in candidates[:4]:
+                try:
+                    if _chat_model_available(api_base, api_key, model):
+                        verified.append(model)
+                        break
+                except Exception:
+                    continue
+            models = verified or candidates
+            return jsonify({
+                'models': models,
+                'source': 'chat_probe' if verified else 'fallback',
+                'warning': (
+                    f'/models 接口不可用或返回 HTTP {e.code}，'
+                    '但聊天接口可以继续使用；已使用当前/预设模型。'
+                ),
+            })
+
+        detail = msgs.get(e.code, f'HTTP {e.code}: {e.reason}')
+        if body:
+            detail += f' — {body}'
+        return jsonify({'error': detail, 'models': []}), 502
     except (_ure.URLError, OSError) as e:
         return jsonify({'error': f'网络连接失败: {e.reason if hasattr(e, "reason") else str(e)}', 'models': []}), 502
     except Exception as e:

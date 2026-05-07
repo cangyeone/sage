@@ -444,6 +444,7 @@ const I18N = {
     btn_fetch_models: '获取模型',
     fetch_models_loading: '正在获取模型列表…',
     fetch_models_ok: '✓ 已获取 {n} 个模型',
+    fetch_models_warn: '⚠ {msg}',
     fetch_models_fail: '获取失败: ',
     fetch_models_need_key: '请先填写 API Key 再获取模型列表',
     fetch_models_need_base: '请先填写 API Base URL',
@@ -511,6 +512,7 @@ const I18N = {
     btn_fetch_models: 'Fetch Models',
     fetch_models_loading: 'Fetching model list…',
     fetch_models_ok: '✓ {n} models loaded',
+    fetch_models_warn: '⚠ {msg}',
     fetch_models_fail: 'Failed: ',
     fetch_models_need_key: 'Please enter your API Key before fetching models',
     fetch_models_need_base: 'Please enter the API Base URL first',
@@ -932,6 +934,10 @@ async function fetchOnlineModels(isDeepseek = false) {
   try {
     const params = new URLSearchParams({ provider, api_base: apiBase });
     if (apiKey) params.append('api_key', apiKey);
+    const currentModel = (isDeepseek
+      ? document.getElementById('onlineModel')
+      : document.getElementById('onlineModelGeneric')).value.trim();
+    if (currentModel) params.append('model', currentModel);
     const r = await fetch('/api/llm/online/models?' + params.toString());
     const d = await r.json();
 
@@ -940,14 +946,15 @@ async function fetchOnlineModels(isDeepseek = false) {
       statusEl.style.color = '#c62828';
     } else {
       const models = d.models || [];
-      statusEl.textContent = T('fetch_models_ok').replace('{n}', models.length);
-      statusEl.style.color = '#2e7d32';
+      if (d.warning) {
+        statusEl.textContent = T('fetch_models_warn').replace('{msg}', d.warning);
+        statusEl.style.color = '#b26a00';
+      } else {
+        statusEl.textContent = T('fetch_models_ok').replace('{n}', models.length);
+        statusEl.style.color = '#2e7d32';
+      }
 
       // Populate dropdown
-      const currentModel = (isDeepseek
-        ? document.getElementById('onlineModel')
-        : document.getElementById('onlineModelGeneric')).value.trim();
-
       dropdown.innerHTML = models.map(m =>
         `<option value="${m}" ${m === currentModel ? 'selected' : ''}>${m}</option>`
       ).join('');
