@@ -614,11 +614,11 @@ def chat_upload_pdf():
     try:
         # Extract text (no BGE-M3, just raw text for session context)
         sys.path.insert(0, str(Path(__file__).parent))
-        from rag_engine import _extract_pdf_text, _chunk_text
-        pages  = _extract_pdf_text(str(tmp_path))
+        from rag_extractors import extract_text, chunk_text
+        pages  = extract_text(str(tmp_path))
         chunks = []
         for page_idx, page_text in pages:
-            for c in _chunk_text(page_text, chunk_size=600):
+            for c in chunk_text(page_text, chunk_size=600):
                 chunks.append({"page": page_idx + 1, "text": c})
 
         if session_id not in _session_docs:

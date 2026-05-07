@@ -901,11 +901,25 @@ async function classifyIntent(text) {
   const t = text.trim();
   const endsQ    = /[?？]\s*$/.test(t);
   const hasPath  = /(?:^|[\s\u4e00-\u9fff，。：、])[/~][\w./\-]{4,}/.test(t);
-  const actionRe = /帮我|请帮|帮忙|执行|运行|处理一下|做一下|跑一下|跑下|计算一下|绘制一下|画一下|下载一下/;
+  const actionRe = /帮我|请帮|帮忙|执行|运行|处理一下|做一下|跑一下|跑下|计算一下|绘制一下|画一下|下载一下|检测一下|识别一下|拾取|触发/;
   const questionStartRe = /^(如何|怎么|怎样|什么是|什么叫|为什么|为何|哪种|哪些|请解释|能解释|介绍|介绍一下|讲一下|讲讲|请问|有没有什么|有何区别|原理|有什么区别|what is|what are|how to|how does|why |explain|tell me about)/i;
+  const explainRe = /(详细讲|讲一下|讲讲|解释|介绍|原理|机制|怎么回事|是什么|什么是|为什么|为何|区别|优缺点|适用|局限|how does|how .*work|what is|why |explain|tell me about)/i;
+  const concreteCodeRe = /(写代码|写个程序|代码实现|编程实现|实现一下|复现|生成脚本|运行|执行|读取|处理数据|绘制|画图|下载|保存|导出|计算一下|检测一下|检测下|检测上面|识别一下|拾取|触发|plot|run|execute|write.*code|implement|detect|pick|trigger)/i;
 
   // 快速路径 A：有绝对路径 且 无问号 → code
   if (hasPath && !endsQ) return 'code';
+
+  // 快速路径 A1：解释/原理/怎么回事类请求优先 QA，避免算法名误触发 code
+  if (explainRe.test(t) && !concreteCodeRe.test(t)) return 'qa';
+
+  // 快速路径 A1b：算法/方法作用到数据对象上，是执行型任务
+  const applyMethodRe = /(使用|用|通过|基于).{0,30}(算法|方法|模型|STA\/?LTA|stalta|classic_sta_lta|recursive_sta_lta).{0,30}(检测|识别|拾取|触发|处理|分析|计算)|(?:检测|识别|拾取).{0,20}(波形|数据|事件|震相)/i;
+  if (applyMethodRe.test(t)) return 'code';
+
+  // 快速路径 A1c：连续对话里的“上述/上面/这个方法 + 实现/代码”应继承上一轮上下文进入 coding
+  const contextualCodeRe = /(用\s*Python|python|代码|编程|实现|复现|写出来|写个程序|完整实现|run it|code it|implement)/i;
+  const contextRefRe = /(上述|上面|上文|前面|刚才|这个|该|此|this|above|previous)/i;
+  if (contextualCodeRe.test(t) && (contextRefRe.test(t) || chatHistory.length > 1)) return 'code';
 
   // 快速路径 A2：上轮是代码，且含"改进/调整"等关键词 → 直接路由 code（不用问 LLM）
   const improvementRe = /^(改|修改|调整|改成|改为|换成|换个|改一下|调大|调小|放大|缩小|加上|加入|加个|删掉|删除|去掉|优化|美化|换颜色|标注|标记|重新|再画|再试|再来|继续|在此基础上|基于上面|在上面|在刚才)/;
@@ -1064,6 +1078,15 @@ async function sendCode(text, phase2Badge = false) {
 
   // ── 对绘图请求注入数据目录上下文 ───────────────────────────────────────
   let enrichedText = text;
+  const contextRefReq = /(上述|上面|上文|前面|刚才|这个|该|此|this|above|previous)/i.test(text);
+  const implementationReq = /(用\s*Python|python|代码|编程|实现|复现|写出来|写个程序|完整实现|run it|code it|implement)/i.test(text);
+  if (contextRefReq && implementationReq && chatHistory.length) {
+    const recentContext = chatHistory.slice(-8)
+      .map(h => `${h.role === 'user' ? '用户' : '助手'}：${String(h.content || '').slice(0, 1800)}`)
+      .join('\n\n');
+    enrichedText += `\n\n===== 连续对话上下文（用于理解“上述/这个方法”）=====\n${recentContext}\n===== 上下文结束 =====`;
+  }
+
   const isPlotReq = /(绘制|画图|画波形|绘图|可视化|plot)/i.test(text);
   if (isPlotReq && lastDataPath) {
     enrichedText += `\n（数据目录：${lastDataPath}，请直接用 read_stream_from_dir 读取并绘图，不要列目录，不要使用临时目录）`;
@@ -1234,7 +1257,60 @@ async function sendCode(text, phase2Badge = false) {
 
   // 4. (code is now shown via the toggle in section 6)
 
-  // 5. 图像（内嵌 base64，直接在气泡里显示）+ 下载按钮
+  // 5. HTML 交互产物（Plotly / Three.js 等）直接在气泡里预览
+  const htmlPreviews = d.html_previews || [];
+  if (htmlPreviews.length) {
+    htmlPreviews.forEach(preview => {
+      const previewWrap = document.createElement('div');
+      previewWrap.style.cssText = 'margin-top:.75rem;border:1px solid #d7ddea;border-radius:8px;overflow:hidden;background:#fff;';
+
+      const previewHead = document.createElement('div');
+      previewHead.style.cssText = 'display:flex;align-items:center;gap:.5rem;justify-content:space-between;padding:.45rem .65rem;background:#f6f8ff;border-bottom:1px solid #d7ddea;';
+
+      const previewName = document.createElement('span');
+      previewName.style.cssText = 'font-size:.78rem;font-weight:600;color:#3949ab;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+      previewName.textContent = preview.name || 'interactive_preview.html';
+      previewHead.appendChild(previewName);
+
+      const previewActions = document.createElement('div');
+      previewActions.style.cssText = 'display:flex;align-items:center;gap:.35rem;flex-shrink:0;';
+
+      const bin = atob(preview.data || '');
+      const buf = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) {
+        buf[i] = bin.charCodeAt(i);
+      }
+      const htmlBlob = new Blob([buf], {type: preview.mimetype || 'text/html;charset=utf-8'});
+      const htmlSrc = URL.createObjectURL(htmlBlob);
+      const openBtn = document.createElement('a');
+      openBtn.href = htmlSrc;
+      openBtn.target = '_blank';
+      openBtn.rel = 'noopener';
+      openBtn.style.cssText = 'font-size:.74rem;padding:.16rem .5rem;border-radius:5px;background:#fff;color:#3949ab;border:1px solid #c5cae9;text-decoration:none;';
+      openBtn.textContent = currentLang === 'zh' ? '新窗口' : 'Open';
+      previewActions.appendChild(openBtn);
+
+      previewHead.appendChild(previewActions);
+      previewWrap.appendChild(previewHead);
+
+      const frame = document.createElement('iframe');
+      frame.title = preview.name || 'HTML preview';
+      frame.src = htmlSrc;
+      frame.loading = 'lazy';
+      frame.sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups';
+      frame.style.cssText = 'width:100%;height:min(62vh,560px);min-height:380px;border:0;display:block;background:#fff;';
+      frame.addEventListener('load', () => {
+        try {
+          frame.contentWindow.dispatchEvent(new Event('resize'));
+        } catch (e) {}
+      });
+      previewWrap.appendChild(frame);
+
+      bubble.appendChild(previewWrap);
+    });
+  }
+
+  // 6. 图像（内嵌 base64，直接在气泡里显示）+ 下载按钮
   if (d.figures && d.figures.length) {
     d.figures.forEach(fig => {
       // 图像容器
@@ -1291,7 +1367,7 @@ async function sendCode(text, phase2Badge = false) {
     });
   }
 
-  // 6. Download script button (always shown when code was generated)
+  // 7. Download script button (always shown when code was generated)
   if ((d.downloads && d.downloads.length) || d.code) {
     const dlBar = document.createElement('div');
     dlBar.style.cssText = 'display:flex;align-items:center;gap:.5rem;margin-top:.6rem;flex-wrap:wrap;';
@@ -1567,12 +1643,27 @@ async function streamToMsg(url, body) {
   const parser   = new ThinkParser();
   let   sources  = [];
   let   errored  = false;
+  let   handoff  = null;
+
+  function shouldHandoffToCode(userText, generatedText) {
+    const u = String(userText || '');
+    const g = String(generatedText || '');
+    const executableRequest =
+      /(使用|用|通过|基于).{0,30}(算法|方法|模型|STA\/?LTA|stalta|classic_sta_lta|recursive_sta_lta).{0,30}(检测|识别|拾取|触发|处理|分析|计算)/i.test(u) ||
+      /(?:检测|识别|拾取).{0,20}(波形|数据|事件|震相)/i.test(u);
+    const modelNoticedCode =
+      /(需要|应当|可以|将|必须).{0,12}(编写|执行|运行|调用|使用).{0,20}(代码|工具|函数|code|Code|编程|CodeEngine|coding)/i.test(g) ||
+      /(需要执行代码|需要编写代码|执行一个单元格|调用.*工具函数|转入.*编程|coding agent)/i.test(g);
+    return executableRequest && modelNoticedCode;
+  }
 
   try {
+    const controller = new AbortController();
     const resp = await fetch(url, {
       method:  'POST',
       headers: {'Content-Type': 'application/json'},
       body:    JSON.stringify(body),
+      signal:  controller.signal,
     });
     if (!resp.ok || !resp.body) {
       let msg = `HTTP ${resp.status}`;
@@ -1587,6 +1678,7 @@ async function streamToMsg(url, body) {
     const decoder = new TextDecoder();
     let   buffer  = '';
 
+    stream_loop:
     while (true) {
       const {done, value} = await reader.read();
       if (done) break;
@@ -1607,6 +1699,13 @@ async function streamToMsg(url, body) {
             parser.push(obj.text || '');
             streamer.updateThink(parser.thinkText);
             streamer.updateContent(parser.contentText);
+            if (body && body.allow_code_handoff && !handoff &&
+                shouldHandoffToCode(body.message, parser.thinkText + '\n' + parser.contentText)) {
+              handoff = {intent: 'code', prompt: body.message || ''};
+              try { await reader.cancel(); } catch(e) {}
+              try { controller.abort(); } catch(e) {}
+              break stream_loop;
+            }
           } else if (obj.type === 'error') {
             errored = true;
             parser.push(`\n✗ 错误：${obj.message}`);
@@ -1622,6 +1721,14 @@ async function streamToMsg(url, body) {
   }
 
   parser.flush();
+
+  if (handoff) {
+    const handoffMsg = currentLang === 'zh'
+      ? '已识别到该请求需要执行代码，正在转入 Coding Agent…'
+      : 'This request needs code execution. Handing off to the Coding Agent…';
+    streamer.finalise(handoffMsg, sources);
+    return {answer: handoffMsg, sources, errored: false, handoff};
+  }
 
   // Guard: some models emit the entire reply inside <think>…</think> with nothing
   // outside (especially when think mode is on but the model ignores the instruction).
@@ -1696,11 +1803,22 @@ async function sendRag(text) {
 
   let answer = '', sources = [];
   try {
-    ({answer, sources} = await streamToMsg('/api/chat/rag/stream', {
+    const ragResult = await streamToMsg('/api/chat/rag/stream', {
       message: text, session_id: SESSION_ID, mode,
       history: chatHistory.slice(-8), workspace: wsEnabled ? wsPath : '',
       enable_think: thinkEnabled,
-    }));
+      allow_code_handoff: true,
+    });
+    if (ragResult.handoff && ragResult.handoff.intent === 'code') {
+      hideTyping();
+      chatHistory.push({role:'assistant', content: ragResult.answer});
+      _persistHistory();
+      showTyping(currentLang === 'zh' ? '⚙ 已转入编程 Agent…' : '⚙ Handing off to Code Agent…');
+      await sendCode(ragResult.handoff.prompt || text, true);
+      return;
+    }
+    answer = ragResult.answer;
+    sources = ragResult.sources;
   } catch(e) {
     hideTyping();
     addMsg('assistant', `✗ ${e.message}`);
