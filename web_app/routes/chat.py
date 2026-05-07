@@ -130,6 +130,19 @@ def _safe_pdf_upload_path(filename: str | None, prefix: str) -> tuple[Path, str]
         raise ValueError("Invalid upload path")
 
 
+def _extract_session_pdf_chunks(pdf_path: str, chunk_size: int = 600) -> tuple[list, list]:
+    """Extract page text and build temporary session chunks for chat RAG."""
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from rag_extractors import chunk_text, extract_text
+
+    pages = extract_text(pdf_path)
+    chunks = []
+    for page_idx, page_text in pages:
+        for c in chunk_text(page_text, chunk_size=chunk_size):
+            chunks.append({"page": page_idx + 1, "text": c})
+    return pages, chunks
+
+
 def run_task(task_id, command, task_type, cwd=None):
     """Run a seismic processing task in background"""
     try:
@@ -706,13 +719,7 @@ def chat_upload_pdf():
 
     try:
         # Extract text (no BGE-M3, just raw text for session context)
-        sys.path.insert(0, str(Path(__file__).parent))
-        from rag_engine import _extract_pdf_text, _chunk_text
-        pages  = _extract_pdf_text(str(tmp_path))
-        chunks = []
-        for page_idx, page_text in pages:
-            for c in _chunk_text(page_text, chunk_size=600):
-                chunks.append({"page": page_idx + 1, "text": c})
+        pages, chunks = _extract_session_pdf_chunks(str(tmp_path), chunk_size=600)
 
         if session_id not in _session_docs:
             _session_docs[session_id] = {"chunks": [], "doc_names": []}
