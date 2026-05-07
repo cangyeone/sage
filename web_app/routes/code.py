@@ -9,6 +9,7 @@ import uuid as _uuid
 from pathlib import Path
 from state import _code_engine_lock, _code_engines, _code_jobs, _PROJECT_ROOT
 from helpers import get_llm_config, get_code_engine, gc_code_jobs, serialize_code_result
+from run_records import append_event, finish_run, start_run
 
 bp = Blueprint('code', __name__)
 
@@ -77,8 +78,16 @@ def chat_code():
 
     gc_code_jobs()
     job_id = _uuid.uuid4().hex[:8]
+    cancel_event = threading.Event()
+    run_id = start_run(
+        "code",
+        request=user_msg,
+        session_id=session_id,
+        metadata={"job_id": job_id},
+    )
     _code_jobs[job_id] = {'status': 'running', 'progress': [], 'result': None,
-                          'ts': _time.time()}
+                          'ts': _time.time(), 'cancel_event': cancel_event,
+                          'run_id': run_id}
 
     def _run():
         try:
@@ -102,7 +111,9 @@ def chat_code():
             # holding the lock here would block all other init for minutes.
             def _on_progress(p):
                 if _code_jobs.get(job_id, {}).get('status') != 'cancelled':
-                    _code_jobs[job_id]['progress'].append(p.get('phase', p.get('message', '')))
+                    msg = p.get('phase', p.get('message', ''))
+                    _code_jobs[job_id]['progress'].append(msg)
+                    append_event(run_id, p.get('phase', 'progress'), msg, p)
 
             result = engine.run(
                 user_msg,
@@ -110,12 +121,26 @@ def chat_code():
                 max_debug_rounds=6,
                 run_verify=False,
                 on_progress=_on_progress,
+                cancel_event=cancel_event,
             )
             if _code_jobs.get(job_id, {}).get('status') != 'cancelled':
-                _code_jobs[job_id]['result'] = serialize_code_result(result, skill_used)
+                payload = serialize_code_result(result, skill_used)
+                _code_jobs[job_id]['result'] = payload
+                finish_run(
+                    run_id,
+                    "succeeded" if payload.get("success") else "failed",
+                    result={
+                        "success": payload.get("success"),
+                        "attempts": payload.get("attempts"),
+                        "skill_used": payload.get("skill_used"),
+                        "figures": [f.get("name") for f in payload.get("figures", [])],
+                    },
+                    artifacts=[d.get("name") for d in payload.get("downloads", [])],
+                )
         except Exception as exc:
             if _code_jobs.get(job_id, {}).get('status') != 'cancelled':
                 _code_jobs[job_id]['result'] = {'ok': False, 'error': str(exc)}
+                finish_run(run_id, "error", error=str(exc))
         finally:
             if _code_jobs.get(job_id, {}).get('status') != 'cancelled':
                 _code_jobs[job_id]['status'] = 'done'
@@ -144,8 +169,13 @@ def cancel_code_job(job_id):
     if not job:
         return jsonify({'ok': False, 'error': 'job not found'}), 404
     if job.get('status') == 'running':
+        ev = job.get('cancel_event')
+        if ev is not None:
+            ev.set()
         job['status'] = 'cancelled'
         job['result'] = {'ok': False, 'aborted': True, 'error': 'cancelled'}
+        if job.get('run_id'):
+            finish_run(job['run_id'], "cancelled", error="cancelled")
     return jsonify({'ok': True, 'status': job.get('status')})
 
 
@@ -194,75 +224,111 @@ def chat_workflow():
 
     gc_code_jobs()
     job_id = _uuid.uuid4().hex[:8]
+    cancel_event = threading.Event()
+    run_id = start_run(
+        "workflow",
+        request=user_msg,
+        session_id=session_id,
+        metadata={
+            "job_id": job_id,
+            "workflow_name": workflow_name,
+            "data_hint": data_hint,
+        },
+    )
     _code_jobs[job_id] = {'status': 'running', 'progress': [], 'result': None,
-                          'ts': _time.time()}
+                          'ts': _time.time(), 'cancel_event': cancel_event,
+                          'run_id': run_id}
 
     def _run():
         try:
-            # Acquire lock to prevent thread-safety issues with sentence-transformers
+            if _code_jobs.get(job_id, {}).get('status') == 'cancelled':
+                return
+            # Acquire lock only while creating/reusing the session engine.
             with _code_engine_lock:
-                def _on_progress(p):
-                    # Phase keys: 'workflow_step', 'step_done', 'workflow_done'
+                engine = get_code_engine(session_id, llm_cfg)
+
+            def _on_progress(p):
+                # Phase keys: 'workflow_step', 'step_done', 'workflow_done'
+                if _code_jobs.get(job_id, {}).get('status') != 'cancelled':
                     label = p.get('message') or p.get('phase', '')
                     _code_jobs[job_id]['progress'].append(label)
+                    append_event(run_id, p.get('phase', 'workflow_step'), label, p)
 
-                engine = get_code_engine(session_id, llm_cfg)
-                result = engine.run_workflow(
-                    workflow_name=workflow_name,
-                    user_request=user_msg,
-                    data_hint=data_hint,
-                    max_debug_rounds=5,
-                    timeout=180,
-                    skip_on_failure=skip_on_fail,
-                    on_progress=_on_progress,
-                )
+            result = engine.run_workflow(
+                workflow_name=workflow_name,
+                user_request=user_msg,
+                data_hint=data_hint,
+                max_debug_rounds=5,
+                timeout=180,
+                skip_on_failure=skip_on_fail,
+                on_progress=_on_progress,
+                cancel_event=cancel_event,
+            )
 
-                # Collect all downloadable outputs
-                import base64 as _b64
-                downloads = []
-                for fp in result.all_figures + result.all_output_files:
-                    try:
-                        with open(fp, 'rb') as _f:
-                            downloads.append({
-                                'filename': Path(fp).name,
-                                'b64':      _b64.b64encode(_f.read()).decode(),
-                                'mime':     'image/png' if fp.endswith('.png') else 'application/octet-stream',
-                            })
-                    except Exception:
-                        pass
+            if _code_jobs.get(job_id, {}).get('status') == 'cancelled':
+                return
 
-                _code_jobs[job_id]['result'] = {
-                    'ok':           True,
-                    'success':      result.success,
-                    'response':     result.response,
-                    'workflow_name': result.workflow_name,
-                    'workflow_title': result.workflow_title,
-                    'steps_total':  result.steps_total,
-                    'steps_done':   result.steps_done,
-                    'exec_dir':     result.exec_dir,
-                    'step_results': [
-                        {
-                            'step_id':      sr.step_id,
-                            'skill':        sr.skill,
-                            'description':  sr.description,
-                            'success':      sr.success,
-                            'skipped':      sr.skipped,
-                            'attempts':     sr.attempts,
-                            'diagnosis':    sr.diagnosis,
-                            'stdout':       sr.stdout[:800],
-                            'stderr':       sr.stderr[:400],
-                            'figures':      [Path(f).name for f in sr.figures],
-                            'output_files': [Path(f).name for f in sr.output_files],
-                        }
-                        for sr in result.step_results
-                    ],
-                    'figures':   result.all_figures,
-                    'downloads': downloads,
-                }
+            # Collect all downloadable outputs
+            import base64 as _b64
+            downloads = []
+            for fp in result.all_figures + result.all_output_files:
+                try:
+                    with open(fp, 'rb') as _f:
+                        downloads.append({
+                            'filename': Path(fp).name,
+                            'b64':      _b64.b64encode(_f.read()).decode(),
+                            'mime':     'image/png' if fp.endswith('.png') else 'application/octet-stream',
+                        })
+                except Exception:
+                    pass
+
+            _code_jobs[job_id]['result'] = {
+                'ok':           True,
+                'success':      result.success,
+                'response':     result.response,
+                'workflow_name': result.workflow_name,
+                'workflow_title': result.workflow_title,
+                'steps_total':  result.steps_total,
+                'steps_done':   result.steps_done,
+                'exec_dir':     result.exec_dir,
+                'step_results': [
+                    {
+                        'step_id':      sr.step_id,
+                        'skill':        sr.skill,
+                        'description':  sr.description,
+                        'success':      sr.success,
+                        'skipped':      sr.skipped,
+                        'attempts':     sr.attempts,
+                        'diagnosis':    sr.diagnosis,
+                        'stdout':       sr.stdout[:800],
+                        'stderr':       sr.stderr[:400],
+                        'figures':      [Path(f).name for f in sr.figures],
+                        'output_files': [Path(f).name for f in sr.output_files],
+                    }
+                    for sr in result.step_results
+                ],
+                'figures':   result.all_figures,
+                'downloads': downloads,
+            }
+            finish_run(
+                run_id,
+                "succeeded" if result.success else "failed",
+                result={
+                    "success": result.success,
+                    "workflow_name": result.workflow_name,
+                    "steps_done": result.steps_done,
+                    "steps_total": result.steps_total,
+                    "exec_dir": result.exec_dir,
+                },
+                artifacts=[Path(p).name for p in result.all_figures + result.all_output_files],
+            )
         except Exception as exc:
-            _code_jobs[job_id]['result'] = {'ok': False, 'error': str(exc)}
+            if _code_jobs.get(job_id, {}).get('status') != 'cancelled':
+                _code_jobs[job_id]['result'] = {'ok': False, 'error': str(exc)}
+                finish_run(run_id, "error", error=str(exc))
         finally:
-            _code_jobs[job_id]['status'] = 'done'
+            if _code_jobs.get(job_id, {}).get('status') != 'cancelled':
+                _code_jobs[job_id]['status'] = 'done'
 
     threading.Thread(target=_run, daemon=True).start()
     return jsonify({'ok': True, 'job_id': job_id})

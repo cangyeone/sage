@@ -22,6 +22,7 @@ from helpers import (
     get_kb_instance,
     safe_child_path,
 )
+from run_records import append_event, finish_run, start_run
 
 bp = Blueprint('chat', __name__)
 
@@ -1063,15 +1064,22 @@ def chat_rag_stream():
                         headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
     def generate():
+        cancel_event = threading.Event()
         # Send sources immediately so the UI can show references
         yield f"data: {_json.dumps({'type':'sources','sources':sources})}\n\n"
         try:
             from helpers import llm_stream
             for chunk in llm_stream(messages, llm_cfg, max_tokens=2000,
-                                    images=images if images else None):
+                                    images=images if images else None,
+                                    cancel_event=cancel_event):
                 yield f"data: {_json.dumps({'type':'chunk','text':chunk})}\n\n"
+        except GeneratorExit:
+            cancel_event.set()
+            raise
         except Exception as exc:
             yield f"data: {_json.dumps({'type':'error','message':str(exc)})}\n\n"
+        finally:
+            cancel_event.set()
         yield f"data: {_json.dumps({'type':'done'})}\n\n"
 
     return Response(
@@ -1130,6 +1138,7 @@ def chat_stream():
         messages = [messages[0]] + history[-6:] + [messages[-1]]
 
     def generate():
+        cancel_event = threading.Event()
         yield f"data: {_json.dumps({'type':'sources','sources':[]})}\n\n"
         if not llm_cfg.get("api_base"):
             msg = "当前没有可用的 LLM 后端，请在 LLM 设置页面配置后端。"
@@ -1139,10 +1148,16 @@ def chat_stream():
         try:
             from helpers import llm_stream
             for chunk in llm_stream(messages, llm_cfg, max_tokens=2000,
-                                    images=images if images else None):
+                                    images=images if images else None,
+                                    cancel_event=cancel_event):
                 yield f"data: {_json.dumps({'type':'chunk','text':chunk})}\n\n"
+        except GeneratorExit:
+            cancel_event.set()
+            raise
         except Exception as exc:
             yield f"data: {_json.dumps({'type':'error','message':str(exc)})}\n\n"
+        finally:
+            cancel_event.set()
         yield f"data: {_json.dumps({'type':'done'})}\n\n"
 
     return Response(
@@ -1213,9 +1228,17 @@ def chat_submit():
 
     _chat_job_gc()
     job_id = 'chat_' + _uuid.uuid4().hex[:10]
+    cancel_event = threading.Event()
+    run_id = start_run(
+        "chat",
+        request=data.get('message', ''),
+        session_id=data.get('session_id', 'default'),
+        metadata={"job_id": job_id, "type": data.get('type', 'rag')},
+    )
     _chat_jobs[job_id] = {
         'status': 'running', 'answer': '', 'sources': [],
-        'error': '', 'ts': _time.time(),
+        'error': '', 'ts': _time.time(), 'cancel_event': cancel_event,
+        'run_id': run_id,
     }
 
     chat_type = data.get('type', 'rag')
@@ -1226,8 +1249,10 @@ def chat_submit():
             if _chat_jobs.get(job_id, {}).get('status') == 'cancelled':
                 return
             if chat_type == 'plain':
+                append_event(run_id, "build_messages", "Building plain chat messages")
                 messages, sources, llm_cfg = _build_plain_messages(data)
             else:
+                append_event(run_id, "build_messages", "Building RAG chat messages")
                 messages, sources, llm_cfg = _build_rag_messages(data)
 
             if not llm_cfg.get('api_base'):
@@ -1236,15 +1261,28 @@ def chat_submit():
                         answer='当前没有可用的 LLM 后端。\n请在 **LLM 设置** 页面配置后端（Ollama / 在线 API）。',
                         status='done',
                     )
+                    finish_run(run_id, "failed", error="未配置 LLM 后端")
                 return
 
+            append_event(run_id, "llm_call", f"Calling {llm_cfg.get('model', '')}")
             answer = llm_call(messages, llm_cfg, max_tokens=2000,
-                              images=images if images else None)
+                              images=images if images else None,
+                              cancel_event=cancel_event)
             if _chat_jobs.get(job_id, {}).get('status') != 'cancelled':
                 _chat_jobs[job_id].update(answer=answer, sources=sources, status='done')
+                finish_run(
+                    run_id,
+                    "succeeded",
+                    result={
+                        "answer_chars": len(answer or ""),
+                        "sources": len(sources or []),
+                        "model": llm_cfg.get("model", ""),
+                    },
+                )
         except Exception as exc:
             if _chat_jobs.get(job_id, {}).get('status') != 'cancelled':
                 _chat_jobs[job_id].update(status='error', error=str(exc))
+                finish_run(run_id, "error", error=str(exc))
 
     threading.Thread(target=_run, daemon=True).start()
     return jsonify({'ok': True, 'job_id': job_id})
@@ -1272,5 +1310,10 @@ def chat_job_cancel(job_id):
     if not job:
         return jsonify({'ok': False, 'error': 'Job not found or expired'}), 404
     if job.get('status') == 'running':
+        ev = job.get('cancel_event')
+        if ev is not None:
+            ev.set()
         job.update(status='cancelled', error='cancelled')
+        if job.get('run_id'):
+            finish_run(job['run_id'], "cancelled", error="cancelled")
     return jsonify({'ok': True, 'status': job.get('status')})

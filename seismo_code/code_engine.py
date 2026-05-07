@@ -45,7 +45,7 @@ from .ce_utils import (
     CodeRunResult, DebugAttempt, StepResult, WorkflowRunResult,
     _call_llm, _extract_code, _is_bash_code, _extract_diagnosis,
     _extract_plan, _find_file_paths, _profile_file, _format_file_context,
-    _pre_sanitize,
+    _pre_sanitize, CodeExecutionCancelled,
 )
 
 # Skill + RAG context builder — optional, graceful fallback
@@ -123,27 +123,38 @@ class CodeEngine:
             except Exception:
                 pass
 
+    @staticmethod
+    def _raise_if_cancelled(cancel_event=None):
+        if cancel_event is not None and cancel_event.is_set():
+            raise CodeExecutionCancelled("cancelled")
+
     # ── Executors ─────────────────────────────────────────────────────────────
 
-    def _run_code(self, code: str, timeout: int) -> ExecutionResult:
+    def _run_code(self, code: str, timeout: int, cancel_event=None) -> ExecutionResult:
         """Execute Python or bash code."""
+        self._raise_if_cancelled(cancel_event)
         if _is_bash_code(code):
             clean = re.sub(r"^#\s*lang:bash\s*\n", "", code, count=1)
             return execute_bash(clean, project_root=self.project_root,
-                                timeout=timeout, keep_dir=True)
+                                timeout=timeout, keep_dir=True,
+                                cancel_event=cancel_event)
         return execute_code(_pre_sanitize(code), project_root=self.project_root,
                             timeout=timeout, keep_dir=True,
-                            python_executable=self.python_executable)
+                            python_executable=self.python_executable,
+                            cancel_event=cancel_event)
 
     def _run_code_in_dir(self, code: str, timeout: int,
-                         shared_dir: Optional[str] = None) -> ExecutionResult:
+                         shared_dir: Optional[str] = None,
+                         cancel_event=None) -> ExecutionResult:
         """Execute code inside a pre-existing shared directory."""
+        self._raise_if_cancelled(cancel_event)
         if _is_bash_code(code):
             clean = re.sub(r"^#\s*lang:bash\s*\n", "", code, count=1)
             extra_env = {"SAGE_OUTDIR": shared_dir} if shared_dir else None
             return execute_bash(clean, project_root=self.project_root,
                                 timeout=timeout, keep_dir=True,
-                                extra_env=extra_env)
+                                extra_env=extra_env,
+                                cancel_event=cancel_event)
         clean = _pre_sanitize(code)
         extra_env = None
         if shared_dir:
@@ -155,7 +166,8 @@ class CodeEngine:
         return execute_code(clean, project_root=self.project_root,
                             timeout=timeout, keep_dir=True,
                             extra_env=extra_env,
-                            python_executable=self.python_executable)
+                            python_executable=self.python_executable,
+                            cancel_event=cancel_event)
 
     @staticmethod
     def _placeholder_path_reason(code: str) -> str:
@@ -358,6 +370,7 @@ class CodeEngine:
         skill_ctx: str = "",        # ← same skill docs as code-gen phase
         extra_rag_ctx: str = "",    # ← error-specific RAG docs
         exec_dir: Optional[str] = None,  # ← run fixed code in this dir (workflow)
+        cancel_event=None,
     ) -> tuple[str, ExecutionResult, str]:
         """
         Ask the LLM debugger to fix failing code, then execute the fix.
@@ -369,6 +382,7 @@ class CodeEngine:
 
         Returns (fixed_code, new_exec_result, diagnosis).
         """
+        self._raise_if_cancelled(cancel_event)
         error_ctx = self._build_error_context(failed_code, exec_res)
 
         file_ctx_str = ""
@@ -403,27 +417,33 @@ class CodeEngine:
 
         self._emit(on_progress, "debugging", attempt, f"Analyzing error (attempt {attempt})…")
         try:
-            raw = _call_llm(debug_messages, self.llm_config, max_tokens=4096)
+            raw = _call_llm(
+                debug_messages, self.llm_config, max_tokens=4096,
+                cancel_event=cancel_event)
         except ConnectionError as e:
             return failed_code, exec_res, str(e)
 
+        self._raise_if_cancelled(cancel_event)
         diagnosis  = _extract_diagnosis(raw)
         fixed_code = _extract_code(raw)
 
         self._emit(on_progress, "executing", attempt, f"Running fixed code (attempt {attempt})…")
         # Execute in shared dir (workflow) or fresh temp dir (single-request)
         if exec_dir:
-            new_exec = self._run_code_in_dir(fixed_code, timeout, exec_dir)
+            new_exec = self._run_code_in_dir(
+                fixed_code, timeout, exec_dir, cancel_event=cancel_event)
         else:
-            new_exec = self._run_code(fixed_code, timeout)
+            new_exec = self._run_code(fixed_code, timeout, cancel_event=cancel_event)
 
         return fixed_code, new_exec, diagnosis
 
     # ── Verify output ─────────────────────────────────────────────────────────
 
     def _verify_output(self, original_request: str,
-                       exec_res: ExecutionResult) -> tuple[bool, str]:
+                       exec_res: ExecutionResult,
+                       cancel_event=None) -> tuple[bool, str]:
         """Quick LLM sanity-check: did the output fulfil the request?"""
+        self._raise_if_cancelled(cancel_event)
         files_list = "\n".join(
             [f"  [figure] {p}" for p in exec_res.figures]
             + [f"  [file]   {p}" for p in exec_res.output_files]
@@ -438,7 +458,9 @@ class CodeEngine:
             )},
         ]
         try:
-            verdict = _call_llm(msgs, self.llm_config, max_tokens=80).strip()
+            verdict = _call_llm(
+                msgs, self.llm_config, max_tokens=80,
+                cancel_event=cancel_event).strip()
         except Exception:
             return True, ""
         if verdict.upper().startswith("PASS"):
@@ -485,96 +507,121 @@ class CodeEngine:
         timeout: int = 120,
         run_verify: bool = False,
         on_progress: Optional[Callable[[Dict], None]] = None,
+        cancel_event=None,
     ) -> CodeRunResult:
         """Generate, execute, debug, and optionally verify Python or bash code."""
-
-        # 1. Profile files mentioned in the request
-        file_contexts: List[str] = []
-        all_text = user_request + (f"\n{data_hint}" if data_hint else "")
-        for fp in _find_file_paths(all_text)[:3]:
-            self._emit(on_progress, "analyzing", 0, "Analyzing file(s)…")
-            file_contexts.append(
-                _format_file_context(_profile_file(fp, self.project_root,
-                                                    self.python_executable)))
-
-        # 2. Build user message
-        msg = user_request
-        if data_hint:
-            msg += f"\n\nData path: {data_hint}"
-        if file_contexts:
-            msg += "\n\n" + "\n\n".join(file_contexts)
-        self._history.append({"role": "user", "content": msg})
-
-        # 3. Build skill + RAG context (queried once; forwarded to debug loop)
         try:
-            skill_ctx, rag_ctx = _build_ctx(
-                user_request, max_skill_chars=18000, max_rag_chars=7000, top_k=7)
-        except Exception:
-            skill_ctx, rag_ctx = "", ""
+            self._raise_if_cancelled(cancel_event)
 
-        system = _CODEGEN_SYSTEM
-        if skill_ctx:
-            n = skill_ctx.count("### 技能：")
-            system += "\n\n## Relevant skill docs\n" + skill_ctx
-            if n > 1:
-                system += ("\n\n## How to combine these skills\n"
-                           "Identify which functions/patterns from each skill apply "
-                           "and integrate them into a single coherent script.")
-        if rag_ctx:
-            system += ("\n\n## Knowledge Base (RAG)\n" + rag_ctx
-                       + "\n\nUse the above to verify correct API usage before writing code.")
+            # 1. Profile files mentioned in the request
+            file_contexts: List[str] = []
+            all_text = user_request + (f"\n{data_hint}" if data_hint else "")
+            for fp in _find_file_paths(all_text)[:3]:
+                self._raise_if_cancelled(cancel_event)
+                self._emit(on_progress, "analyzing", 0, "Analyzing file(s)…")
+                file_contexts.append(
+                    _format_file_context(_profile_file(fp, self.project_root,
+                                                        self.python_executable)))
 
-        messages = [{"role": "system", "content": system}] + \
-                   [m for m in self._history if m["role"] != "system"]
+            # 2. Build user message
+            msg = user_request
+            if data_hint:
+                msg += f"\n\nData path: {data_hint}"
+            if file_contexts:
+                msg += "\n\n" + "\n\n".join(file_contexts)
+            self._history.append({"role": "user", "content": msg})
 
-        # 4. Plan (non-fatal)
-        plan: List[str] = []
-        self._emit(on_progress, "planning", 0, "Planning…")
-        try:
-            plan = _extract_plan(_call_llm(
-                [{"role": "system", "content": _PLAN_SYSTEM},
-                 {"role": "user", "content":
-                  f"Request: {user_request}\n\n" + "\n".join(file_contexts)
-                  + "\n\nList the execution steps."}],
-                self.llm_config, max_tokens=400))
-        except Exception:
-            pass
-        if plan:
-            self._emit(on_progress, "planning", 0, "Plan: " + " → ".join(plan))
+            # 3. Build skill + RAG context (queried once; forwarded to debug loop)
+            try:
+                self._raise_if_cancelled(cancel_event)
+                skill_ctx, rag_ctx = _build_ctx(
+                    user_request, max_skill_chars=18000, max_rag_chars=7000, top_k=7)
+            except CodeExecutionCancelled:
+                raise
+            except Exception:
+                skill_ctx, rag_ctx = "", ""
 
-        # 5. Generate code
-        self._emit(on_progress, "generating", 0, "Generating code…")
-        try:
-            code = _extract_code(_call_llm(messages, self.llm_config))
-        except ConnectionError as e:
-            return CodeRunResult(success=False, response=str(e), code="", exec_result=None)
+            system = _CODEGEN_SYSTEM
+            if skill_ctx:
+                n = skill_ctx.count("### 技能：")
+                system += "\n\n## Relevant skill docs\n" + skill_ctx
+                if n > 1:
+                    system += ("\n\n## How to combine these skills\n"
+                               "Identify which functions/patterns from each skill apply "
+                               "and integrate them into a single coherent script.")
+            if rag_ctx:
+                system += ("\n\n## Knowledge Base (RAG)\n" + rag_ctx
+                           + "\n\nUse the above to verify correct API usage before writing code.")
 
-        placeholder_reason = self._placeholder_path_reason(code)
-        if placeholder_reason:
-            response = (
-                "未执行代码：模型生成了示例/占位数据路径，而不是实际存在的输入文件。\n"
-                "请在问题中提供真实的 SAC/MSEED/CSV 文件或目录路径后重试。\n"
-                f"原因: {placeholder_reason}"
-            )
-            self._emit(on_progress, "done", 0, response)
+            messages = [{"role": "system", "content": system}] + \
+                       [m for m in self._history if m["role"] != "system"]
+
+            # 4. Plan (non-fatal)
+            plan: List[str] = []
+            self._emit(on_progress, "planning", 0, "Planning…")
+            try:
+                plan = _extract_plan(_call_llm(
+                    [{"role": "system", "content": _PLAN_SYSTEM},
+                     {"role": "user", "content":
+                      f"Request: {user_request}\n\n" + "\n".join(file_contexts)
+                      + "\n\nList the execution steps."}],
+                    self.llm_config, max_tokens=400,
+                    cancel_event=cancel_event))
+            except CodeExecutionCancelled:
+                raise
+            except Exception:
+                pass
+            if plan:
+                self._emit(on_progress, "planning", 0, "Plan: " + " → ".join(plan))
+
+            # 5. Generate code
+            self._emit(on_progress, "generating", 0, "Generating code…")
+            try:
+                code = _extract_code(_call_llm(
+                    messages, self.llm_config, cancel_event=cancel_event))
+            except ConnectionError as e:
+                return CodeRunResult(success=False, response=str(e), code="", exec_result=None)
+
+            self._raise_if_cancelled(cancel_event)
+            placeholder_reason = self._placeholder_path_reason(code)
+            if placeholder_reason:
+                response = (
+                    "未执行代码：模型生成了示例/占位数据路径，而不是实际存在的输入文件。\n"
+                    "请在问题中提供真实的 SAC/MSEED/CSV 文件或目录路径后重试。\n"
+                    f"原因: {placeholder_reason}"
+                )
+                self._emit(on_progress, "done", 0, response)
+                return CodeRunResult(
+                    success=False,
+                    response=response,
+                    code=code,
+                    exec_result=None,
+                    attempts=0,
+                    debug_trace=[],
+                    plan=plan,
+                )
+
+            # 6. First execution
+            self._emit(on_progress, "executing", 0, "Executing code…")
+            exec_res = self._run_code(code, timeout, cancel_event=cancel_event)
+            self._raise_if_cancelled(cancel_event)
+        except CodeExecutionCancelled:
+            self._emit(on_progress, "cancelled", 0, "Execution cancelled.")
             return CodeRunResult(
                 success=False,
-                response=response,
-                code=code,
+                response="已取消执行。",
+                code="",
                 exec_result=None,
                 attempts=0,
                 debug_trace=[],
-                plan=plan,
+                plan=[],
             )
-
-        # 6. First execution
-        self._emit(on_progress, "executing", 0, "Executing code…")
-        exec_res = self._run_code(code, timeout)
         debug_trace: List[DebugAttempt] = []
         attempt = 0
 
         # 7. Debug loop — handles runtime errors AND mini-test/output-check failures.
         while attempt < max_debug_rounds:
+            self._raise_if_cancelled(cancel_event)
             if self._execution_success(exec_res):
                 test_ok, test_reason = self._mini_test_ok(user_request, code, exec_res)
                 if test_ok:
@@ -594,8 +641,11 @@ class CodeEngine:
                 error=err_summary, stdout=exec_res.stdout, success=False))
 
             try:
+                self._raise_if_cancelled(cancel_event)
                 _, dbg_rag = _build_ctx(f"{user_request} {err_summary[:400]}",
                                         max_skill_chars=4000, max_rag_chars=5000, top_k=5)
+            except CodeExecutionCancelled:
+                raise
             except Exception:
                 dbg_rag = ""
 
@@ -605,7 +655,9 @@ class CodeEngine:
                 on_progress=on_progress, file_contexts=file_contexts,
                 skill_ctx=skill_ctx, extra_rag_ctx=dbg_rag,
                 # exec_dir=None → run in fresh temp dir (single-request mode)
+                cancel_event=cancel_event,
             )
+            self._raise_if_cancelled(cancel_event)
             debug_trace[-1].diagnosis = diagnosis
 
             if self._execution_success(exec_res):
@@ -665,7 +717,8 @@ class CodeEngine:
         verify_pass, verify_note = None, ""
         if run_verify and exec_res and exec_res.success:
             self._emit(on_progress, "verifying", attempt, "Verifying output…")
-            verify_pass, verify_note = self._verify_output(user_request, exec_res)
+            verify_pass, verify_note = self._verify_output(
+                user_request, exec_res, cancel_event=cancel_event)
 
         # 10. Save final script
         script_path = ""
@@ -801,6 +854,7 @@ class CodeEngine:
         timeout: int = 120,
         skip_on_failure: bool = False,
         on_progress: Optional[Callable[[Dict], None]] = None,
+        cancel_event=None,
     ) -> WorkflowRunResult:
         """
         Execute a workflow step-by-step.
@@ -819,10 +873,17 @@ class CodeEngine:
 
         # 0. Load workflow
         try:
+            self._raise_if_cancelled(cancel_event)
             if _root not in sys.path:
                 sys.path.insert(0, _root)
             from seismo_skill.workflow_runner import load_workflow
             workflow = load_workflow(workflow_name)
+        except CodeExecutionCancelled:
+            return WorkflowRunResult(
+                workflow_name=workflow_name, workflow_title="",
+                success=False, steps_total=0, steps_done=0,
+                step_results=[], all_figures=[], all_output_files=[],
+                response="已取消执行。")
         except Exception as e:
             return WorkflowRunResult(
                 workflow_name=workflow_name, workflow_title="",
@@ -865,6 +926,7 @@ class CodeEngine:
 
         # 2. Execute steps
         for step_n, step in enumerate(ordered_steps):
+            self._raise_if_cancelled(cancel_event)
             step_id  = step["id"]
             skill_nm = step.get("skill", "")
             desc     = step["description"]
@@ -912,7 +974,10 @@ class CodeEngine:
 
             # Generate code
             try:
-                code = _extract_code(_call_llm(messages, self.llm_config))
+                code = _extract_code(_call_llm(
+                    messages, self.llm_config, cancel_event=cancel_event))
+            except CodeExecutionCancelled:
+                raise
             except ConnectionError as e:
                 step_results.append(StepResult(
                     step_id=step_id, skill=skill_nm, description=desc,
@@ -925,7 +990,9 @@ class CodeEngine:
             # Execute in shared dir
             _emit_wf("workflow_step", step_id, step_n,
                      f"[{step_n+1}/{steps_total}] Executing step {step_id}…")
-            exec_res  = self._run_code_in_dir(code, timeout, shared_dir)
+            exec_res  = self._run_code_in_dir(
+                code, timeout, shared_dir, cancel_event=cancel_event)
+            self._raise_if_cancelled(cancel_event)
             attempt   = 0
             diagnosis = ""
             if shared_dir is None and exec_res.exec_dir:
@@ -935,6 +1002,7 @@ class CodeEngine:
             # The loop handles both runtime failures AND semantic output failures
             # (_step_output_ok). skill_ctx is forwarded; exec_dir avoids double-execution.
             while attempt < max_debug_rounds:
+                self._raise_if_cancelled(cancel_event)
                 exec_ok = self._execution_success(exec_res)
                 if exec_ok:
                     out_ok, out_reason = self._step_output_ok(desc, exec_res)
@@ -958,9 +1026,12 @@ class CodeEngine:
                          f"[{step_n+1}/{steps_total}] Debugging {step_id} (round {attempt})…")
 
                 try:
+                    self._raise_if_cancelled(cancel_event)
                     _, dbg_rag = _build_ctx(
                         f"{skill_nm} {desc} {err_summary[:300]}",
                         max_skill_chars=3000, max_rag_chars=4000, top_k=4)
+                except CodeExecutionCancelled:
+                    raise
                 except Exception:
                     dbg_rag = ""
 
@@ -973,7 +1044,9 @@ class CodeEngine:
                     skill_ctx=skill_ctx,     # ← forwarded skill docs
                     extra_rag_ctx=dbg_rag,
                     exec_dir=shared_dir,     # ← no double-execution
+                    cancel_event=cancel_event,
                 )
+                self._raise_if_cancelled(cancel_event)
                 if shared_dir is None and exec_res.exec_dir:
                     shared_dir = exec_res.exec_dir
 

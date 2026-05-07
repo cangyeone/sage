@@ -101,7 +101,7 @@ def _inject_images_into_messages(messages: list, images: list, provider: str) ->
 
 
 def llm_call(messages: list, llm_cfg: dict, max_tokens: int = 2000,
-             images: list = None) -> str:
+             images: list = None, cancel_event=None) -> str:
     """
     向 LLM 发请求，返回回复文本；失败时抛出异常。
     images: 可选，base64 字符串列表（可含 data URL 前缀），用于多模态 VL 模型。
@@ -119,6 +119,15 @@ def llm_call(messages: list, llm_cfg: dict, max_tokens: int = 2000,
         raise ValueError("未配置 LLM 后端地址，请在 LLM 设置页面中选择模型")
     if not model:
         raise ValueError("未选择模型，请在 LLM 设置页面中选择一个 Ollama 模型")
+
+    if cancel_event is not None:
+        chunks = []
+        for chunk in llm_stream(
+            messages, llm_cfg, max_tokens=max_tokens,
+            images=images, cancel_event=cancel_event,
+        ):
+            chunks.append(chunk)
+        return "".join(chunks).strip()
 
     msgs = _inject_images_into_messages(messages, images or [], provider)
 
@@ -144,7 +153,7 @@ def llm_call(messages: list, llm_cfg: dict, max_tokens: int = 2000,
 
 
 def llm_stream(messages: list, llm_cfg: dict, max_tokens: int = 2000,
-               images: list = None):
+               images: list = None, cancel_event=None):
     """
     Generator that yields text chunks from the LLM stream.
     Supports Ollama (plain NDJSON stream) and OpenAI-compatible SSE.
@@ -163,6 +172,9 @@ def llm_stream(messages: list, llm_cfg: dict, max_tokens: int = 2000,
         raise ValueError("未配置 LLM 后端地址")
     if not model:
         raise ValueError("未选择模型")
+
+    if cancel_event is not None and cancel_event.is_set():
+        raise RuntimeError("LLM request cancelled")
 
     msgs = _inject_images_into_messages(messages, images or [], provider)
 
@@ -183,6 +195,11 @@ def llm_stream(messages: list, llm_cfg: dict, max_tokens: int = 2000,
     with urllib.request.urlopen(req, timeout=120) as resp:
         in_reasoning = False
         for raw_line in resp:
+            if cancel_event is not None and cancel_event.is_set():
+                try:
+                    resp.close()
+                finally:
+                    raise RuntimeError("LLM request cancelled")
             line = raw_line.decode("utf-8", errors="replace").strip()
             if not line:
                 continue

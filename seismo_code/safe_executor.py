@@ -19,10 +19,12 @@ safe_executor.py — 安全地在子进程中执行 LLM 生成的 Python 代码�
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -108,6 +110,64 @@ savefig = _savefig
 """
 
 
+def _cancel_requested(cancel_event: Optional[Any]) -> bool:
+    return bool(cancel_event is not None and cancel_event.is_set())
+
+
+def _terminate_process(proc: subprocess.Popen):
+    """Terminate a child process and its process group when available."""
+    try:
+        if os.name == "posix":
+            os.killpg(proc.pid, signal.SIGTERM)
+        else:
+            proc.terminate()
+    except Exception:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+
+    try:
+        proc.wait(timeout=2)
+    except Exception:
+        try:
+            if os.name == "posix":
+                os.killpg(proc.pid, signal.SIGKILL)
+            else:
+                proc.kill()
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+
+def _communicate_with_cancel(
+    proc: subprocess.Popen,
+    timeout: int,
+    cancel_event: Optional[Any] = None,
+) -> tuple[bool, str, str, int, str]:
+    """Wait for process completion while honoring cancellation."""
+    deadline = time.monotonic() + timeout
+    while True:
+        if _cancel_requested(cancel_event):
+            _terminate_process(proc)
+            stdout, stderr = proc.communicate()
+            return False, stdout or "", stderr or "", proc.returncode or -15, "Execution cancelled"
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _terminate_process(proc)
+            stdout, stderr = proc.communicate()
+            return False, stdout or "", stderr or "", proc.returncode or -9, f"执行超时（>{timeout}s）"
+
+        try:
+            stdout, stderr = proc.communicate(timeout=min(0.25, remaining))
+            return proc.returncode == 0, stdout or "", stderr or "", proc.returncode or 0, ""
+        except subprocess.TimeoutExpired:
+            continue
+
+
 def execute_code(
     code: str,
     project_root: Optional[str] = None,
@@ -115,6 +175,7 @@ def execute_code(
     keep_dir: bool = False,
     extra_env: Optional[Dict[str, str]] = None,
     python_executable: Optional[str] = None,
+    cancel_event: Optional[Any] = None,
 ) -> ExecutionResult:
     """
     Execute Python code in an isolated subprocess.
@@ -171,27 +232,22 @@ def execute_code(
     # Execute
     try:
         python_cmd = python_executable or sys.executable
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             [python_cmd, script_path],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
             cwd=tmp,
             env=env,
+            start_new_session=(os.name == "posix"),
         )
-        success = proc.returncode == 0
-        stdout = proc.stdout or ""
-        stderr = proc.stderr or ""
-        error = ""
+        success, stdout, stderr, returncode, error = _communicate_with_cancel(
+            proc, timeout, cancel_event)
         if not success:
             # Extract the last traceback line as short error
-            lines = stderr.strip().splitlines()
-            error = lines[-1] if lines else f"Exit code {proc.returncode}"
-    except subprocess.TimeoutExpired:
-        success = False
-        stdout = ""
-        stderr = ""
-        error = f"执行超时（>{timeout}s）"
+            if not error:
+                lines = stderr.strip().splitlines()
+                error = lines[-1] if lines else f"Exit code {returncode}"
     except Exception as e:
         success = False
         stdout = ""
@@ -245,6 +301,7 @@ def execute_bash(
     timeout: int = 180,
     keep_dir: bool = False,
     extra_env: Optional[Dict[str, str]] = None,
+    cancel_event: Optional[Any] = None,
 ) -> ExecutionResult:
     """
     Execute a bash script in an isolated temp directory.
@@ -321,26 +378,21 @@ def execute_bash(
 
     # Execute
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             ["bash", script_path],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
             cwd=tmp,
             env=env,
+            start_new_session=(os.name == "posix"),
         )
-        success = proc.returncode == 0
-        stdout  = proc.stdout or ""
-        stderr  = proc.stderr or ""
-        error   = ""
+        success, stdout, stderr, returncode, error = _communicate_with_cancel(
+            proc, timeout, cancel_event)
         if not success:
-            lines = stderr.strip().splitlines()
-            error = lines[-1] if lines else f"Exit code {proc.returncode}"
-    except subprocess.TimeoutExpired:
-        success = False
-        stdout  = ""
-        stderr  = ""
-        error   = f"Bash execution timeout (>{timeout}s)"
+            if not error:
+                lines = stderr.strip().splitlines()
+                error = lines[-1] if lines else f"Exit code {returncode}"
     except Exception as exc:
         success = False
         stdout  = ""

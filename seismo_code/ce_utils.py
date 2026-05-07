@@ -107,7 +107,21 @@ class WorkflowRunResult:
 # LLM client
 # ---------------------------------------------------------------------------
 
-def _call_llm(messages: List[Dict], llm_config: Dict, max_tokens: int = 4096) -> str:
+
+class CodeExecutionCancelled(Exception):
+    """Raised when a user cancels an in-flight code generation job."""
+
+
+def _cancel_requested(cancel_event: Optional[Any]) -> bool:
+    return bool(cancel_event is not None and cancel_event.is_set())
+
+
+def _call_llm(
+    messages: List[Dict],
+    llm_config: Dict,
+    max_tokens: int = 4096,
+    cancel_event: Optional[Any] = None,
+) -> str:
     """Call the configured LLM (Ollama or OpenAI-compatible) and return reply text."""
     provider    = llm_config.get("provider", "ollama")
     model       = llm_config.get("model", "qwen2.5:7b")
@@ -117,12 +131,14 @@ def _call_llm(messages: List[Dict], llm_config: Dict, max_tokens: int = 4096) ->
 
     if provider == "ollama":
         url     = api_base.rstrip("/") + "/api/chat"
-        payload = {"model": model, "messages": messages, "stream": False,
+        payload = {"model": model, "messages": messages, "stream": bool(cancel_event),
                    "options": {"temperature": temperature, "num_predict": max_tokens}}
     else:
         url     = api_base.rstrip("/") + "/chat/completions"
         payload = {"model": model, "messages": messages,
                    "temperature": temperature, "max_tokens": max_tokens}
+        if cancel_event is not None:
+            payload["stream"] = True
 
     req = urllib.request.Request(
         url,
@@ -132,8 +148,43 @@ def _call_llm(messages: List[Dict], llm_config: Dict, max_tokens: int = 4096) ->
                  "Authorization": f"Bearer {api_key}" if api_key else "Bearer none"},
     )
     try:
+        if _cancel_requested(cancel_event):
+            raise CodeExecutionCancelled("cancelled")
+
         with urllib.request.urlopen(req, timeout=120) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
+            if cancel_event is None:
+                body = json.loads(resp.read().decode("utf-8"))
+            else:
+                chunks: List[str] = []
+                for raw_line in resp:
+                    if _cancel_requested(cancel_event):
+                        try:
+                            resp.close()
+                        finally:
+                            raise CodeExecutionCancelled("cancelled")
+
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line:
+                        continue
+                    if line.startswith("data: "):
+                        line = line[6:]
+                        if line == "[DONE]":
+                            break
+                        try:
+                            obj = json.loads(line)
+                            delta = obj.get("choices", [{}])[0].get("delta", {})
+                            chunks.append(delta.get("content", "") or "")
+                        except Exception:
+                            continue
+                    else:
+                        try:
+                            obj = json.loads(line)
+                            chunks.append(obj.get("message", {}).get("content", "") or "")
+                            if obj.get("done"):
+                                break
+                        except Exception:
+                            continue
+                return "".join(chunks)
     except urllib.error.URLError as e:
         raise ConnectionError(f"LLM connection failed ({url}): {e}")
 

@@ -2,6 +2,8 @@
 *.pyc
 *.pdf
 /results
+/outputs/smoke_demo/
+/web_app/outputs/runs/
 /pnsn
 data/seismic/waveform/data.csv
 open_models
