@@ -35,6 +35,11 @@ Use custom code for:
 - debugging and mini-tests;
 - integrating picks into a larger SAGE analysis pipeline.
 
+Important fallback rule:
+
+- If `pnsn/picker.py` and `pnsn/pickers/pnsn.v3.jit` exist, prefer the PNSN TorchScript picker over a naive STA/LTA script.
+- If you must write a classical STA/LTA fallback, never use the first `trigger_onset` window as the final pick. Print candidate trigger windows, ignore edge triggers near the record start, compare candidates with waveform energy/SNR, and choose plausible P/S arrivals. A common failure is picking a taper/filter transient within the first few seconds while the real event is much later in the trace.
+
 Custom picking code should implement this workflow:
 
 1. Discover waveform files.
