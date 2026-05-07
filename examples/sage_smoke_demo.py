@@ -47,30 +47,72 @@ def run_smoke_demo(output_dir: Path) -> dict:
     mpl_config.mkdir(exist_ok=True)
     os.environ.setdefault("MPLCONFIGDIR", str(mpl_config))
     os.environ.setdefault("XDG_CACHE_HOME", str(output_dir / ".cache"))
-    run_id = start_run(
-        "smoke_demo",
-        request="synthetic waveform -> picks -> event catalog -> figure -> report",
-        metadata={"output_dir": str(output_dir)},
-    )
-    append_event(run_id, "start", "Creating synthetic waveform sequence")
-    steps = []
 
-    rng = np.random.default_rng(20260507)
+    seed = 20260507
+    rng = np.random.default_rng(seed)
     dt = 0.02
     t = np.arange(0, 20, dt)
+    noise_std = 0.03
+    background_amp = 0.02
+    background_hz = 0.7
+    p_width = 0.06
+    s_width = 0.10
+    p_amp = 1.0
+    s_amp = 0.75
     stations = [
         {"station": "STA01", "distance_km": 12.0, "p": 6.20, "s": 10.10},
         {"station": "STA02", "distance_km": 18.5, "p": 7.05, "s": 11.30},
         {"station": "STA03", "distance_km": 25.0, "p": 7.90, "s": 12.55},
     ]
+    station_truth = [
+        {
+            "station": sta["station"],
+            "distance_km": sta["distance_km"],
+            "true_p_s": sta["p"],
+            "true_s_s": sta["s"],
+            "p_window_start_s": round(sta["p"] - 0.4, 3),
+            "p_window_end_s": round(sta["p"] + 0.4, 3),
+            "s_window_start_s": round(sta["s"] - 0.5, 3),
+            "s_window_end_s": round(sta["s"] + 0.5, 3),
+            "p_amp": p_amp,
+            "s_amp": s_amp,
+            "p_width_s": p_width,
+            "s_width_s": s_width,
+            "noise_std": noise_std,
+        }
+        for sta in stations
+    ]
+    generation = {
+        "description": "Deterministic synthetic waveform smoke test with one toy event observed by three stations.",
+        "random_seed": seed,
+        "sample_interval_s": dt,
+        "duration_s": 20.0,
+        "noise": f"Gaussian white noise N(0, {noise_std})",
+        "background": f"{background_amp} * sin(2*pi*{background_hz}*t)",
+        "p_pulse": {"shape": "Gaussian", "width_s": p_width, "amplitude": p_amp},
+        "s_pulse": {"shape": "Gaussian", "width_s": s_width, "amplitude": s_amp},
+        "picking_method": (
+            "Ground-truth-window picker: choose max |amplitude| in "
+            "[true_p-0.4, true_p+0.4] and [true_s-0.5, true_s+0.5]. "
+            "This is a deterministic smoke check, not a trained AI picker."
+        ),
+        "stations": station_truth,
+    }
+    run_id = start_run(
+        "smoke_demo",
+        request="synthetic waveform -> picks -> event catalog -> figure -> report",
+        metadata={"output_dir": str(output_dir), "generation": generation},
+    )
+    append_event(run_id, "start", "Creating synthetic waveform sequence", generation)
+    steps = []
 
     waveform_rows = []
     picks = []
     for sta in stations:
-        y = rng.normal(0, 0.03, size=t.shape)
-        y += _gaussian(t, sta["p"], 0.06, 1.0)
-        y += _gaussian(t, sta["s"], 0.10, 0.75)
-        y += 0.02 * np.sin(2 * np.pi * 0.7 * t)
+        y = rng.normal(0, noise_std, size=t.shape)
+        y += _gaussian(t, sta["p"], p_width, p_amp)
+        y += _gaussian(t, sta["s"], s_width, s_amp)
+        y += background_amp * np.sin(2 * np.pi * background_hz * t)
 
         p_time, p_conf = _pick_phase(t, y, sta["p"] - 0.4, sta["p"] + 0.4)
         s_time, s_conf = _pick_phase(t, y, sta["s"] - 0.5, sta["s"] + 0.5)
@@ -95,6 +137,12 @@ def run_smoke_demo(output_dir: Path) -> dict:
         writer = csv.DictWriter(f, fieldnames=["station", "time_s", "amplitude"])
         writer.writeheader()
         writer.writerows(waveform_rows)
+
+    truth_csv = output_dir / "station_truth.csv"
+    with truth_csv.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(station_truth[0].keys()))
+        writer.writeheader()
+        writer.writerows(station_truth)
 
     picks_csv = output_dir / "phase_picks.csv"
     with picks_csv.open("w", newline="", encoding="utf-8") as f:
@@ -138,6 +186,8 @@ def run_smoke_demo(output_dir: Path) -> dict:
         rows = [r for r in waveform_rows if r["station"] == sta["station"]]
         yy = np.array([r["amplitude"] for r in rows])
         ax.plot(t, yy, color="#243b53", lw=0.9)
+        ax.axvline(sta["p"], color="#d64545", lw=0.8, ls="--", alpha=0.45)
+        ax.axvline(sta["s"], color="#2f9e44", lw=0.8, ls="--", alpha=0.45)
         for pick in [p for p in picks if p["station"] == sta["station"]]:
             color = "#d64545" if pick["phase"] == "P" else "#2f9e44"
             ax.axvline(pick["time_s"], color=color, lw=1.2, alpha=0.9)
@@ -145,7 +195,7 @@ def run_smoke_demo(output_dir: Path) -> dict:
         ax.set_ylabel(sta["station"])
         ax.grid(alpha=0.2)
     axes[-1].set_xlabel("Time (s)")
-    fig.suptitle("SAGE Smoke Demo: synthetic waveform picks")
+    fig.suptitle("SAGE Smoke Demo: synthetic waveform picks (dashed truth, solid pick)")
     fig.tight_layout()
     figure_png = output_dir / "smoke_waveform_picks.png"
     fig.savefig(figure_png, dpi=160)
@@ -162,8 +212,31 @@ def run_smoke_demo(output_dir: Path) -> dict:
             f"- Mean S-P: `{catalog['mean_s_minus_p_s']} s`",
             f"- Magnitude proxy: `{catalog['magnitude_proxy']}`",
             "",
+            "## Synthetic generation",
+            "",
+            f"- Random seed: `{seed}`",
+            f"- Sampling: `dt={dt} s`, duration `{generation['duration_s']} s`",
+            f"- Noise: `{generation['noise']}`",
+            f"- Background: `{generation['background']}`",
+            f"- P pulse: Gaussian, width `{p_width} s`, amplitude `{p_amp}`",
+            f"- S pulse: Gaussian, width `{s_width} s`, amplitude `{s_amp}`",
+            "",
+            "## Ground truth arrivals",
+            "",
+            "| station | distance_km | true_p_s | true_s_s |",
+            "|---|---:|---:|---:|",
+            *[
+                f"| {row['station']} | {row['distance_km']} | {row['true_p_s']} | {row['true_s_s']} |"
+                for row in station_truth
+            ],
+            "",
+            "## Picking method",
+            "",
+            generation["picking_method"],
+            "",
             "Artifacts:",
             f"- `{waveforms_csv.name}`",
+            f"- `{truth_csv.name}`",
             f"- `{picks_csv.name}`",
             f"- `{catalog_csv.name}`",
             f"- `{figure_png.name}`",
@@ -171,7 +244,7 @@ def run_smoke_demo(output_dir: Path) -> dict:
         encoding="utf-8",
     )
 
-    artifacts = [waveforms_csv, picks_csv, catalog_csv, figure_png, report_md]
+    artifacts = [waveforms_csv, truth_csv, picks_csv, catalog_csv, figure_png, report_md]
     append_event(run_id, "report", "Generated figure and report")
     steps.append({
         "id": "report_artifacts",
@@ -191,6 +264,7 @@ def run_smoke_demo(output_dir: Path) -> dict:
         "run_id": run_id,
         "output_dir": str(output_dir),
         "steps": steps,
+        "generation": generation,
         "catalog": catalog,
         "artifacts": [str(p) for p in artifacts],
     }

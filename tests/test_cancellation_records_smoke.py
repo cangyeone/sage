@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import csv
 import shutil
 import tempfile
 import threading
@@ -74,12 +75,22 @@ class TestRunRecordsAndSmokeDemo(unittest.TestCase):
 
                 self.assertTrue(result["ok"])
                 self.assertEqual(result["catalog"]["n_picks"], 6)
+                self.assertEqual(result["generation"]["random_seed"], 20260507)
+                self.assertIn("station_truth.csv", [Path(p).name for p in result["artifacts"]])
                 for artifact in result["artifacts"]:
                     self.assertTrue(Path(artifact).is_file(), artifact)
+
+                truth_path = Path(out_tmp) / "station_truth.csv"
+                with truth_path.open(newline="", encoding="utf-8") as f:
+                    rows = list(csv.DictReader(f))
+                self.assertEqual(len(rows), 3)
+                self.assertEqual(rows[0]["station"], "STA01")
+                self.assertEqual(float(rows[0]["true_p_s"]), 6.20)
 
                 rec = run_records.get_run(result["run_id"])
                 self.assertEqual(rec["kind"], "smoke_demo")
                 self.assertEqual(rec["status"], "succeeded")
+                self.assertIn("generation", rec["metadata"])
             finally:
                 run_records.RUN_RECORD_DIR = old_dir
 

@@ -646,6 +646,7 @@ function _newConv(title='') {
     history: [],
     messages: [],
     docs: [],
+    lastRunContext: null,
   };
 }
 
@@ -749,6 +750,7 @@ function saveActiveConversation(opts={}) {
   c.history = chatHistory.slice(-20);
   c.messages = _msgStore.slice(-50);
   c.docs = sessionDocs;
+  c.lastRunContext = lastRunContext || null;
   if (touch) {
     c.updatedAt = Date.now();
     const p = activeProject();
@@ -813,6 +815,7 @@ window.addEventListener('beforeunload', () => {
 let kbHasDocs      = false;
 let lastCodeStdout = '';    // 上一次 sendCode 的 stdout，供下一轮绘图注入路径
 let lastDataPath   = '';    // 用户消息中提取到的最近一次数据目录/文件路径
+let lastRunContext = activeConversation().lastRunContext || null; // 最近一次可复现实验输出，供后续代码技能继承
 let lastIntentWasCode  = false; // 上一轮是否执行了代码，用于识别"改进/调整"等后续指令
 let lastIntentWasPaper = false; // 上一轮是否在解读论文，用于识别"复现/实现"等后续指令
 
@@ -1049,6 +1052,8 @@ function loadConversationState(convId) {
   chatHistory = c.history || [];
   _msgStore = c.messages || [];
   sessionDocs = c.docs || [];
+  lastRunContext = c.lastRunContext || null;
+  if (lastRunContext && lastRunContext.output_dir) lastDataPath = lastRunContext.output_dir;
   updateSendButtonState(SESSION_ID);
   saveConversations();
 }
@@ -1222,8 +1227,93 @@ function _artifactLine(runId, artifact, i) {
   return `- [${name}](/api/runs/${encodeURIComponent(runId)}/artifact/${i})`;
 }
 
+function _artifactByName(artifacts, name) {
+  return (artifacts || []).find(a => String(a || '').split(/[\\/]/).pop() === name) || '';
+}
+
+function _runContextFromPayload(d) {
+  const artifacts = d.artifacts || [];
+  return {
+    run_id: d.run_id || '',
+    output_dir: d.output_dir || '',
+    catalog: d.catalog || {},
+    generation: d.generation || {},
+    artifacts,
+    files: {
+      synthetic_waveforms: _artifactByName(artifacts, 'synthetic_waveforms.csv'),
+      station_truth: _artifactByName(artifacts, 'station_truth.csv'),
+      phase_picks: _artifactByName(artifacts, 'phase_picks.csv'),
+      event_catalog: _artifactByName(artifacts, 'event_catalog.csv'),
+      figure: _artifactByName(artifacts, 'smoke_waveform_picks.png'),
+      report: _artifactByName(artifacts, 'smoke_report.md'),
+    },
+  };
+}
+
+function _stationTruthLines(generation) {
+  const rows = generation?.stations || [];
+  if (!rows.length) return [];
+  return rows.map(row =>
+    `- ${row.station}: distance=${row.distance_km} km, true P=${row.true_p_s} s, true S=${row.true_s_s} s`
+  );
+}
+
+function _buildRunContextPrompt(ctx) {
+  if (!ctx || !ctx.run_id) return '';
+  const files = ctx.files || {};
+  const cat = ctx.catalog || {};
+  const gen = ctx.generation || {};
+  const stationLines = _stationTruthLines(gen).join('\n') || '- station truth unavailable in record';
+  return [
+    '===== Latest SAGE reproducible run context =====',
+    `run_id: ${ctx.run_id}`,
+    `output_dir: ${ctx.output_dir || ''}`,
+    `synthetic waveform CSV: ${files.synthetic_waveforms || ''}`,
+    `station truth CSV: ${files.station_truth || ''}`,
+    `phase picks CSV: ${files.phase_picks || ''}`,
+    `event catalog CSV: ${files.event_catalog || ''}`,
+    `figure PNG: ${files.figure || ''}`,
+    `report Markdown: ${files.report || ''}`,
+    '',
+    `event_id: ${cat.event_id || ''}`,
+    `n_picks: ${cat.n_picks ?? ''}`,
+    `mean_s_minus_p_s: ${cat.mean_s_minus_p_s ?? ''}`,
+    `magnitude_proxy: ${cat.magnitude_proxy ?? ''}`,
+    '',
+    'Synthetic generation:',
+    `- random_seed: ${gen.random_seed ?? ''}`,
+    `- sample_interval_s: ${gen.sample_interval_s ?? ''}`,
+    `- duration_s: ${gen.duration_s ?? ''}`,
+    `- noise: ${gen.noise || ''}`,
+    `- background: ${gen.background || ''}`,
+    `- P pulse: ${JSON.stringify(gen.p_pulse || {})}`,
+    `- S pulse: ${JSON.stringify(gen.s_pulse || {})}`,
+    `- picking method used by smoke demo: ${gen.picking_method || ''}`,
+    '',
+    'Ground-truth station arrivals:',
+    stationLines,
+    '',
+    'Important instruction for code generation:',
+    'When the user says "this synthetic waveform", "这个生成的 synthetic waveform", "刚才的 smoke run", or asks to phase-pick it, use the CSV files above directly. Do not generate a new synthetic waveform unless the user explicitly asks for a new one.',
+    '===== End latest SAGE reproducible run context =====',
+  ].join('\n');
+}
+
+function rememberRunContext(d, pushHistory=false) {
+  const ctx = _runContextFromPayload(d || {});
+  if (!ctx.run_id) return;
+  lastRunContext = ctx;
+  if (ctx.output_dir) lastDataPath = ctx.output_dir;
+  if (pushHistory) {
+    chatHistory.push({role:'assistant', content: _buildRunContextPrompt(ctx)});
+  }
+  _persistHistory();
+}
+
 function _renderRunMarkdown(d) {
   const cat = d.catalog || {};
+  const gen = d.generation || {};
+  const stationLines = _stationTruthLines(gen);
   const lines = [
     `**${T('run_done')}**`,
     '',
@@ -1233,6 +1323,12 @@ function _renderRunMarkdown(d) {
     `- picks: \`${cat.n_picks ?? ''}\``,
     `- mean S-P: \`${cat.mean_s_minus_p_s ?? ''} s\``,
     `- magnitude proxy: \`${cat.magnitude_proxy ?? ''}\``,
+    '',
+    'Synthetic generation:',
+    `- seed: \`${gen.random_seed ?? ''}\`, dt: \`${gen.sample_interval_s ?? ''} s\`, duration: \`${gen.duration_s ?? ''} s\``,
+    `- waveform: noise \`${gen.noise || ''}\` + background \`${gen.background || ''}\` + Gaussian P/S pulses`,
+    `- picker: ${gen.picking_method || ''}`,
+    ...(stationLines.length ? ['', 'Ground truth arrivals:', ...stationLines] : []),
     '',
     'Artifacts:',
     ...(d.artifacts || []).map((a, i) => _artifactLine(d.run_id, a, i)),
@@ -1255,6 +1351,7 @@ async function runSmokeDemo() {
       addMsg('assistant', `✗ ${T('run_failed')}: ${d.error || 'unknown error'}`);
       return;
     }
+    rememberRunContext(d, true);
     addMsg('assistant', _renderRunMarkdown(d));
     await loadRunRecords();
   } catch(e) {
@@ -1273,6 +1370,13 @@ async function openRunRecord(runId) {
       return;
     }
     const rec = d.run || {};
+    rememberRunContext({
+      run_id: rec.run_id,
+      output_dir: rec.metadata?.output_dir || '',
+      catalog: rec.result || {},
+      generation: rec.metadata?.generation || {},
+      artifacts: rec.artifacts || [],
+    }, true);
     const events = (rec.events || []).slice(-8).map(e =>
       `- ${e.phase || ''}: ${e.message || ''}`
     );
@@ -2140,12 +2244,21 @@ async function sendCode(text, phase2Badge = false) {
   // ── 对绘图请求注入数据目录上下文 ───────────────────────────────────────
   let enrichedText = text;
   const contextRefReq = /(上述|上面|上文|前面|刚才|这个|该|此|this|above|previous)/i.test(text);
-  const implementationReq = /(用\s*Python|python|代码|编程|实现|复现|写出来|写个程序|完整实现|run it|code it|implement)/i.test(text);
+  const implementationReq = /(用\s*Python|python|代码|编程|实现|复现|写出来|写个程序|完整实现|run it|code it|implement|pick|phase\s*pick|拾取|震相|检测|处理|分析|绘制|画图|plot)/i.test(text);
   if (contextRefReq && implementationReq && chatHistory.length) {
     const recentContext = chatHistory.slice(-8)
       .map(h => `${h.role === 'user' ? '用户' : '助手'}：${String(h.content || '').slice(0, 1800)}`)
       .join('\n\n');
     enrichedText += `\n\n===== 连续对话上下文（用于理解“上述/这个方法”）=====\n${recentContext}\n===== 上下文结束 =====`;
+  }
+
+  const runRefReq = lastRunContext && (
+    contextRefReq ||
+    /(smoke|synthetic|waveform|phase\s*pick|pick|pnsn|波形|生成的|可复现|拾取|震相|事件|catalog|目录)/i.test(text)
+  );
+  if (runRefReq) {
+    enrichedText += `\n\n${_buildRunContextPrompt(lastRunContext)}`;
+    if (lastRunContext.output_dir) lastDataPath = lastRunContext.output_dir;
   }
 
   const isPlotReq = /(绘制|画图|画波形|绘图|可视化|plot)/i.test(text);
