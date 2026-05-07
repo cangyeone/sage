@@ -19,7 +19,7 @@ from config_manager import LLMConfigManager
 from llm_agent import OpenAICompatibleClient
 
 
-def test_current_config():
+def check_current_config():
     """测试当前配置的在线 API"""
     config_mgr = LLMConfigManager()
     llm_cfg = config_mgr.get_llm_config()
@@ -53,7 +53,7 @@ def test_current_config():
         print("当前配置使用 Ollama 本地模型")
 
 
-def test_provider(provider: str, api_key: str):
+def check_provider(provider: str, api_key: str):
     """测试指定的在线 API provider"""
     print("=" * 70)
     print(f"测试 {provider.upper()} API")
@@ -108,12 +108,12 @@ def test_provider(provider: str, api_key: str):
 def main():
     if len(sys.argv) == 1:
         # 没有参数，检测当前配置
-        test_current_config()
+        check_current_config()
     elif len(sys.argv) == 3:
         # python test_online_api_models.py <provider> <api_key>
         provider = sys.argv[1].lower()
         api_key = sys.argv[2]
-        test_provider(provider, api_key)
+        check_provider(provider, api_key)
     else:
         print("使用方法：")
         print(f"  {sys.argv[0]}                    # 检测当前配置")

@@ -133,13 +133,13 @@ SAGE 是集**自然语言交互**、**智能震相拾取**、**统计分析**、
 
 ```bash
 # 1. 克隆主仓库
-git clone https://github.com/yourname/sage.git
+git clone https://github.com/cangyeone/sage.git
 cd sage
 
 # 2. 克隆 pnsn 震相拾取模块（必须放在 sage/ 目录下）
 git clone https://github.com/cangyeone/pnsn.git
 
-# 3. 安装依赖
+# 3. 安装 SAGE 依赖
 pip install -r requirements.txt
 
 # 4. 启动 Ollama 并拉取模型（选一个）
@@ -172,7 +172,7 @@ open http://localhost:5010
 ### 基础安装
 
 ```bash
-git clone https://github.com/yourname/sage.git
+git clone https://github.com/cangyeone/sage.git
 cd sage
 
 # 完整安装（推荐）
@@ -187,24 +187,21 @@ pip install FlagEmbedding faiss-cpu pdfminer.six PyMuPDF  # RAG 知识库
 
 ### pnsn 震相拾取模块安装
 
-pnsn 是专门用于震相拾取的深度学习模型库，由 [cangyeone](https://github.com/cangyeone) 开发。**必须将其克隆到 `sage/` 主目录下**，SAGE 通过相对路径调用。
+pnsn 是专门用于震相拾取的深度学习模型库，由 [cangyeone](https://github.com/cangyeone) 开发。**必须将其克隆到 `sage/` 主目录下**，因为 SAGE 通过相对路径调用其中的脚本和模型文件。
 
 ```bash
 # 在 sage/ 目录下执行
 git clone https://github.com/cangyeone/pnsn.git
-
-# 安装 pnsn 自身依赖
-cd pnsn
-pip install -r requirements.txt
-cd ..
 ```
+
+当前 pnsn 仓库没有单独的 `requirements.txt`，用于 SAGE 时也不需要把 pnsn 安装成 Python 包。只需安装 SAGE 顶层依赖 `pip install -r requirements.txt`；SAGE 会直接调用 `pnsn/picker.py`、`pnsn/fastlinker.py`、`pnsn/pickers/*.jit` 等文件。
 
 **目录结构确认：**
 
 ```
 sage/
 ├── pnsn/               ← 必须在此位置
-│   ├── sage_picker.py
+│   ├── picker.py
 │   ├── fastlinker.py
 │   ├── gammalink.py
 │   ├── pickers/        ← JIT / ONNX 模型文件
@@ -1421,7 +1418,7 @@ sage/
 │   └── tool_registry.py          # HypoDD / VELEST / HASH 等
 │
 ├── pnsn/                         # ← 需单独 clone（见安装说明）
-│   ├── sage_picker.py            # 批量拾取主类（SagePicker）
+│   ├── picker.py                 # 震相拾取入口
 │   ├── fastlinker.py             # FastLink 震相关联
 │   ├── gammalink.py              # Gamma 震相关联
 │   ├── pickers/                  # JIT / ONNX 模型文件

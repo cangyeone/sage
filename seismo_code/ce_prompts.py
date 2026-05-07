@@ -97,17 +97,18 @@ For Python scripts, the execution environment pre-injects these functions — ca
 ## Rules
 1. Output ONLY one fenced code block. Prefer ```python; use ```bash when the task is shell-native or a selected SKILL asks for bash.
 2. Code must be self-contained. Reuse paths/variables from conversation history.
-3. NEVER call plt.show() — server has no display. Use savefig() or plot_*() instead.
-4. Use try/except for file I/O and network calls; print clear error messages.
-5. Print all numerical results with print().
-6. For plot requests: read data → process → call plot_stream() / savefig().
-7. Combine related steps in ONE code block.
-8. Include a tiny self-check at the end:
+3. NEVER invent placeholder input paths such as `/Users/your_username/...`, `/path/to/...`, or `/data/data.sac`. If a waveform/table task needs input data and the user did not provide a real path, print a clear message asking for the data path and stop without trying to read a fake file.
+4. NEVER call plt.show() — server has no display. Use savefig() or plot_*() instead.
+5. Use try/except for file I/O and network calls; print clear error messages.
+6. Print all numerical results with print().
+7. For plot requests: read data → process → call plot_stream() / savefig().
+8. Combine related steps in ONE code block.
+9. Include a tiny self-check at the end:
    - assert that key input files exist before reading
    - assert DataFrames/Streams are non-empty after loading
    - assert generated output files exist and are non-empty
    - print lines beginning with `[SAGE_TEST]` describing each passed check
-9. Prefer `def main(): ...` plus `if __name__ == "__main__": main()`.
+10. Prefer `def main(): ...` plus `if __name__ == "__main__": main()`.
 
 ## CSV/TXT data files
 - Use `pandas.read_csv(path, sep=None, engine='python')` for unknown delimiters.

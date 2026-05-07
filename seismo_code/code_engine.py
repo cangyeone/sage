@@ -157,6 +157,22 @@ class CodeEngine:
                             extra_env=extra_env,
                             python_executable=self.python_executable)
 
+    @staticmethod
+    def _placeholder_path_reason(code: str) -> str:
+        """Return a reason when generated code contains fake input paths."""
+        patterns = [
+            r"/Users/(?:your_username|username|yourname|you)/",
+            r"/path/to/",
+            r"/data/data\.sac\b",
+            r"/data/wave\.mseed\b",
+            r"your_(?:file|path|data)",
+            r"replace with your actual",
+        ]
+        for pat in patterns:
+            if re.search(pat, code, re.I):
+                return f"generated code contains placeholder path matching `{pat}`"
+        return ""
+
     # ── Output checkers ───────────────────────────────────────────────────────
 
     def _execution_success(self, exec_res: ExecutionResult) -> bool:
@@ -532,6 +548,24 @@ class CodeEngine:
             code = _extract_code(_call_llm(messages, self.llm_config))
         except ConnectionError as e:
             return CodeRunResult(success=False, response=str(e), code="", exec_result=None)
+
+        placeholder_reason = self._placeholder_path_reason(code)
+        if placeholder_reason:
+            response = (
+                "未执行代码：模型生成了示例/占位数据路径，而不是实际存在的输入文件。\n"
+                "请在问题中提供真实的 SAC/MSEED/CSV 文件或目录路径后重试。\n"
+                f"原因: {placeholder_reason}"
+            )
+            self._emit(on_progress, "done", 0, response)
+            return CodeRunResult(
+                success=False,
+                response=response,
+                code=code,
+                exec_result=None,
+                attempts=0,
+                debug_trace=[],
+                plan=plan,
+            )
 
         # 6. First execution
         self._emit(on_progress, "executing", 0, "Executing code…")

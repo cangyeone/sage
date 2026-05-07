@@ -582,6 +582,7 @@ class OllamaToolAgent:
                     "response": final_text,
                     "action": last_action,
                     "data": last_tool_result,
+                    "success": bool(last_tool_result.get("success", True)),
                 }
 
             # 执行所有工具调用
@@ -617,6 +618,7 @@ class OllamaToolAgent:
             "response": fallback,
             "action": last_action,
             "data": last_tool_result,
+            "success": False,
         }
 
 

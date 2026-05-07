@@ -903,6 +903,7 @@ async function classifyIntent(text) {
   const hasPath  = /(?:^|[\s\u4e00-\u9fff，。：、])[/~][\w./\-]{4,}/.test(t);
   const actionRe = /帮我|请帮|帮忙|执行|运行|处理一下|做一下|跑一下|跑下|计算一下|绘制一下|画一下|下载一下/;
   const questionStartRe = /^(如何|怎么|怎样|什么是|什么叫|为什么|为何|哪种|哪些|请解释|能解释|介绍|介绍一下|讲一下|讲讲|请问|有没有什么|有何区别|原理|有什么区别|what is|what are|how to|how does|why |explain|tell me about)/i;
+  const codeActionRe = /(绘制|画图|画波形|绘图|可视化|plot|filter|滤波|频谱|读取|处理|计算|生成图|运行|执行|\.sac|\.mseed|\.csv)/i;
 
   // 快速路径 A：有绝对路径 且 无问号 → code
   if (hasPath && !endsQ) return 'code';
@@ -910,6 +911,9 @@ async function classifyIntent(text) {
   // 快速路径 A2：上轮是代码，且含"改进/调整"等关键词 → 直接路由 code（不用问 LLM）
   const improvementRe = /^(改|修改|调整|改成|改为|换成|换个|改一下|调大|调小|放大|缩小|加上|加入|加个|删掉|删除|去掉|优化|美化|换颜色|标注|标记|重新|再画|再试|再来|继续|在此基础上|基于上面|在上面|在刚才)/;
   if (lastIntentWasCode && improvementRe.test(t) && !endsQ) return 'code';
+
+  // 快速路径 A2.5：概念解释/方法说明问题不要误触发代码执行
+  if (questionStartRe.test(t) && !hasPath && !codeActionRe.test(t)) return 'qa';
 
   // 快速路径 A3：有文献上下文，且要求复现/实现 → chain（先 RAG 提取方法，再 Code 生成）
   const reproducingRe = /复现|实现一下|用.{0,5}实现|帮我写|帮我实现|编程实现|代码实现|写代码|写个程序|写出来|用Python|用代码|reproduce|implement|code it|write.*code/i;

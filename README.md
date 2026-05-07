@@ -177,13 +177,13 @@ SAGE is an earthquake science AI platform integrating **natural language interac
 
 ```bash
 # 1. Clone the main repository
-git clone https://github.com/yourname/sage.git
+git clone https://github.com/cangyeone/sage.git
 cd sage
 
 # 2. Clone the pnsn phase picking module (must be placed under sage/ directory)
 git clone https://github.com/cangyeone/pnsn.git
 
-# 3. Install dependencies
+# 3. Install SAGE dependencies
 pip install -r requirements.txt
 
 # 4. Start Ollama and pull model (choose one)
@@ -216,7 +216,7 @@ On first access, select and save the pulled model on the **LLM Settings page** t
 ### Basic Installation
 
 ```bash
-git clone https://github.com/yourname/sage.git
+git clone https://github.com/cangyeone/sage.git
 cd sage
 
 # Complete installation (recommended)
@@ -231,24 +231,21 @@ pip install FlagEmbedding faiss-cpu pdfminer.six PyMuPDF  # RAG Knowledge Base
 
 ### pnsn Phase Picking Module Installation
 
-pnsn is a deep learning model library specifically for phase picking, developed by [cangyeone](https://github.com/cangyeone). **Must clone it to the `sage/` main directory**, SAGE calls it through relative paths.
+pnsn is a deep learning model library specifically for phase picking, developed by [cangyeone](https://github.com/cangyeone). **Must clone it to the `sage/` main directory**, because SAGE calls its scripts and model files through relative paths.
 
 ```bash
 # Execute in sage/ directory
 git clone https://github.com/cangyeone/pnsn.git
-
-# Install pnsn dependencies
-cd pnsn
-pip install -r requirements.txt
-cd ..
 ```
+
+The current pnsn repository does not provide a separate `requirements.txt` and does not need to be installed as a Python package for SAGE usage. Install SAGE's top-level dependencies with `pip install -r requirements.txt`; SAGE then directly calls files such as `pnsn/picker.py`, `pnsn/fastlinker.py`, and `pnsn/pickers/*.jit`.
 
 **Directory Structure Confirmation:**
 
 ```
 sage/
 ├── pnsn/               ← Must be in this location
-│   ├── sage_picker.py
+│   ├── picker.py
 │   ├── fastlinker.py
 │   ├── gammalink.py
 │   ├── pickers/        ← JIT / ONNX model files
@@ -1553,7 +1550,7 @@ sage/
 │   └── tool_registry.py          # HypoDD / VELEST / HASH etc.
 │
 ├── pnsn/                         # ← Needs separate clone (see installation instructions)
-│   ├── sage_picker.py            # Batch picking main class (SagePicker)
+│   ├── picker.py                 # Phase picking entry point
 │   ├── fastlinker.py             # FastLink event association
 │   ├── gammalink.py              # Gamma event association
 │   ├── pickers/                  # JIT / ONNX model files

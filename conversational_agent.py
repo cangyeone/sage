@@ -13,6 +13,7 @@ Usage:
 import json
 import os
 import re
+import shlex
 import urllib.request
 import urllib.error
 from typing import Dict, List, Optional, Tuple
@@ -39,23 +40,6 @@ try:
     import numpy as np  # ensure np is always available
 except ImportError:
     pass
-
-# SagePicker — lazy import so missing deps don't break agent startup
-_SagePicker = None
-def _get_sage_picker_class():
-    global _SagePicker
-    if _SagePicker is None:
-        try:
-            import sys, os as _os
-            _proj = str(Path(__file__).parent)
-            if _proj not in sys.path:
-                sys.path.insert(0, _proj)
-            from pnsn.sage_picker import SagePicker
-            _SagePicker = SagePicker
-        except Exception:
-            pass
-    return _SagePicker
-
 
 class ConversationContext:
     """Maintains context across multiple conversation turns"""
@@ -687,16 +671,20 @@ class SkillExecutor:
         samplerate = 100  # default
         if HAS_OBSPY:
             import obspy as _obspy
+            readable_sample_seen = False
             for root, fname in sample_files[:5]:
                 try:
                     st = _obspy.read(os.path.join(root, fname), headonly=True)
                     if st:
+                        readable_sample_seen = True
                         sr = st[0].stats.sampling_rate
                         if sr > 0:
                             samplerate = int(sr)
                             break
                 except Exception:
                     continue
+            if not readable_sample_seen:
+                return {}
 
         # --- 4. Build chnames from detected channels ---
         # Group into component sets: E/N/Z variants
@@ -780,13 +768,7 @@ class Parameter:
         return None
 
     def _execute_batch_picking(self, entities: Dict, context: ConversationContext) -> Dict:
-        """第一步：扫描目录，若有不足三分量台站则询问用户处理方式。"""
-        SagePicker = _get_sage_picker_class()
-        if SagePicker is None:
-            return {'success': False,
-                    'message': '无法加载 SagePicker 模块，请确保 pnsn/sage_picker.py 存在。',
-                    'results': {}}
-
+        """Prepare a direct pnsn/picker.py phase-picking command."""
         input_dir = self._resolve_input_dir(entities, context)
         if not input_dir or not os.path.exists(input_dir):
             return {'success': False,
@@ -796,105 +778,77 @@ class Parameter:
         project_root = str(Path(__file__).parent)
         model_rel = entities.get('model', 'pnsn/pickers/pnsn.v3.jit')
         model_path = os.path.join(project_root, model_rel)
+        picker_script = os.path.join(project_root, 'pnsn', 'picker.py')
+        output_base = os.path.join(
+            project_root,
+            f'results/sage_picks_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+        )
+
+        if not os.path.exists(picker_script):
+            return {'success': False,
+                    'message': 'pnsn/picker.py 不存在。请在 sage/ 目录下执行 git clone https://github.com/cangyeone/pnsn.git。',
+                    'results': {}}
         if not os.path.exists(model_path):
             return {'success': False,
                     'message': f'模型文件不存在: {model_path}', 'results': {}}
 
-        # 扫描目录
+        os.makedirs(os.path.join(project_root, 'results'), exist_ok=True)
         try:
-            picker = SagePicker(model_path, samplerate=100.0)
-            scan = picker.scan_directory(input_dir)
+            detected = self._detect_and_update_config(input_dir, project_root)
         except Exception as e:
-            return {'success': False, 'message': f'扫描目录失败: {e}', 'results': {}}
+            return {'success': False, 'message': f'更新 pnsn/config/picker.py 失败: {e}', 'results': {}}
 
-        n_complete   = scan['n_complete']
-        n_incomplete = scan['n_incomplete']
-        incomplete_keys = scan['incomplete_keys']
+        cmd = " ".join([
+            "python",
+            "pnsn/picker.py",
+            "-i", shlex.quote(input_dir),
+            "-o", shlex.quote(output_base),
+            "-m", shlex.quote(model_rel),
+            "-d", shlex.quote(entities.get('device', 'cpu')),
+        ])
 
-        # 保存 pending 任务到上下文
-        context.current_task = 'batch_picking_pending'
+        context.current_task = 'phase_picking'
         context.task_state = {
             'input_dir': input_dir,
-            'model_path': model_path,
-            'project_root': project_root,
-            'incomplete_keys': incomplete_keys,
+            'output': output_base,
+            'model': model_rel,
+            'command': cmd,
         }
+        context.last_results['picks_file'] = f'{output_base}.txt'
 
-        if n_incomplete == 0:
-            # 全部完整，直接开始
-            return self._run_sage_picker(input_dir, model_path, 'skip', context)
-
-        # 有不足三分量台站，询问用户
-        incomplete_list = '\n'.join(f'  - {k}' for k in incomplete_keys[:10])
-        if n_incomplete > 10:
-            incomplete_list += f'\n  ... 共 {n_incomplete} 个'
+        details = []
+        if detected:
+            details.append(f"采样率: {detected.get('samplerate')}")
+            details.append(f"文件扩展名: {detected.get('filenametag')}")
+            if detected.get('detected_channels'):
+                details.append(f"检测到分量: {', '.join(detected['detected_channels'])}")
+        detail_text = "\n".join(f"- {x}" for x in details)
+        if detail_text:
+            detail_text = "\n\n自动检测配置:\n" + detail_text
 
         return {
             'success': True,
-            'message': (f'📋 目录扫描完成\n\n'
-                        f'  完整三分量台站: **{n_complete}** 个\n'
-                        f'  不足三分量台站: **{n_incomplete}** 个\n\n'
-                        f'不足三分量台站列表:\n{incomplete_list}\n\n'
-                        f'请问不足三分量的台站怎么处理？\n'
-                        f'  • **跳过** — 直接跳过，只处理完整台站\n'
-                        f'  • **复制** — 将现有分量复制成三份（仍可拾取，精度略低）'),
-            'action': 'need_user_input',
-            'results': {}
+            'message': (f'已准备调用 pnsn/picker.py 进行震相拾取。\n'
+                        f'输入: {input_dir}\n'
+                        f'输出: {output_base}.txt\n'
+                        f'模型: {model_rel}{detail_text}'),
+            'action': 'execute_command',
+            'command': cmd,
+            'results': {
+                'input_dir': input_dir,
+                'output_file': f'{output_base}.txt',
+                'log_file': f'{output_base}.log',
+                'err_file': f'{output_base}.err',
+                'model': model_rel,
+                'detected_config': detected,
+            }
         }
 
     def _execute_confirm_picking(self, entities: Dict, context: ConversationContext) -> Dict:
-        """第二步：用户回答跳过/复制后，实际启动拾取。"""
-        if context.current_task != 'batch_picking_pending':
-            return {'success': False,
-                    'message': '当前没有待确认的批量拾取任务。请先说"遍历目录拾取所有震相"。',
-                    'results': {}}
-
-        state = context.task_state
-        input_dir  = state.get('input_dir', '')
-        model_path = state.get('model_path', '')
-
-        # 判断用户选择
-        # entities['raw_text'] 不一定有，从 context.conversation_history 取最后一条 user 消息
-        last_user = ''
-        for msg in reversed(context.conversation_history):
-            if msg['role'] == 'user':
-                last_user = msg['content'].lower()
-                break
-
-        if any(w in last_user for w in ['复制', 'duplicate', '补齐', '三份']):
-            mode = 'duplicate'
-        else:
-            mode = 'skip'
-
-        return self._run_sage_picker(input_dir, model_path, mode, context)
-
-    def _run_sage_picker(self, input_dir: str, model_path: str,
-                         incomplete: str, context: ConversationContext) -> Dict:
-        """返回 sage_picking_async action，让 app.py 在后台线程运行拾取并实时报告进度。"""
-        project_root = str(Path(__file__).parent)
-        os.makedirs(os.path.join(project_root, 'results'), exist_ok=True)
-        output_base = os.path.join(
-            project_root, f'results/sage_picks_{datetime.now().strftime("%Y%m%d_%H%M%S")}')
-
-        mode_label = '复制分量补齐' if incomplete == 'duplicate' else '跳过不足分量台站'
-
-        context.current_task = None
-        context.task_state = {}
-
-        return {
-            'success': True,
-            'message': (f'⏳ 批量拾取已启动（{mode_label}），正在后台遍历目录...\n'
-                        f'目录: `{input_dir}`\n'
-                        f'进度会每隔几秒自动更新，完成后显示汇总。'),
-            'action': 'sage_picking_async',
-            'results': {
-                'input_dir': input_dir,
-                'model_path': model_path,
-                'incomplete': incomplete,
-                'output_base': output_base,
-                'picks_file': f'{output_base}.txt',
-            }
-        }
+        """The picker now directly calls pnsn/picker.py and needs no confirmation step."""
+        return {'success': False,
+                'message': '当前版本直接调用 pnsn/picker.py，无需确认“跳过/复制”。请直接提供波形目录重新发起震相拾取。',
+                'results': {}}
 
     def _execute_phase_picking(self, entities: Dict, context: ConversationContext) -> Dict:
         """Pick phases by running the JIT model directly in-process.
@@ -2208,18 +2162,27 @@ class ConversationalAgent:
 
     def process_message(self, user_message: str) -> Dict:
         """
-        Process a user message and generate response
-        Returns: {response: str, action: str, data: dict}
+        Process a user message and generate response.
+        Returns: {response: str, action: str, data: dict, success: bool}
         """
         # Add to conversation history (used by both paths)
         self.context.add_message('user', user_message)
+
+        def _normalize(result: Dict) -> Dict:
+            if 'success' not in result:
+                data = result.get('data', {})
+                if isinstance(data, dict) and 'success' in data:
+                    result['success'] = bool(data['success'])
+                else:
+                    result['success'] = result.get('action') != 'error'
+            return result
 
         # ---- LLM path (preferred) ---------------------------------
         if self.llm_agent is not None:
             try:
                 result = self.llm_agent.process_message(user_message)
                 self.context.add_message('assistant', result.get('response', ''))
-                return result
+                return _normalize(result)
             except Exception as e:  # noqa: BLE001
                 # 降级：连续两次出错就永久切回规则引擎，避免一直卡
                 self.llm_error = f"{type(e).__name__}: {e}"
@@ -2236,7 +2199,8 @@ class ConversationalAgent:
             return {
                 'response': response,
                 'action': 'none',
-                'data': {}
+                'data': {},
+                'success': True,
             }
 
         elif intent_result['intent'] == 'unknown':
@@ -2244,7 +2208,8 @@ class ConversationalAgent:
             return {
                 'response': response,
                 'action': 'none',
-                'data': {}
+                'data': {},
+                'success': True,
             }
 
         # Execute skill
@@ -2262,14 +2227,16 @@ class ConversationalAgent:
                 return {
                     'response': response,
                     'action': 'request_info',
-                    'data': execution_result
+                    'data': execution_result,
+                    'success': False,
                 }
             else:
                 response = self.response_generator.generate('error', error=execution_result['message'])
                 return {
                     'response': response,
                     'action': 'error',
-                    'data': execution_result
+                    'data': execution_result,
+                    'success': False,
                 }
 
         # Success - store results
@@ -2282,7 +2249,8 @@ class ConversationalAgent:
         return {
             'response': response,
             'action': execution_result.get('action', 'none'),
-            'data': execution_result
+            'data': execution_result,
+            'success': True,
         }
 
     def get_conversation_history(self) -> List[Dict]:

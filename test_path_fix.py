@@ -8,13 +8,14 @@
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from conversational_agent import IntentClassifier, SkillExecutor, ConversationContext
 
 
-def test_path_extraction_with_chinese():
-    """测试路径提取不会吞掉中文字符"""
+def _check_path_extraction_with_chinese():
     clf = IntentClassifier()
 
     cases = [
@@ -41,6 +42,11 @@ def test_path_extraction_with_chinese():
     return all_ok
 
 
+def test_path_extraction_with_chinese():
+    """测试路径提取不会吞掉中文字符"""
+    assert _check_path_extraction_with_chinese()
+
+
 def _resolve_waveform_dir():
     """找到本机上的 pnsn/data/waveform 目录"""
     here = os.path.dirname(os.path.abspath(__file__))
@@ -48,13 +54,12 @@ def _resolve_waveform_dir():
     return candidate
 
 
-def test_directory_browsing():
-    """测试 data_browsing 能正确扫描 waveform 目录"""
+def _check_directory_browsing():
     directory = _resolve_waveform_dir()
     exists = os.path.isdir(directory)
     print(f"  目录 {directory} 存在: {exists}")
     if not exists:
-        return False
+        pytest.skip("Optional pnsn/data/waveform directory is not present")
 
     exec_ = SkillExecutor()
     ctx = ConversationContext()
@@ -64,9 +69,16 @@ def test_directory_browsing():
     return result["success"]
 
 
-def test_plot_directory():
-    """测试对目录执行 waveform_plotting，会自动挑一个有效文件绘图"""
+def test_directory_browsing():
+    """测试 data_browsing 能正确扫描 waveform 目录"""
+    assert _check_directory_browsing()
+
+
+def _check_plot_directory():
     directory = _resolve_waveform_dir()
+    if not os.path.isdir(directory):
+        pytest.skip("Optional pnsn/data/waveform directory is not present")
+
     exec_ = SkillExecutor()
     ctx = ConversationContext()
     result = exec_._execute_waveform_plotting({"file_paths": [directory]}, ctx)
@@ -77,23 +89,28 @@ def test_plot_directory():
     return result["success"]
 
 
+def test_plot_directory():
+    """测试对目录执行 waveform_plotting，会自动挑一个有效文件绘图"""
+    assert _check_plot_directory()
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("1) 路径提取测试（不依赖外部库，可在任意环境运行）")
     print("=" * 60)
-    ok1 = test_path_extraction_with_chinese()
+    ok1 = _check_path_extraction_with_chinese()
 
     print()
     print("=" * 60)
     print("2) 目录浏览测试（需要 pnsn/data/waveform 目录存在）")
     print("=" * 60)
-    ok2 = test_directory_browsing()
+    ok2 = _check_directory_browsing()
 
     print()
     print("=" * 60)
     print("3) 目录 -> 自动绘图测试（需要 obspy + matplotlib）")
     print("=" * 60)
-    ok3 = test_plot_directory()
+    ok3 = _check_plot_directory()
 
     print()
     print("=" * 60)

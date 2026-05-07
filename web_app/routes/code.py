@@ -1,6 +1,7 @@
 """代码执行和工作流路由"""
 from flask import Blueprint, request, jsonify
 import os
+import re
 import sys
 import threading
 import time as _time
@@ -10,6 +11,41 @@ from state import _code_engine_lock, _code_engines, _code_jobs, _PROJECT_ROOT
 from helpers import get_llm_config, get_code_engine, gc_code_jobs, serialize_code_result
 
 bp = Blueprint('code', __name__)
+
+
+_QUESTION_QA_RE = re.compile(
+    r'^\s*(?:如何|怎么|怎样|什么是|什么叫|为什么|为何|哪种|哪些|请解释|能解释|'
+    r'介绍|介绍一下|讲一下|讲讲|请问|有没有什么|有何区别|原理|有什么区别|'
+    r'what is|what are|how to|how does|why\b|explain|tell me about)',
+    re.I,
+)
+_CODE_ACTION_RE = re.compile(
+    r'(绘制|画图|画波形|绘图|可视化|plot|filter|滤波|频谱|读取|处理|计算|'
+    r'生成图|运行|执行|\.sac|\.mseed|\.csv)',
+    re.I,
+)
+
+
+def _parse_route_intent(raw: str, ends_q: bool) -> str:
+    """Parse noisy local-LLM routing output into code/qa/chat."""
+    import re as _re
+
+    text = (raw or '').strip().lower()
+    text = _re.sub(r'<think>.*?</think>', '', text, flags=_re.S)
+    text = _re.sub(r'thinking\.\.\..*?done thinking\.?', '', text, flags=_re.S)
+
+    m = _re.search(r'(?:intent|answer|classification)\s*[:：]\s*(code|qa|chat)\b', text)
+    if m:
+        return m.group(1)
+
+    first = _re.match(r'^\s*(code|qa|chat)\b', text)
+    if first:
+        return first.group(1)
+
+    tokens = _re.findall(r'\b(code|qa|chat)\b', text)
+    if tokens:
+        return tokens[-1]
+    return 'qa' if ends_q else 'code'
 
 
 @bp.route('/api/chat/code', methods=['POST'])
@@ -240,6 +276,9 @@ def chat_route():
     if has_path and not ends_q:
         return jsonify({'ok': True, 'intent': 'code'})
 
+    if _QUESTION_QA_RE.search(msg_stripped) and not has_path and not _CODE_ACTION_RE.search(msg_stripped):
+        return jsonify({'ok': True, 'intent': 'qa', 'rule': 'conceptual_qa'})
+
     # ── 构建对话历史摘要（最近 3 轮）────────────────────────────────────────
     history_text = ""
     if history:
@@ -299,15 +338,7 @@ Intent:"""
             max_tokens=10,
         ).lower().strip()
 
-        intent_word = None
-        for word in ['code', 'qa', 'chat']:
-            if word in raw:
-                intent_word = word
-                break
-
-        # 若 LLM 未识别 → 默认 code（操作型系统宁可多执行，不要沉默）
-        if intent_word is None:
-            intent_word = 'code' if not ends_q else 'qa'
+        intent_word = _parse_route_intent(raw, ends_q)
 
         # 兜底 override：LLM 说 qa 但消息有强操作信号且无问号 → 纠正为 code
         if intent_word == 'qa' and not ends_q and ACTION_SIGNAL_RE.search(msg_stripped):
