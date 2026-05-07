@@ -939,6 +939,25 @@ async function fetchOnlineModels(isDeepseek = false) {
   const dropWrap    = document.getElementById(isDeepseek ? 'modelDropdownWrapDS' : 'modelDropdownWrap');
   const dropdown    = document.getElementById(isDeepseek ? 'modelDropdownDS' : 'modelDropdown');
   const fetchBtn    = document.getElementById(isDeepseek ? 'btnFetchModelsDS' : 'btnFetchModels');
+  const modelInput   = document.getElementById(isDeepseek ? 'onlineModel' : 'onlineModelGeneric');
+  const currentModel = modelInput.value.trim();
+
+  function showModelListFallback(reason) {
+    const reasonText = reason ? ` ${reason}` : '';
+    statusEl.textContent = currentLang === 'zh'
+      ? `⚠ /models 接口不可用或返回${reasonText}，但聊天接口可以继续使用；已使用当前/预设模型。`
+      : `⚠ /models endpoint is unavailable or returned${reasonText}; chat can continue with the current/preset model.`;
+    statusEl.style.color = '#b26a00';
+    dropdown.innerHTML = '';
+    if (currentModel) {
+      const opt = document.createElement('option');
+      opt.value = currentModel;
+      opt.textContent = currentModel;
+      opt.selected = true;
+      dropdown.appendChild(opt);
+      dropWrap.style.display = 'block';
+    }
+  }
 
   statusEl.textContent  = T('fetch_models_loading');
   statusEl.style.color  = '#888';
@@ -948,16 +967,12 @@ async function fetchOnlineModels(isDeepseek = false) {
   try {
     const params = new URLSearchParams({ provider, api_base: apiBase });
     if (apiKey) params.append('api_key', apiKey);
-    const currentModel = (isDeepseek
-      ? document.getElementById('onlineModel')
-      : document.getElementById('onlineModelGeneric')).value.trim();
     if (currentModel) params.append('model', currentModel);
     const r = await fetch('/api/llm/online/models?' + params.toString());
     const d = await r.json();
 
     if (!r.ok || d.error) {
-      statusEl.textContent = T('fetch_models_fail') + (d.error || '未知错误');
-      statusEl.style.color = '#c62828';
+      showModelListFallback(d.error || `HTTP ${r.status}`);
     } else {
       const models = d.models || [];
       if (d.notice) {
@@ -984,8 +999,7 @@ async function fetchOnlineModels(isDeepseek = false) {
       }
     }
   } catch(e) {
-    statusEl.textContent = T('fetch_models_fail') + e.message;
-    statusEl.style.color = '#c62828';
+    showModelListFallback(e.message);
   } finally {
     fetchBtn.disabled = false;
   }

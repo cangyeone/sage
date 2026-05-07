@@ -4,8 +4,12 @@
 /results
 /outputs/smoke_demo/
 /web_app/outputs/runs/
+/web_app/outputs/
+/web_app/uploads/
 /pnsn
 data/seismic/waveform/data.csv
 open_models
 seismo_skill/docs/GMT_docs-6.5
 *.mseed
+seismo_rag/*
+!seismo_rag/.gitkeep

@@ -173,6 +173,7 @@ class AgentConfig:
     literature_root:   str = ""           # PDF / BibTeX library root
     rag_index_path:    str = ""           # optional explicit RAG index path
     output_dir:        str = "outputs/evidence_driven_geo_agent"
+    authorized_roots:  List[str] = field(default_factory=list)  # extra user-authorized read roots
 
     # ── Capability gates ─────────────────────────────────────────────────────
     allow_python:      bool = True        # enable CodeExecutionTool.run_python
@@ -205,6 +206,16 @@ class AgentConfig:
 
     def as_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+    def sandbox_roots(self, *extra: str) -> List[str]:
+        roots = [self.workspace_root, self.literature_root, self.output_dir]
+        roots.extend(self.authorized_roots or [])
+        roots.extend([r for r in extra if r])
+        seen: List[str] = []
+        for r in roots:
+            if r and r not in seen:
+                seen.append(r)
+        return seen
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -382,6 +393,13 @@ def _safe_path(path: str, *roots: str) -> Optional[Path]:
     Returns the resolved Path on success, None on sandbox violation.
     Accepts absolute paths, paths relative to roots, or bare filenames.
     """
+    flat_roots: List[str] = []
+    for root in roots:
+        if isinstance(root, (list, tuple, set)):
+            flat_roots.extend([str(r) for r in root if r])
+        elif root:
+            flat_roots.append(str(root))
+
     p = Path(path).expanduser()
     # Try to resolve; fall back to non-strict resolution for non-existent files
     try:
@@ -389,7 +407,7 @@ def _safe_path(path: str, *roots: str) -> Optional[Path]:
     except Exception:
         return None
 
-    for root in roots:
+    for root in flat_roots:
         if not root:
             continue
         try:
@@ -401,7 +419,7 @@ def _safe_path(path: str, *roots: str) -> Optional[Path]:
 
     # If path isn't absolute, try appending it to each root
     if not p.is_absolute():
-        for root in roots:
+        for root in flat_roots:
             if not root:
                 continue
             candidate = (Path(root).expanduser() / p).resolve(strict=False)
@@ -473,7 +491,7 @@ class LocalFileSearchTool:
         self._cfg = config
 
     def _resolve(self, path: str) -> Optional[Path]:
-        return _safe_path(path, self._cfg.workspace_root, self._cfg.output_dir)
+        return _safe_path(path, self._cfg.sandbox_roots())
 
     def list_dir(self, path: str = ".") -> Dict[str, Any]:
         """List directory contents within workspace_root."""
@@ -637,7 +655,7 @@ class LiteratureLibraryTool:
         self._cfg = config
 
     def _roots(self) -> Tuple[str, ...]:
-        roots = [self._cfg.literature_root, self._cfg.workspace_root]
+        roots = [self._cfg.literature_root, self._cfg.workspace_root, *(self._cfg.authorized_roots or [])]
         return tuple(r for r in roots if r)
 
     def _resolve(self, path: str) -> Optional[Path]:
@@ -883,7 +901,7 @@ class RAGIndexTool:
 
     def add_document(self, path: str) -> Dict[str, Any]:
         """Add a single document to the RAG index."""
-        p = _safe_path(path, self._cfg.workspace_root, self._cfg.literature_root)
+        p = _safe_path(path, self._cfg.sandbox_roots())
         if p is None:
             return {"error": f"Path '{path}' is outside configured roots."}
         kb = self._get_kb()
@@ -897,7 +915,7 @@ class RAGIndexTool:
 
     def index_documents(self, path: str) -> Dict[str, Any]:
         """Index all documents in a directory."""
-        p = _safe_path(path, self._cfg.workspace_root, self._cfg.literature_root)
+        p = _safe_path(path, self._cfg.sandbox_roots())
         if p is None:
             return {"error": f"Path '{path}' is outside configured roots."}
         kb = self._get_kb()
@@ -945,8 +963,7 @@ class SeismoDataTool:
         self._cfg = config
 
     def _resolve(self, path: str) -> Optional[Path]:
-        return _safe_path(path, self._cfg.workspace_root,
-                          self._cfg.literature_root, self._cfg.output_dir)
+        return _safe_path(path, self._cfg.sandbox_roots())
 
     def read_catalog(self, path: str, max_rows: int = 500) -> Dict[str, Any]:
         """
@@ -1134,8 +1151,7 @@ class GeoPlotTool:
 
     def _load_catalog(self, catalog_path: str):  # type: ignore
         import pandas as pd
-        p = _safe_path(catalog_path, self._cfg.workspace_root,
-                       self._cfg.literature_root, self._cfg.output_dir)
+        p = _safe_path(catalog_path, self._cfg.sandbox_roots())
         if p is None or not p.exists():
             raise FileNotFoundError(f"Catalog not found or outside workspace: {catalog_path}")
         try:
@@ -1251,8 +1267,7 @@ class GeoPlotTool:
             import matplotlib.pyplot as plt
             import pandas as pd
 
-            p = _safe_path(model_path, self._cfg.workspace_root,
-                           self._cfg.literature_root, self._cfg.output_dir)
+            p = _safe_path(model_path, self._cfg.sandbox_roots())
             if p is None or not p.exists():
                 return {"error": f"Model file not found: {model_path}"}
 
@@ -1757,7 +1772,7 @@ class DocumentAnalysisTool:
         self._literature = LiteratureLibraryTool(config)
 
     def analyze_document(self, path: str, question: str = "", max_chars: int = 16000) -> Dict[str, Any]:
-        p = _safe_path(path, self._cfg.workspace_root, self._cfg.literature_root, self._cfg.output_dir)
+        p = _safe_path(path, self._cfg.sandbox_roots())
         if p is None:
             return {"error": f"Path '{path}' is outside configured roots."}
         if not p.exists():
@@ -1957,8 +1972,7 @@ class ImageAnalysisTool:
         self._llm = llm_cfg
 
     def _resolve(self, path: str) -> Optional[Path]:
-        return _safe_path(path, self._cfg.workspace_root,
-                          self._cfg.literature_root, self._cfg.output_dir)
+        return _safe_path(path, self._cfg.sandbox_roots())
 
     def _encode_image(self, path: Path) -> Optional[str]:
         """Base64-encode an image file for multimodal LLM calls."""

@@ -1,52 +1,18 @@
 """代码执行和工作流路由"""
 from flask import Blueprint, request, jsonify
 import os
-import re
 import sys
 import threading
 import time as _time
 import uuid as _uuid
 from pathlib import Path
 from state import _code_engine_lock, _code_engines, _code_jobs, _PROJECT_ROOT
-from helpers import get_llm_config, get_code_engine, gc_code_jobs, serialize_code_result
-from run_records import append_event, finish_run, start_run
+from helpers import (
+    get_llm_config, get_code_engine, gc_code_jobs, serialize_code_result,
+    get_user_profile_context,
+)
 
 bp = Blueprint('code', __name__)
-
-
-_QUESTION_QA_RE = re.compile(
-    r'^\s*(?:如何|怎么|怎样|什么是|什么叫|为什么|为何|哪种|哪些|请解释|能解释|'
-    r'介绍|介绍一下|讲一下|讲讲|请问|有没有什么|有何区别|原理|有什么区别|'
-    r'what is|what are|how to|how does|why\b|explain|tell me about)',
-    re.I,
-)
-_CODE_ACTION_RE = re.compile(
-    r'(绘制|画图|画波形|绘图|可视化|plot|filter|滤波|频谱|读取|处理|计算|'
-    r'生成图|运行|执行|\.sac|\.mseed|\.csv)',
-    re.I,
-)
-
-
-def _parse_route_intent(raw: str, ends_q: bool) -> str:
-    """Parse noisy local-LLM routing output into code/qa/chat."""
-    import re as _re
-
-    text = (raw or '').strip().lower()
-    text = _re.sub(r'<think>.*?</think>', '', text, flags=_re.S)
-    text = _re.sub(r'thinking\.\.\..*?done thinking\.?', '', text, flags=_re.S)
-
-    m = _re.search(r'(?:intent|answer|classification)\s*[:：]\s*(code|qa|chat)\b', text)
-    if m:
-        return m.group(1)
-
-    first = _re.match(r'^\s*(code|qa|chat)\b', text)
-    if first:
-        return first.group(1)
-
-    tokens = _re.findall(r'\b(code|qa|chat)\b', text)
-    if tokens:
-        return tokens[-1]
-    return 'qa' if ends_q else 'code'
 
 
 @bp.route('/api/chat/code', methods=['POST'])
@@ -56,7 +22,7 @@ def chat_code():
     Returns immediately with {ok, job_id}.
     Frontend polls /api/chat/code/poll/<job_id> for progress + result.
     """
-    data       = request.get_json(silent=True) or {}
+    data       = request.json or {}
     user_msg   = (data.get('message') or '').strip()
     session_id = data.get('session_id', 'default')
     if not user_msg:
@@ -78,25 +44,13 @@ def chat_code():
 
     gc_code_jobs()
     job_id = _uuid.uuid4().hex[:8]
-    cancel_event = threading.Event()
-    run_id = start_run(
-        "code",
-        request=user_msg,
-        session_id=session_id,
-        metadata={"job_id": job_id},
-    )
     _code_jobs[job_id] = {'status': 'running', 'progress': [], 'result': None,
-                          'ts': _time.time(), 'cancel_event': cancel_event,
-                          'run_id': run_id}
+                          'cancelled': False, 'ts': _time.time()}
 
     def _run():
         try:
-            if _code_jobs.get(job_id, {}).get('status') == 'cancelled':
-                return
             # Phase 1: Init under lock — protects sentence-transformers / C-extension loading
             with _code_engine_lock:
-                if _code_jobs.get(job_id, {}).get('status') == 'cancelled':
-                    return
                 from seismo_skill import search_skills, invalidate_cache
                 invalidate_cache()
                 try:
@@ -110,39 +64,35 @@ def chat_code():
             # Phase 2: Execute OUTSIDE lock — subprocess (GMT/Python) is fork-safe;
             # holding the lock here would block all other init for minutes.
             def _on_progress(p):
-                if _code_jobs.get(job_id, {}).get('status') != 'cancelled':
-                    msg = p.get('phase', p.get('message', ''))
-                    _code_jobs[job_id]['progress'].append(msg)
-                    append_event(run_id, p.get('phase', 'progress'), msg, p)
+                _code_jobs[job_id]['progress'].append(p.get('phase', p.get('message', '')))
+
+            profile = get_user_profile_context(max_chars=2500)
+            engine_msg = user_msg
+            if profile:
+                engine_msg += (
+                    "\n\n===== Long-term user profile (soft context; do not mention unless useful) =====\n"
+                    + profile
+                )
 
             result = engine.run(
-                user_msg,
+                engine_msg,
                 timeout=180,
                 max_debug_rounds=6,
                 run_verify=False,
                 on_progress=_on_progress,
-                cancel_event=cancel_event,
             )
-            if _code_jobs.get(job_id, {}).get('status') != 'cancelled':
-                payload = serialize_code_result(result, skill_used)
-                _code_jobs[job_id]['result'] = payload
-                finish_run(
-                    run_id,
-                    "succeeded" if payload.get("success") else "failed",
-                    result={
-                        "success": payload.get("success"),
-                        "attempts": payload.get("attempts"),
-                        "skill_used": payload.get("skill_used"),
-                        "figures": [f.get("name") for f in payload.get("figures", [])],
-                    },
-                    artifacts=[d.get("name") for d in payload.get("downloads", [])],
-                )
+            if not _code_jobs[job_id].get('cancelled'):
+                _code_jobs[job_id]['result'] = serialize_code_result(result, skill_used)
         except Exception as exc:
-            if _code_jobs.get(job_id, {}).get('status') != 'cancelled':
+            if not _code_jobs[job_id].get('cancelled'):
                 _code_jobs[job_id]['result'] = {'ok': False, 'error': str(exc)}
-                finish_run(run_id, "error", error=str(exc))
         finally:
-            if _code_jobs.get(job_id, {}).get('status') != 'cancelled':
+            if _code_jobs[job_id].get('cancelled'):
+                _code_jobs[job_id]['status'] = 'cancelled'
+                _code_jobs[job_id]['result'] = {
+                    'ok': False, 'cancelled': True, 'error': '已停止当前代码任务'
+                }
+            else:
                 _code_jobs[job_id]['status'] = 'done'
 
     threading.Thread(target=_run, daemon=True).start()
@@ -164,25 +114,21 @@ def poll_code_job(job_id):
 
 @bp.route('/api/chat/code/cancel/<job_id>', methods=['POST'])
 def cancel_code_job(job_id):
-    """Mark a running code job as cancelled for frontend stop requests."""
+    """Mark an async code job as cancelled so the UI can stop polling it."""
     job = _code_jobs.get(job_id)
     if not job:
         return jsonify({'ok': False, 'error': 'job not found'}), 404
-    if job.get('status') == 'running':
-        ev = job.get('cancel_event')
-        if ev is not None:
-            ev.set()
-        job['status'] = 'cancelled'
-        job['result'] = {'ok': False, 'aborted': True, 'error': 'cancelled'}
-        if job.get('run_id'):
-            finish_run(job['run_id'], "cancelled", error="cancelled")
-    return jsonify({'ok': True, 'status': job.get('status')})
+    job['cancelled'] = True
+    job['status'] = 'cancelled'
+    job['result'] = {'ok': False, 'cancelled': True, 'error': '已停止当前代码任务'}
+    job.setdefault('progress', []).append('cancelled')
+    return jsonify({'ok': True})
 
 
 @bp.route('/api/chat/code/reset', methods=['POST'])
 def chat_code_reset():
     """清除指定 session 的 CodeEngine 历史（对话清空时调用）。"""
-    session_id = (request.get_json(silent=True) or {}).get('session_id', 'default')
+    session_id = (request.json or {}).get('session_id', 'default')
     if session_id in _code_engines:
         _code_engines[session_id].reset()
     return jsonify({'ok': True})
@@ -203,7 +149,7 @@ def chat_workflow():
     Returns immediately with {ok, job_id}.
     Poll /api/chat/code/poll/<job_id> for progress + result.
     """
-    data          = request.get_json(silent=True) or {}
+    data          = request.json or {}
     workflow_name = (data.get('workflow_name') or '').strip()
     user_msg      = (data.get('message') or '').strip()
     session_id    = data.get('session_id', 'default')
@@ -224,110 +170,89 @@ def chat_workflow():
 
     gc_code_jobs()
     job_id = _uuid.uuid4().hex[:8]
-    cancel_event = threading.Event()
-    run_id = start_run(
-        "workflow",
-        request=user_msg,
-        session_id=session_id,
-        metadata={
-            "job_id": job_id,
-            "workflow_name": workflow_name,
-            "data_hint": data_hint,
-        },
-    )
     _code_jobs[job_id] = {'status': 'running', 'progress': [], 'result': None,
-                          'ts': _time.time(), 'cancel_event': cancel_event,
-                          'run_id': run_id}
+                          'cancelled': False, 'ts': _time.time()}
 
     def _run():
         try:
-            if _code_jobs.get(job_id, {}).get('status') == 'cancelled':
-                return
-            # Acquire lock only while creating/reusing the session engine.
+            # Acquire lock to prevent thread-safety issues with sentence-transformers
             with _code_engine_lock:
-                engine = get_code_engine(session_id, llm_cfg)
-
-            def _on_progress(p):
-                # Phase keys: 'workflow_step', 'step_done', 'workflow_done'
-                if _code_jobs.get(job_id, {}).get('status') != 'cancelled':
+                def _on_progress(p):
+                    # Phase keys: 'workflow_step', 'step_done', 'workflow_done'
                     label = p.get('message') or p.get('phase', '')
                     _code_jobs[job_id]['progress'].append(label)
-                    append_event(run_id, p.get('phase', 'workflow_step'), label, p)
 
-            result = engine.run_workflow(
-                workflow_name=workflow_name,
-                user_request=user_msg,
-                data_hint=data_hint,
-                max_debug_rounds=5,
-                timeout=180,
-                skip_on_failure=skip_on_fail,
-                on_progress=_on_progress,
-                cancel_event=cancel_event,
-            )
+                engine = get_code_engine(session_id, llm_cfg)
+                profile = get_user_profile_context(max_chars=2000)
+                workflow_msg = user_msg
+                if profile:
+                    workflow_msg += (
+                        "\n\n===== Long-term user profile (soft context; do not mention unless useful) =====\n"
+                        + profile
+                    )
+                result = engine.run_workflow(
+                    workflow_name=workflow_name,
+                    user_request=workflow_msg,
+                    data_hint=data_hint,
+                    max_debug_rounds=5,
+                    timeout=180,
+                    skip_on_failure=skip_on_fail,
+                    on_progress=_on_progress,
+                )
 
-            if _code_jobs.get(job_id, {}).get('status') == 'cancelled':
-                return
+                # Collect all downloadable outputs
+                import base64 as _b64
+                downloads = []
+                for fp in result.all_figures + result.all_output_files:
+                    try:
+                        with open(fp, 'rb') as _f:
+                            downloads.append({
+                                'filename': Path(fp).name,
+                                'b64':      _b64.b64encode(_f.read()).decode(),
+                                'mime':     'image/png' if fp.endswith('.png') else 'application/octet-stream',
+                            })
+                    except Exception:
+                        pass
 
-            # Collect all downloadable outputs
-            import base64 as _b64
-            downloads = []
-            for fp in result.all_figures + result.all_output_files:
-                try:
-                    with open(fp, 'rb') as _f:
-                        downloads.append({
-                            'filename': Path(fp).name,
-                            'b64':      _b64.b64encode(_f.read()).decode(),
-                            'mime':     'image/png' if fp.endswith('.png') else 'application/octet-stream',
-                        })
-                except Exception:
-                    pass
-
-            _code_jobs[job_id]['result'] = {
-                'ok':           True,
-                'success':      result.success,
-                'response':     result.response,
-                'workflow_name': result.workflow_name,
-                'workflow_title': result.workflow_title,
-                'steps_total':  result.steps_total,
-                'steps_done':   result.steps_done,
-                'exec_dir':     result.exec_dir,
-                'step_results': [
-                    {
-                        'step_id':      sr.step_id,
-                        'skill':        sr.skill,
-                        'description':  sr.description,
-                        'success':      sr.success,
-                        'skipped':      sr.skipped,
-                        'attempts':     sr.attempts,
-                        'diagnosis':    sr.diagnosis,
-                        'stdout':       sr.stdout[:800],
-                        'stderr':       sr.stderr[:400],
-                        'figures':      [Path(f).name for f in sr.figures],
-                        'output_files': [Path(f).name for f in sr.output_files],
+                if not _code_jobs[job_id].get('cancelled'):
+                    _code_jobs[job_id]['result'] = {
+                        'ok':           True,
+                        'success':      result.success,
+                        'response':     result.response,
+                        'workflow_name': result.workflow_name,
+                        'workflow_title': result.workflow_title,
+                        'steps_total':  result.steps_total,
+                        'steps_done':   result.steps_done,
+                        'exec_dir':     result.exec_dir,
+                        'step_results': [
+                            {
+                                'step_id':      sr.step_id,
+                                'skill':        sr.skill,
+                                'description':  sr.description,
+                                'success':      sr.success,
+                                'skipped':      sr.skipped,
+                                'attempts':     sr.attempts,
+                                'diagnosis':    sr.diagnosis,
+                                'stdout':       sr.stdout[:800],
+                                'stderr':       sr.stderr[:400],
+                                'figures':      [Path(f).name for f in sr.figures],
+                                'output_files': [Path(f).name for f in sr.output_files],
+                            }
+                            for sr in result.step_results
+                        ],
+                        'figures':   result.all_figures,
+                        'downloads': downloads,
                     }
-                    for sr in result.step_results
-                ],
-                'figures':   result.all_figures,
-                'downloads': downloads,
-            }
-            finish_run(
-                run_id,
-                "succeeded" if result.success else "failed",
-                result={
-                    "success": result.success,
-                    "workflow_name": result.workflow_name,
-                    "steps_done": result.steps_done,
-                    "steps_total": result.steps_total,
-                    "exec_dir": result.exec_dir,
-                },
-                artifacts=[Path(p).name for p in result.all_figures + result.all_output_files],
-            )
         except Exception as exc:
-            if _code_jobs.get(job_id, {}).get('status') != 'cancelled':
+            if not _code_jobs[job_id].get('cancelled'):
                 _code_jobs[job_id]['result'] = {'ok': False, 'error': str(exc)}
-                finish_run(run_id, "error", error=str(exc))
         finally:
-            if _code_jobs.get(job_id, {}).get('status') != 'cancelled':
+            if _code_jobs[job_id].get('cancelled'):
+                _code_jobs[job_id]['status'] = 'cancelled'
+                _code_jobs[job_id]['result'] = {
+                    'ok': False, 'cancelled': True, 'error': '已停止当前代码任务'
+                }
+            else:
                 _code_jobs[job_id]['status'] = 'done'
 
     threading.Thread(target=_run, daemon=True).start()
@@ -344,7 +269,7 @@ def chat_route():
     """
     import re as _re
 
-    data        = request.get_json(silent=True) or {}
+    data        = request.json or {}
     message     = data.get('message', '').strip()
     kb_has_docs = data.get('kb_has_docs', False)
     history     = data.get('history', [])   # [{role, content}, ...]
@@ -361,9 +286,6 @@ def chat_route():
     ends_q   = bool(_re.search(r'[?？]\s*$', msg_stripped))
     if has_path and not ends_q:
         return jsonify({'ok': True, 'intent': 'code'})
-
-    if _QUESTION_QA_RE.search(msg_stripped) and not has_path and not _CODE_ACTION_RE.search(msg_stripped):
-        return jsonify({'ok': True, 'intent': 'qa', 'rule': 'conceptual_qa'})
 
     # Deterministic QA guard: explanations of algorithms/methods should not be
     # sent to the coding engine just because they contain technical terms.
@@ -406,6 +328,7 @@ def chat_route():
             role_label = "用户" if h.get("role") == "user" else "AI"
             lines.append(f"{role_label}：{str(h.get('content',''))[:100]}")
         history_text = "\n".join(lines)
+    profile_text = get_user_profile_context(max_chars=1200)
 
     # ── 精简 prompt：短而直接，适配弱模型 ────────────────────────────────────
     routing_prompt = f"""Classify the intent of the following user message. Output only one of: code, qa, or chat. Do not output anything else.
@@ -437,6 +360,7 @@ Examples:
 "Hello" → chat
 
 {f"Context: {history_text}" if history_text else ""}
+{f"Long-term user profile: {profile_text}" if profile_text else ""}
 User message: {message}
 Intent:"""
 
@@ -457,7 +381,15 @@ Intent:"""
             max_tokens=10,
         ).lower().strip()
 
-        intent_word = _parse_route_intent(raw, ends_q)
+        intent_word = None
+        for word in ['code', 'qa', 'chat']:
+            if word in raw:
+                intent_word = word
+                break
+
+        # 若 LLM 未识别 → 默认 code（操作型系统宁可多执行，不要沉默）
+        if intent_word is None:
+            intent_word = 'code' if not ends_q else 'qa'
 
         # 兜底 override：LLM 说 qa 但消息有强操作信号且无问号 → 纠正为 code
         if intent_word == 'qa' and not ends_q and ACTION_SIGNAL_RE.search(msg_stripped):

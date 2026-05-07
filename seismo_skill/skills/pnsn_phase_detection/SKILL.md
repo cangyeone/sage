@@ -5,7 +5,7 @@ description: Use this skill for seismic phase picking, earthquake monitoring, Pg
 
 # PNSN Phase Detection and Earthquake Monitoring
 
-This skill wraps the local `pnsn/` project for automatic seismic phase picking and event monitoring. Use it when a task involves:
+This skill wraps the external `pnsn/` project cloned at the SAGE repo root for automatic seismic phase picking and event monitoring. Use it when a task involves:
 
 - detecting or picking Pg, Sg, Pn, Sn, P, or S arrivals;
 - running deep-learning pickers on continuous 3-component waveforms;
@@ -16,9 +16,11 @@ This skill wraps the local `pnsn/` project for automatic seismic phase picking a
 Project root assumptions:
 
 - Run commands from the SAGE repo root.
-- The pnsn code lives at `pnsn/`.
-- Default models live at `pnsn/pickers/`.
+- The pnsn code is not vendored in this skill; it must exist at repo-root `pnsn/`.
+- If `pnsn/picker.py` is missing, instruct the user to run `git clone https://github.com/cangyeone/pnsn.git` from the SAGE repo root.
+- Default model files live at `pnsn/pickers/`.
 - Picker configuration lives at `pnsn/config/picker.py`.
+- Define `PNSN_ROOT = Path("pnsn")` in generated code and build all model/script paths from it.
 
 ## Autonomous Programming Mode
 
@@ -56,6 +58,9 @@ from pathlib import Path
 
 OUTDIR = Path(os.environ.get("SAGE_OUTDIR", "outputs/pnsn_phase_detection"))
 OUTDIR.mkdir(parents=True, exist_ok=True)
+PNSN_ROOT = Path("pnsn")
+if not (PNSN_ROOT / "picker.py").exists():
+    raise FileNotFoundError("Missing repo-root pnsn/. Run: git clone https://github.com/cangyeone/pnsn.git")
 ```
 
 ## Component Discovery Pattern
@@ -115,7 +120,10 @@ import matplotlib.pyplot as plt
 OUTDIR = Path(os.environ.get("SAGE_OUTDIR", "outputs/pnsn_phase_detection"))
 OUTDIR.mkdir(parents=True, exist_ok=True)
 DATA_ROOT = Path("/path/to/waveforms")
-MODEL_PATH = Path("pnsn/pickers/pnsn.v3.jit")
+PNSN_ROOT = Path("pnsn")
+if not (PNSN_ROOT / "picker.py").exists():
+    raise FileNotFoundError("Missing repo-root pnsn/. Run: git clone https://github.com/cangyeone/pnsn.git")
+MODEL_PATH = PNSN_ROOT / "pickers" / "pnsn.v3.jit"
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 PHASE_NAMES = {0: "Pg", 1: "Sg", 2: "Pn", 3: "Sn"}
 
@@ -328,7 +336,10 @@ import torch
 import obspy
 import matplotlib.pyplot as plt
 
-model_path = Path("pnsn/pickers/pnsn.v3.jit")
+PNSN_ROOT = Path("pnsn")
+if not (PNSN_ROOT / "picker.py").exists():
+    raise FileNotFoundError("Missing repo-root pnsn/. Run: git clone https://github.com/cangyeone/pnsn.git")
+model_path = PNSN_ROOT / "pickers" / "pnsn.v3.jit"
 device = torch.device("cpu")
 model = torch.jit.load(str(model_path), map_location=device).eval()
 

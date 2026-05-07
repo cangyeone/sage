@@ -1,12 +1,7 @@
 """工作目录管理路由"""
 from flask import Blueprint, request, jsonify
 import os
-from helpers import (
-    get_workspace_config,
-    save_workspace_config,
-    inject_workspace_context,
-    path_is_within_root,
-)
+from helpers import get_workspace_config, save_workspace_config, inject_workspace_context
 
 bp = Blueprint('workspace', __name__)
 
@@ -18,8 +13,8 @@ def workspace_config_get():
 
 @bp.route('/api/workspace/config', methods=['POST'])
 def workspace_config_post():
-    data = request.get_json(silent=True) or {}
-    save_workspace_config(bool(data.get('enabled')), data.get('path', ''))
+    data = request.json or {}
+    save_workspace_config(bool(data.get('enabled')), data.get('path', ''), data.get('paths'))
     return jsonify({'ok': True})
 
 
@@ -30,14 +25,15 @@ def workspace_ls():
     if not ws.get('enabled'):
         return jsonify({'ok': False, 'error': '未启用工作目录访问'}), 403
 
-    root = os.path.expanduser(ws.get('path', ''))
+    roots = [os.path.realpath(os.path.expanduser(p)) for p in (ws.get('paths') or [ws.get('path', '')]) if p]
+    if not roots:
+        return jsonify({'ok': False, 'error': '未配置授权目录'}), 400
+    root = roots[0]
     req_path = request.args.get('path', root)
     req_path = os.path.expanduser(req_path)
 
-    # Sandbox: must be inside the configured root
-    abs_root = os.path.realpath(root)
     abs_req  = os.path.realpath(req_path)
-    if not path_is_within_root(abs_req, abs_root):
+    if not any(os.path.commonpath([abs_req, abs_root]) == abs_root for abs_root in roots):
         return jsonify({'ok': False, 'error': '路径超出授权目录范围'}), 403
 
     if not os.path.exists(abs_req):

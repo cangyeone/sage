@@ -17,6 +17,55 @@ from state import (
     _PROJECT_ROOT, UPLOAD_FOLDER_CHAT,
 )
 
+USER_PROFILE_MD = _PROJECT_ROOT / "seismo_rag" / "user_profile.md"
+
+
+def get_user_profile_context(max_chars: int = 3000) -> str:
+    """Read the local long-term user profile as soft context."""
+    try:
+        if USER_PROFILE_MD.exists():
+            return USER_PROFILE_MD.read_text(encoding="utf-8")[-max_chars:]
+    except Exception:
+        pass
+    return ""
+
+
+def append_user_profile_to_system(system: str, max_chars: int = 3000) -> str:
+    """Append the user profile to an LLM system prompt when available."""
+    profile = get_user_profile_context(max_chars=max_chars)
+    if not profile:
+        return system
+    return (
+        system
+        + "\n\n===== Long-term user profile (local Markdown memory) =====\n"
+        + "Use this only as soft context for estimating the user's background, habits, "
+        + "preferred depth, knowledge level, and likely intent. Do not mention it unless useful.\n"
+        + profile
+    )
+
+
+def path_is_within_root(path: str | Path, root: str | Path) -> bool:
+    """Return True only when path resolves inside root."""
+    try:
+        root_path = Path(root).expanduser().resolve(strict=False)
+        req_path = Path(path).expanduser().resolve(strict=False)
+        req_path.relative_to(root_path)
+        return True
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def safe_child_path(base: str | Path, child_name: str) -> Path:
+    """Build a path under base and reject traversal/symlink escape attempts."""
+    base_resolved = Path(base).resolve()
+    candidate = base_resolved / str(child_name or "")
+    resolved = candidate.resolve(strict=False)
+    try:
+        resolved.relative_to(base_resolved)
+    except ValueError as exc:
+        raise ValueError("Path escapes allowed directory") from exc
+    return resolved
+
 
 # ── LLM ──────────────────────────────────────────────────────────────────────
 
@@ -101,7 +150,7 @@ def _inject_images_into_messages(messages: list, images: list, provider: str) ->
 
 
 def llm_call(messages: list, llm_cfg: dict, max_tokens: int = 2000,
-             images: list = None, cancel_event=None) -> str:
+             images: list = None) -> str:
     """
     向 LLM 发请求，返回回复文本；失败时抛出异常。
     images: 可选，base64 字符串列表（可含 data URL 前缀），用于多模态 VL 模型。
@@ -119,15 +168,6 @@ def llm_call(messages: list, llm_cfg: dict, max_tokens: int = 2000,
         raise ValueError("未配置 LLM 后端地址，请在 LLM 设置页面中选择模型")
     if not model:
         raise ValueError("未选择模型，请在 LLM 设置页面中选择一个 Ollama 模型")
-
-    if cancel_event is not None:
-        chunks = []
-        for chunk in llm_stream(
-            messages, llm_cfg, max_tokens=max_tokens,
-            images=images, cancel_event=cancel_event,
-        ):
-            chunks.append(chunk)
-        return "".join(chunks).strip()
 
     msgs = _inject_images_into_messages(messages, images or [], provider)
 
@@ -153,7 +193,7 @@ def llm_call(messages: list, llm_cfg: dict, max_tokens: int = 2000,
 
 
 def llm_stream(messages: list, llm_cfg: dict, max_tokens: int = 2000,
-               images: list = None, cancel_event=None):
+               images: list = None):
     """
     Generator that yields text chunks from the LLM stream.
     Supports Ollama (plain NDJSON stream) and OpenAI-compatible SSE.
@@ -172,9 +212,6 @@ def llm_stream(messages: list, llm_cfg: dict, max_tokens: int = 2000,
         raise ValueError("未配置 LLM 后端地址")
     if not model:
         raise ValueError("未选择模型")
-
-    if cancel_event is not None and cancel_event.is_set():
-        raise RuntimeError("LLM request cancelled")
 
     msgs = _inject_images_into_messages(messages, images or [], provider)
 
@@ -195,11 +232,6 @@ def llm_stream(messages: list, llm_cfg: dict, max_tokens: int = 2000,
     with urllib.request.urlopen(req, timeout=120) as resp:
         in_reasoning = False
         for raw_line in resp:
-            if cancel_event is not None and cancel_event.is_set():
-                try:
-                    resp.close()
-                finally:
-                    raise RuntimeError("LLM request cancelled")
             line = raw_line.decode("utf-8", errors="replace").strip()
             if not line:
                 continue
@@ -261,58 +293,74 @@ def llm_stream(messages: list, llm_cfg: dict, max_tokens: int = 2000,
 
 import re as _re
 
-def path_is_within_root(path: str | Path, root: str | Path) -> bool:
-    """Return True only when path resolves inside root."""
-    try:
-        root_path = Path(root).expanduser().resolve(strict=False)
-        req_path = Path(path).expanduser().resolve(strict=False)
-        req_path.relative_to(root_path)
-        return True
-    except (OSError, RuntimeError, ValueError):
-        return False
-
-
-def safe_child_path(root: str | Path, child_name: str) -> Path:
-    """Build a child path and reject traversal outside root."""
-    root_path = Path(root).expanduser().resolve(strict=False)
-    child_path = (root_path / child_name).resolve(strict=False)
-    child_path.relative_to(root_path)
-    return child_path
-
-
 def get_workspace_config() -> dict:
     try:
         from config_manager import LLMConfigManager
-        return LLMConfigManager().config.get('workspace', {'enabled': False, 'path': ''})
+        ws = LLMConfigManager().config.get('workspace', {'enabled': False, 'path': '', 'paths': []})
+        path = ws.get('path', '')
+        paths = ws.get('paths') or []
+        if isinstance(paths, str):
+            paths = [p.strip() for p in _re.split(r'[\n,;]+', paths) if p.strip()]
+        if path and path not in paths:
+            paths.insert(0, path)
+        ws['paths'] = paths
+        ws['path'] = path or (paths[0] if paths else '')
+        return ws
     except Exception:
-        return {'enabled': False, 'path': ''}
+        return {'enabled': False, 'path': '', 'paths': []}
 
 
-def save_workspace_config(enabled: bool, path: str):
+def _normalise_workspace_paths(path_or_paths) -> list:
+    if isinstance(path_or_paths, (list, tuple)):
+        raw = []
+        for item in path_or_paths:
+            raw.extend(_re.split(r'[\n,;]+', str(item or '')))
+    else:
+        raw = _re.split(r'[\n,;]+', str(path_or_paths or ''))
+    paths = []
+    for p in raw:
+        p = p.strip()
+        if p and p not in paths:
+            paths.append(p)
+    return paths
+
+
+def save_workspace_config(enabled: bool, path: str = '', paths=None):
     from config_manager import LLMConfigManager
     cfg = LLMConfigManager()
-    cfg.config['workspace'] = {'enabled': enabled, 'path': path}
+    all_paths = _normalise_workspace_paths(paths if paths is not None else path)
+    if path and path not in all_paths:
+        all_paths.insert(0, path)
+    cfg.config['workspace'] = {
+        'enabled': enabled,
+        'path': all_paths[0] if all_paths else '',
+        'paths': all_paths,
+    }
     cfg.save_config()
 
 
 def inject_workspace_context(message: str, workspace_path: str) -> str:
     """If message mentions a path and workspace is enabled, inject directory listing."""
-    if not workspace_path:
-        return ''
     ws = get_workspace_config()
     if not ws.get('enabled'):
         return ''
 
-    root     = os.path.expanduser(ws.get('path', ''))
-    abs_root = os.path.realpath(root)
+    roots = _normalise_workspace_paths(workspace_path) or ws.get('paths') or [ws.get('path', '')]
+    roots = [os.path.realpath(os.path.expanduser(r)) for r in roots if r]
     paths_found = _re.findall(r'[~/][\w./\-]+', message)
     context_parts = []
 
     for p in paths_found:
         p_exp = os.path.expanduser(p)
-        p_abs = (os.path.realpath(p_exp) if p_exp.startswith('/')
-                 else os.path.realpath(os.path.join(abs_root, p_exp)))
-        if not path_is_within_root(p_abs, abs_root):
+        candidate_paths = [os.path.realpath(p_exp)] if p_exp.startswith('/') else [
+            os.path.realpath(os.path.join(root, p_exp)) for root in roots
+        ]
+        p_abs = ''
+        for cand in candidate_paths:
+            if any(os.path.commonpath([cand, root]) == root for root in roots):
+                p_abs = cand
+                break
+        if not p_abs:
             continue
         if os.path.isdir(p_abs):
             try:

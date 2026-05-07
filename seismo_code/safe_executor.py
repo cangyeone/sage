@@ -116,11 +116,18 @@ def _cancel_requested(cancel_event: Optional[Any]) -> bool:
 
 def _terminate_process(proc: subprocess.Popen):
     """Terminate a child process and its process group when available."""
-    try:
+    def _signal(sig):
+        if proc.poll() is not None:
+            return
         if os.name == "posix":
-            os.killpg(proc.pid, signal.SIGTERM)
-        else:
+            os.killpg(os.getpgid(proc.pid), sig)
+        elif sig == signal.SIGTERM:
             proc.terminate()
+        else:
+            proc.kill()
+
+    try:
+        _signal(signal.SIGTERM)
     except Exception:
         try:
             proc.terminate()
@@ -128,18 +135,19 @@ def _terminate_process(proc: subprocess.Popen):
             pass
 
     try:
-        proc.wait(timeout=2)
+        proc.wait(timeout=0.3)
     except Exception:
         try:
-            if os.name == "posix":
-                os.killpg(proc.pid, signal.SIGKILL)
-            else:
-                proc.kill()
+            _signal(signal.SIGKILL)
         except Exception:
             try:
                 proc.kill()
             except Exception:
                 pass
+        try:
+            proc.wait(timeout=0.7)
+        except Exception:
+            pass
 
 
 def _communicate_with_cancel(
@@ -152,20 +160,25 @@ def _communicate_with_cancel(
     while True:
         if _cancel_requested(cancel_event):
             _terminate_process(proc)
-            stdout, stderr = proc.communicate()
+            try:
+                stdout, stderr = proc.communicate(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                stdout, stderr = "", ""
             return False, stdout or "", stderr or "", proc.returncode or -15, "Execution cancelled"
 
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
+        if time.monotonic() >= deadline:
             _terminate_process(proc)
-            stdout, stderr = proc.communicate()
+            try:
+                stdout, stderr = proc.communicate(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                stdout, stderr = "", ""
             return False, stdout or "", stderr or "", proc.returncode or -9, f"执行超时（>{timeout}s）"
 
-        try:
-            stdout, stderr = proc.communicate(timeout=min(0.25, remaining))
+        if proc.poll() is not None:
+            stdout, stderr = proc.communicate(timeout=2)
             return proc.returncode == 0, stdout or "", stderr or "", proc.returncode or 0, ""
-        except subprocess.TimeoutExpired:
-            continue
+
+        time.sleep(0.05)
 
 
 def execute_code(
