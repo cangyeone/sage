@@ -160,7 +160,7 @@ def knowledge_delete(doc_id):
         kb = get_kb_instance()
         if kb:
             ok = kb.delete_doc(doc_id)
-            return jsonify({"ok": ok})
+            return jsonify({"ok": ok, "error": "" if ok else "Document not found"})
         return jsonify({"ok": False, "error": "Knowledge base unavailable"})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
@@ -282,31 +282,43 @@ def knowledge_build_from_dir_stop(job_id):
     return jsonify({"ok": True, "message": "stop signal sent"})
 
 
-@bp.route('/api/knowledge/project/<proj_name>', methods=['DELETE'])
+@bp.route('/api/knowledge/project/<path:proj_name>', methods=['DELETE'])
 def knowledge_delete_project(proj_name):
-    """删除一个知识目录项目的索引和关联 Skill。"""
+    """删除一个知识目录/知识库分组的索引和关联 Skill。"""
     try:
         import sys as _s
         _proj = str(_PROJECT_ROOT)
         if _proj not in _s.path:
             _s.path.insert(0, _proj)
-        from seismo_skill.knowledge_indexer import KnowledgeIndexer, _USER_SKILL_DIR, _KB_DIR
-        import json as _json
+        from seismo_skill.knowledge_indexer import KnowledgeIndexer, _USER_SKILL_DIR
 
         indexer = KnowledgeIndexer()
+        kb = get_kb_instance()
 
-        # 1. 找到该项目下所有已索引文件，从 RAG 删除
+        # 1. 先从 RAG 元数据删除该 proj_folder 下的文档。
+        # Chat/Project 入库的整体资料只存在 RAG metadata 中，不一定存在
+        # KnowledgeIndexer manifest，所以必须以 RAG 元数据为准。
         removed_docs = []
+        if kb:
+            for doc in list(kb.list_docs()):
+                folder = getattr(doc, "proj_folder", "") or ""
+                if folder == proj_name:
+                    try:
+                        if kb.delete_doc(doc.doc_id):
+                            removed_docs.append(doc.doc_id)
+                    except Exception:
+                        pass
+
+        # 2. 兼容 skill docs / reference library 的目录索引 manifest。
         keys_to_del = []
         for rel, entry in list(indexer._manifest.items()):
             if entry.get("proj_folder") == proj_name or rel.startswith(proj_name + "/") or rel.startswith(proj_name + "\\"):
                 doc_id = entry.get("doc_id")
-                if doc_id:
+                if doc_id and doc_id not in removed_docs:
                     try:
-                        kb = get_kb_instance()
                         if kb:
-                            kb.delete_doc(doc_id)
-                            removed_docs.append(doc_id)
+                            if kb.delete_doc(doc_id):
+                                removed_docs.append(doc_id)
                     except Exception:
                         pass
                 keys_to_del.append(rel)
@@ -316,7 +328,7 @@ def knowledge_delete_project(proj_name):
         if keys_to_del:
             indexer._save_manifest()
 
-        # 2. 删除 Skill 文件
+        # 3. 删除由目录索引生成的 Skill 文件（Chat/Project 入库不会有这个条目）
         proj_entry = indexer._proj_manifest.pop(proj_name, None)
         if proj_entry:
             indexer._save_proj_manifest()
@@ -434,7 +446,7 @@ def ref_knowledge_build_stop(job_id):
     return jsonify({"ok": True, "message": "stop signal sent"})
 
 
-@bp.route('/api/ref_knowledge/collection/<coll_name>', methods=['DELETE'])
+@bp.route('/api/ref_knowledge/collection/<path:coll_name>', methods=['DELETE'])
 def ref_knowledge_delete_collection(coll_name):
     """删除一个参考文献集合的 RAG 索引（不删除原始文件）。"""
     try:

@@ -440,6 +440,18 @@ const uploadQueue = document.getElementById('uploadQueue');
 const uploadList  = document.getElementById('uploadList');
 const docList     = document.getElementById('docList');
 
+async function safeJson(resp) {
+  const text = await resp.text();
+  try {
+    return JSON.parse(text);
+  } catch(e) {
+    const msg = text && text.trim().startsWith('<')
+      ? (currentLang === 'zh' ? '服务端返回了 HTML 页面，可能是路由未匹配或服务未重启。' : 'Server returned an HTML page; the route may not match or the server needs restart.')
+      : (text || e.message);
+    return {ok:false, error: msg, status: resp.status};
+  }
+}
+
 // ── Drag & Drop ────────────────────────────────────────────────────────────
 ['dragenter','dragover'].forEach(e => dropZone.addEventListener(e, ev => {
   ev.preventDefault(); dropZone.classList.add('dragover');
@@ -602,7 +614,7 @@ async function deleteFolderFromKB(folderName, groupId) {
   if (!confirm(msg)) return;
   try {
     const r = await fetch(`/api/knowledge/project/${encodeURIComponent(folderName)}`, { method: 'DELETE' });
-    const d = await r.json();
+    const d = await safeJson(r);
     if (d.ok) {
       document.getElementById(groupId)?.remove();
       showToast(isZh ? `已删除文件夹：${folderName}（${d.removed_docs ?? 0} 个文档）` : `Deleted folder: ${folderName}`);
@@ -697,14 +709,18 @@ async function pollIndexTask(taskId, bar, status) {
 // ── Delete / Clear ─────────────────────────────────────────────────────────
 async function deleteDoc(docId, docName) {
   if (!confirm(`确认删除「${docName}」？`)) return;
-  const r = await fetch(`/api/knowledge/delete/${docId}`, {method:'DELETE'});
-  const d = await r.json();
-  if (d.ok) {
-    document.getElementById('doc-' + docId)?.remove();
-    showToast(`已删除：${docName}`);
-    refreshStatus(); loadDocs();
-  } else {
-    showToast(`删除失败：${d.error}`, 'danger');
+  try {
+    const r = await fetch(`/api/knowledge/delete/${docId}`, {method:'DELETE'});
+    const d = await safeJson(r);
+    if (d.ok) {
+      document.getElementById('doc-' + docId)?.remove();
+      showToast(`已删除：${docName}`);
+      refreshStatus(); loadDocs();
+    } else {
+      showToast(`删除失败：${d.error || 'Document not found'}`, 'danger');
+    }
+  } catch(e) {
+    showToast(`删除请求失败：${e.message}`, 'danger');
   }
 }
 
@@ -972,7 +988,7 @@ async function deleteProject(projName, isFolder) {
   if (!confirm(confirmMsg)) return;
   try {
     const r = await fetch(`/api/knowledge/project/${encodeURIComponent(projName)}`, {method: 'DELETE'});
-    const d = await r.json();
+    const d = await safeJson(r);
     if (!d.ok) {
       showToast((isZh ? '删除失败：' : 'Delete failed: ') + d.error, 'danger');
       return;
@@ -1229,7 +1245,7 @@ async function deleteRefCollection(collName, isFolder) {
   if (!confirm(confirmMsg)) return;
   try {
     const r = await fetch(`/api/ref_knowledge/collection/${encodeURIComponent(collName)}`, {method: 'DELETE'});
-    const d = await r.json();
+    const d = await safeJson(r);
     if (!d.ok) {
       showToast((isZh ? '删除失败：' : 'Delete failed: ') + d.error, 'danger');
       return;

@@ -17,6 +17,32 @@ from state import (
     _PROJECT_ROOT, UPLOAD_FOLDER_CHAT,
 )
 
+USER_PROFILE_MD = _PROJECT_ROOT / "seismo_rag" / "user_profile.md"
+
+
+def get_user_profile_context(max_chars: int = 3000) -> str:
+    """Read the local long-term user profile as soft context."""
+    try:
+        if USER_PROFILE_MD.exists():
+            return USER_PROFILE_MD.read_text(encoding="utf-8")[-max_chars:]
+    except Exception:
+        pass
+    return ""
+
+
+def append_user_profile_to_system(system: str, max_chars: int = 3000) -> str:
+    """Append the user profile to an LLM system prompt when available."""
+    profile = get_user_profile_context(max_chars=max_chars)
+    if not profile:
+        return system
+    return (
+        system
+        + "\n\n===== Long-term user profile (local Markdown memory) =====\n"
+        + "Use this only as soft context for estimating the user's background, habits, "
+        + "preferred depth, knowledge level, and likely intent. Do not mention it unless useful.\n"
+        + profile
+    )
+
 
 # ── LLM ──────────────────────────────────────────────────────────────────────
 
@@ -247,36 +273,71 @@ import re as _re
 def get_workspace_config() -> dict:
     try:
         from config_manager import LLMConfigManager
-        return LLMConfigManager().config.get('workspace', {'enabled': False, 'path': ''})
+        ws = LLMConfigManager().config.get('workspace', {'enabled': False, 'path': '', 'paths': []})
+        path = ws.get('path', '')
+        paths = ws.get('paths') or []
+        if isinstance(paths, str):
+            paths = [p.strip() for p in _re.split(r'[\n,;]+', paths) if p.strip()]
+        if path and path not in paths:
+            paths.insert(0, path)
+        ws['paths'] = paths
+        ws['path'] = path or (paths[0] if paths else '')
+        return ws
     except Exception:
-        return {'enabled': False, 'path': ''}
+        return {'enabled': False, 'path': '', 'paths': []}
 
 
-def save_workspace_config(enabled: bool, path: str):
+def _normalise_workspace_paths(path_or_paths) -> list:
+    if isinstance(path_or_paths, (list, tuple)):
+        raw = []
+        for item in path_or_paths:
+            raw.extend(_re.split(r'[\n,;]+', str(item or '')))
+    else:
+        raw = _re.split(r'[\n,;]+', str(path_or_paths or ''))
+    paths = []
+    for p in raw:
+        p = p.strip()
+        if p and p not in paths:
+            paths.append(p)
+    return paths
+
+
+def save_workspace_config(enabled: bool, path: str = '', paths=None):
     from config_manager import LLMConfigManager
     cfg = LLMConfigManager()
-    cfg.config['workspace'] = {'enabled': enabled, 'path': path}
+    all_paths = _normalise_workspace_paths(paths if paths is not None else path)
+    if path and path not in all_paths:
+        all_paths.insert(0, path)
+    cfg.config['workspace'] = {
+        'enabled': enabled,
+        'path': all_paths[0] if all_paths else '',
+        'paths': all_paths,
+    }
     cfg.save_config()
 
 
 def inject_workspace_context(message: str, workspace_path: str) -> str:
     """If message mentions a path and workspace is enabled, inject directory listing."""
-    if not workspace_path:
-        return ''
     ws = get_workspace_config()
     if not ws.get('enabled'):
         return ''
 
-    root     = os.path.expanduser(ws.get('path', ''))
-    abs_root = os.path.realpath(root)
+    roots = _normalise_workspace_paths(workspace_path) or ws.get('paths') or [ws.get('path', '')]
+    roots = [os.path.realpath(os.path.expanduser(r)) for r in roots if r]
     paths_found = _re.findall(r'[~/][\w./\-]+', message)
     context_parts = []
 
     for p in paths_found:
         p_exp = os.path.expanduser(p)
-        p_abs = (os.path.realpath(p_exp) if p_exp.startswith('/')
-                 else os.path.realpath(os.path.join(abs_root, p_exp)))
-        if not p_abs.startswith(abs_root):
+        candidate_paths = [os.path.realpath(p_exp)] if p_exp.startswith('/') else [
+            os.path.realpath(os.path.join(root, p_exp)) for root in roots
+        ]
+        p_abs = ''
+        for cand in candidate_paths:
+            if any(os.path.commonpath([cand, root]) == root for root in roots):
+                p_abs = cand
+                break
+        if not p_abs:
             continue
         if os.path.isdir(p_abs):
             try:

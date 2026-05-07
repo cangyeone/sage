@@ -35,6 +35,24 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
 .sb-doc .rm-btn { border:none; background:none; color:#ccc; font-size:.9rem; padding:0 2px;
   line-height:1; flex-shrink:0; }
 .sb-doc .rm-btn:hover { color:#e53935; }
+.conv-item { display:flex; align-items:center; gap:.35rem; padding:.36rem .45rem; border-radius:8px;
+  font-size:.8rem; cursor:pointer; color:#555; }
+.conv-item:hover { background:#f5f6ff; }
+.conv-item.active { background:#eef1ff; color:#3949ab; font-weight:600; }
+.conv-title { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.conv-del { border:none; background:none; color:#b8b8c8; padding:0 .1rem; line-height:1; }
+.conv-del:hover { color:#e53935; }
+.sidebar-scroll-list { max-height:26vh; overflow-y:auto; padding-right:.15rem; }
+.project-list { max-height:18vh; }
+.date-group { margin:.18rem 0 .3rem; border-radius:8px; overflow:hidden; }
+.date-group-head { width:100%; border:none; background:#f8f9ff; color:#7a7f96;
+  display:flex; align-items:center; justify-content:space-between; padding:.22rem .42rem;
+  font-size:.72rem; font-weight:600; cursor:pointer; }
+.date-group-head:hover { background:#eef1ff; color:#3949ab; }
+.date-group-body { padding:.12rem 0; }
+.date-group.collapsed .date-group-body { display:none; }
+.date-group-caret { transition:transform .15s; }
+.date-group.collapsed .date-group-caret { transform:rotate(-90deg); }
 .kb-info { font-size:.78rem; color:#888; padding:.25rem .5rem; }
 
 /* Chat messages */
@@ -43,7 +61,7 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
 .msg-user { justify-content:flex-end; }
 .msg-assistant { justify-content:flex-start; }
 @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none} }
-.bubble { max-width:72%; padding:.75rem 1rem; border-radius:16px; word-break:break-word; line-height:1.55; }
+.bubble { position:relative; max-width:72%; padding:.75rem 1rem; border-radius:16px; word-break:break-word; line-height:1.55; }
 .msg-user .bubble { background:var(--user-bg); color:#fff; border-bottom-right-radius:4px; }
 .msg-assistant .bubble { background:#fff; border:1px solid #e5e5e5; color:#333; border-bottom-left-radius:4px; box-shadow:0 1px 4px rgba(0,0,0,.05); }
 .bubble code { background:#f0f0f0; padding:1px 6px; border-radius:4px; font-size:.86em; font-family:'Menlo','Courier New',monospace; color:#c7254e; }
@@ -71,6 +89,11 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
 .copy-btn { position:absolute; top:.4rem; right:.4rem; border:none; background:#e0e0e0;
   border-radius:5px; font-size:.72rem; padding:2px 8px; cursor:pointer; opacity:.7; }
 .copy-btn:hover { opacity:1; }
+.msg-copy-btn { position:absolute; top:.35rem; right:.45rem; opacity:0; border:1px solid #d7ddea;
+  background:rgba(255,255,255,.92); color:#666; border-radius:6px; font-size:.72rem;
+  padding:.08rem .42rem; cursor:pointer; transition:opacity .15s; z-index:2; }
+.bubble:hover .msg-copy-btn { opacity:1; }
+.msg-user .msg-copy-btn { background:rgba(255,255,255,.18); color:#fff; border-color:rgba(255,255,255,.4); }
 .msg-time { font-size:.72rem; color:#bbb; margin-top:.35rem; }
 .msg-user .msg-time { text-align:right; }
 
@@ -216,6 +239,57 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
   <!-- Sidebar: uploaded docs + KB status -->
   <div class="sidebar">
     <div class="sb-section">
+      <div class="d-flex align-items-center justify-content-between mb-2">
+        <div class="sb-title mb-0"><i class="bi bi-collection me-1"></i><span data-i18n="proj_title">项目</span></div>
+        <button class="btn btn-sm btn-outline-primary" style="font-size:.72rem;padding:.12rem .45rem" onclick="newProject()"
+                data-i18n-title="proj_new_tip" title="创建一个独立项目工作区">
+          <i class="bi bi-plus-lg"></i> <span data-i18n="proj_new">新建</span>
+        </button>
+      </div>
+      <div id="projectList" class="sidebar-scroll-list project-list"></div>
+      <div class="d-flex gap-1 mb-2">
+        <button class="btn btn-sm btn-outline-secondary flex-fill" style="font-size:.72rem" onclick="toggleProjectSettings()"
+                data-i18n-title="proj_settings_tip" title="编辑项目名称、前言和共享 Prompt">
+          <i class="bi bi-sliders"></i> <span data-i18n="proj_settings">设置</span>
+        </button>
+        <button class="btn btn-sm btn-outline-success" style="font-size:.72rem" onclick="promoteProjectToKnowledge()"
+                data-i18n-title="proj_promote_tip" title="将当前项目作为整体添加到知识库">
+          <i class="bi bi-journal-plus"></i> <span class="d-none d-xl-inline" data-i18n="proj_promote_kb">入库</span>
+        </button>
+        <button class="btn btn-sm btn-outline-danger" style="font-size:.72rem" onclick="deleteProject()"
+                data-i18n-title="proj_delete_tip" title="删除当前项目及其对话记录">
+          <i class="bi bi-trash3"></i>
+        </button>
+      </div>
+      <div id="projectSettings" style="display:none">
+        <input id="projectTitleInput" class="form-control form-control-sm mb-1" style="font-size:.76rem" data-i18n-placeholder="proj_name_ph" placeholder="项目名称" oninput="updateProjectSettings()">
+        <textarea id="projectPrefaceInput" class="form-control form-control-sm mb-1" rows="3" style="font-size:.76rem;resize:vertical" data-i18n-placeholder="proj_preface_ph" placeholder="项目前言 / 研究背景" oninput="updateProjectSettings()"></textarea>
+        <textarea id="projectPromptInput" class="form-control form-control-sm" rows="3" style="font-size:.76rem;resize:vertical" data-i18n-placeholder="proj_prompt_ph" placeholder="项目共享 Prompt" oninput="updateProjectSettings()"></textarea>
+      </div>
+      <div class="d-flex align-items-center justify-content-between mt-3 mb-2">
+        <div class="sb-title mb-0"><i class="bi bi-chat-square-text me-1"></i><span data-i18n="proj_conv_title">项目对话</span></div>
+        <button class="btn btn-sm btn-outline-primary" style="font-size:.72rem;padding:.12rem .45rem" onclick="newProjectConversation()"
+                data-i18n-title="proj_conv_new_tip" title="在当前项目中新建对话">
+          <i class="bi bi-plus-lg"></i> <span data-i18n="conv_new">新建</span>
+        </button>
+      </div>
+      <div id="projectConversationList" class="sidebar-scroll-list"></div>
+    </div>
+    <div class="sb-section">
+      <div class="d-flex align-items-center justify-content-between mb-2">
+        <div class="sb-title mb-0"><i class="bi bi-chat-left-text me-1"></i><span data-i18n="chat_title">Chat</span></div>
+        <button class="btn btn-sm btn-outline-primary" style="font-size:.72rem;padding:.12rem .45rem" onclick="newDailyConversation()"
+                data-i18n-title="conv_new_tip" title="新建日常 Chat 对话">
+          <i class="bi bi-plus-lg"></i> <span data-i18n="conv_new">新建</span>
+        </button>
+      </div>
+      <div id="chatConversationList" class="sidebar-scroll-list"></div>
+      <button class="btn btn-sm btn-outline-success w-100 mt-2" style="font-size:.78rem;" onclick="promoteConversationToKnowledge()"
+              data-i18n-title="conv_promote_tip" title="将当前 Chat 对话保存为知识库文档，可在知识库删除">
+        <i class="bi bi-journal-plus"></i> <span data-i18n="conv_promote_kb">当前 Chat 入库</span>
+      </button>
+    </div>
+    <div class="sb-section">
       <div class="sb-title"><i class="bi bi-file-earmark-pdf me-1"></i><span data-i18n="sb_uploads">本次上传</span></div>
       <div id="sessionDocList">
         <div class="kb-info text-muted" data-i18n-html="sb_no_doc">暂无上传文档<br>点击 📎 上传 PDF</div>
@@ -228,6 +302,14 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
         <i class="bi bi-gear"></i> <span data-i18n="sb_manage_kb">管理知识库</span>
       </a>
     </div>
+    <div class="sb-section">
+      <div class="sb-title"><i class="bi bi-person-x me-1"></i><span data-i18n="sb_privacy">个性化</span></div>
+      <button class="btn btn-sm btn-outline-danger w-100" style="font-size:.76rem" onclick="clearUserProfileMemory()"
+              data-i18n-title="clear_profile_tip" title="删除长期用户画像和个性化记忆">
+        <i class="bi bi-trash3"></i> <span data-i18n="clear_profile">清除个人画像</span>
+      </button>
+      <div class="kb-info text-muted mt-1" data-i18n="clear_profile_hint">删除长期用户画像和个性化记忆，不影响对话记录。</div>
+    </div>
     <!-- Workspace directory -->
     <div class="sb-section">
       <div class="sb-title"><i class="bi bi-folder2-open me-1"></i><span data-i18n="sb_workspace">本地工作目录</span></div>
@@ -238,8 +320,9 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
         </div>
       </div>
       <div id="wsDirRow" style="display:none">
-        <input type="text" class="form-control form-control-sm" id="wsPath"
-               placeholder="/data/seismic/waveform" style="font-size:.78rem;margin-bottom:.3rem">
+        <textarea class="form-control form-control-sm" id="wsPath" rows="3"
+               placeholder="/data/seismic/waveform&#10;/Users/you/project"
+               style="font-size:.78rem;margin-bottom:.3rem;resize:vertical"></textarea>
         <button class="btn btn-sm btn-outline-secondary w-100" style="font-size:.75rem" onclick="saveWorkspace()">
           <i class="bi bi-check2"></i> <span data-i18n="sb_save_path">保存路径</span>
         </button>
@@ -306,11 +389,11 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
         <button class="qbtn" id="qbtn_summary" onclick="sendQuick(T('qbtn_summary_msg'))">📖 <span data-i18n="qbtn_summary">总结文献</span></button>
         <button class="qbtn" id="qbtn_formula" onclick="sendQuick(T('qbtn_formula_msg'))">🔢 <span data-i18n="qbtn_formula">解读公式</span></button>
         <button class="qbtn" id="qbtn_pick" onclick="sendQuick(T('qbtn_pick_msg'))">🔍 <span data-i18n="qbtn_pick">拾取震相</span></button>
-        <div class="think-pill" id="thinkPill" onclick="toggleThink()" title="启用思考模式：模型会先推理再回答" style="margin-left:auto">
+        <div class="think-pill" id="thinkPill" onclick="toggleThink()" data-i18n-title="think_tip" title="启用思考模式：模型会先推理再回答" style="margin-left:auto">
           <span class="pill-dot"></span>
           <span id="thinkPillLabel">🧠 <span data-i18n="think_off">思考：关</span></span>
         </div>
-        <a class="qbtn" id="llmStatusPill" href="/llm-settings" title="当前 LLM 后端">
+        <a class="qbtn" id="llmStatusPill" href="/llm-settings" data-i18n-title="llm_tip" title="当前 LLM 后端">
           <i class="bi bi-cpu"></i> <span id="llmStatusText">LLM</span>
         </a>
         <button class="qbtn" onclick="clearChat()">🗑 <span data-i18n="qbtn_clear">清空</span></button>
@@ -321,7 +404,7 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
           <button class="attach-btn" data-i18n-title="attach_title" title="上传 PDF" onclick="triggerUpload()">
             <i class="bi bi-paperclip"></i>
           </button>
-          <button class="attach-btn" id="imgUploadBtn" title="上传图片（VL 模型）" onclick="triggerImageUpload()" style="color:#aaa;">
+          <button class="attach-btn" id="imgUploadBtn" data-i18n-title="img_upload_title" title="上传图片（VL 模型）" onclick="triggerImageUpload()" style="color:#aaa;">
             <i class="bi bi-image"></i>
           </button>
           <textarea id="userInput" rows="1" data-i18n-placeholder="input_placeholder" placeholder="输入问题或指令…" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
@@ -347,7 +430,30 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
 const I18N = {
   zh: {
     nav_chat: '对话', nav_geo: '地学解译', nav_knowledge: '知识库', nav_skills: '技能',
+    proj_title: '项目', proj_new: '新建', proj_default: '默认项目', proj_settings: '设置',
+    proj_conv_title: '项目对话', proj_promote_kb: '入库',
+    proj_new_tip: '创建一个独立项目工作区',
+    proj_settings_tip: '编辑项目名称、前言和共享 Prompt',
+    proj_promote_tip: '将当前项目作为整体添加到知识库',
+    proj_delete_tip: '删除当前项目及其对话记录',
+    proj_conv_new_tip: '在当前项目中新建对话',
+    proj_name_ph: '项目名称', proj_preface_ph: '项目前言 / 研究背景', proj_prompt_ph: '项目共享 Prompt',
+    proj_delete_confirm: '确定删除当前项目？项目内对话、项目文献和持久化记录都会删除。',
+    chat_title: 'Chat', conv_title: '对话', conv_new: '新建', conv_new_title: '新对话', conv_delete: '删除',
+    conv_new_tip: '新建日常 Chat 对话',
+    conv_delete_confirm: '确定删除这个对话？',
+    conv_created: '新对话已创建。',
+    conv_promote_kb: '当前 Chat 入库', conv_promote_empty: '当前对话还没有内容，不能入库。',
+    conv_promote_done: '当前对话已添加到知识库',
+    conv_promote_tip: '将当前 Chat 对话保存为知识库文档，可在知识库删除',
+    sb_privacy: '个性化', clear_profile: '清除个人画像',
+    clear_profile_hint: '删除长期用户画像和个性化记忆，不影响对话记录。',
+    clear_profile_tip: '删除长期用户画像和个性化记忆',
+    clear_profile_confirm: '确定清除个人画像和个性化记忆？此操作不会删除对话记录。',
+    clear_profile_done: '已清除个人画像和个性化记忆。',
+    copy_msg: '复制', copied_msg: '已复制',
     sb_uploads: '本次上传', sb_no_doc: '暂无上传文档<br>点击 📎 上传 PDF',
+    doc_promote: '保存到永久知识库', doc_permanent: '已入库', doc_permanent_badge: '库',
     sb_kb: '知识库', loading: '加载中…', sb_manage_kb: '管理知识库',
     sb_workspace: '本地工作目录', sb_ws_auth: '授权访问', sb_save_path: '保存路径',
     welcome_title: 'SeismicX AI 助手',
@@ -359,6 +465,8 @@ const I18N = {
     qbtn_filter: '滤波方法', qbtn_summary: '总结文献',
     qbtn_formula: '解读公式', qbtn_pick: '拾取震相', qbtn_clear: '清空',
     attach_title: '上传 PDF', img_upload_title: '上传图片（VL 模型）', input_placeholder: '输入问题或指令…',
+    think_tip: '显示或折叠模型思考过程',
+    llm_tip: '查看或切换当前 LLM 后端',
     // Quick action messages
     quick_qa_msg: '如何获取 IRIS 波形数据？',
     quick_kb_msg: '知识库里有哪些内容？',
@@ -380,7 +488,30 @@ const I18N = {
   },
   en: {
     nav_chat: 'Chat', nav_geo: 'Geo Agent', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
+    proj_title: 'Projects', proj_new: 'New', proj_default: 'Default project', proj_settings: 'Settings',
+    proj_conv_title: 'Project chats', proj_promote_kb: 'Add',
+    proj_new_tip: 'Create an independent project workspace',
+    proj_settings_tip: 'Edit project name, preface, and shared prompt',
+    proj_promote_tip: 'Add the current project to the knowledge base as one item',
+    proj_delete_tip: 'Delete the current project and its conversations',
+    proj_conv_new_tip: 'Create a new conversation in the current project',
+    proj_name_ph: 'Project name', proj_preface_ph: 'Project preface / research background', proj_prompt_ph: 'Project shared prompt',
+    proj_delete_confirm: 'Delete this project? Conversations, project literature, and persisted project data will be removed.',
+    chat_title: 'Chat', conv_title: 'Conversation', conv_new: 'New', conv_new_title: 'New chat', conv_delete: 'Delete',
+    conv_new_tip: 'Create a new daily Chat conversation',
+    conv_delete_confirm: 'Delete this conversation?',
+    conv_created: 'New conversation created.',
+    conv_promote_kb: 'Add Chat to KB', conv_promote_empty: 'This conversation is empty and cannot be added to the KB.',
+    conv_promote_done: 'Current conversation added to the knowledge base',
+    conv_promote_tip: 'Save the current Chat conversation as a knowledge-base document; delete it from Knowledge',
+    sb_privacy: 'Personalization', clear_profile: 'Clear profile',
+    clear_profile_hint: 'Delete long-term profile and personalization memory. Chat history is kept.',
+    clear_profile_tip: 'Delete long-term profile and personalization memory',
+    clear_profile_confirm: 'Clear personal profile and personalization memory? Chat history will not be deleted.',
+    clear_profile_done: 'Personal profile and personalization memory cleared.',
+    copy_msg: 'Copy', copied_msg: 'Copied',
     sb_uploads: 'Uploaded', sb_no_doc: 'No documents uploaded<br>Click 📎 to upload PDF',
+    doc_promote: 'Save to permanent KB', doc_permanent: 'Saved to KB', doc_permanent_badge: 'KB',
     sb_kb: 'Knowledge Base', loading: 'Loading…', sb_manage_kb: 'Manage KB',
     sb_workspace: 'Local Workspace', sb_ws_auth: 'Authorize', sb_save_path: 'Save Path',
     welcome_title: 'SeismicX AI Assistant',
@@ -392,6 +523,8 @@ const I18N = {
     qbtn_filter: 'Filtering', qbtn_summary: 'Summarize paper',
     qbtn_formula: 'Explain formula', qbtn_pick: 'Phase picking', qbtn_clear: 'Clear',
     attach_title: 'Upload PDF', img_upload_title: 'Upload image (VL model)', input_placeholder: 'Type a question or command…',
+    think_tip: 'Show or collapse model reasoning',
+    llm_tip: 'View or switch the current LLM backend',
     // Quick action messages
     quick_qa_msg: 'How do I fetch waveform data from IRIS?',
     quick_kb_msg: 'What papers are in the knowledge base?',
@@ -436,6 +569,12 @@ function applyLang() {
   });
   const lbl = document.getElementById('langLabel');
   if (lbl) lbl.textContent = currentLang === 'zh' ? 'EN' : '中';
+  try { renderConversationList(); } catch(e) {}
+  try { renderProjectControls(); } catch(e) {}
+  try { refreshSessionSidebar(); } catch(e) {}
+  try { loadKbStatus(); } catch(e) {}
+  try { _applyThinkPill(); } catch(e) {}
+  try { loadLlmStatus(); } catch(e) {}
 }
 
 function toggleLang() {
@@ -449,24 +588,198 @@ document.addEventListener('DOMContentLoaded', applyLang);
 
 <script>
 // ── State ──────────────────────────────────────────────────────────────────
-// SESSION_ID persists in localStorage so history survives page navigation
-let SESSION_ID = localStorage.getItem('sage_chat_session') || '';
-if (!SESSION_ID) {
-  SESSION_ID = 'sess_' + Math.random().toString(36).slice(2,10);
-  localStorage.setItem('sage_chat_session', SESSION_ID);
+const CONV_STORE_KEY = 'sage_chat_conversations_v2';
+const ACTIVE_CONV_KEY = 'sage_chat_active_conversation';
+const PROJECT_STORE_KEY = 'sage_chat_projects_v1';
+const ACTIVE_PROJECT_KEY = 'sage_chat_active_project';
+const COLLAPSE_STORE_KEY = 'sage_sidebar_collapsed_groups_v1';
+
+function _newProject(title='') {
+  return {
+    id: 'proj_' + Math.random().toString(36).slice(2,10),
+    title,
+    preface: '',
+    prompt: '',
+    docs: [],
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
 }
 
-let chatHistory = [];    // [{role,content}] for LLM context — restored from localStorage
-try { chatHistory = JSON.parse(localStorage.getItem('sage_chat_history') || '[]'); } catch(e) {}
+function _newConv(title='') {
+  return {
+    id: 'sess_' + Math.random().toString(36).slice(2,10),
+    project_id: activeProjectId || '',
+    title,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    history: [],
+    messages: [],
+    docs: [],
+  };
+}
 
-let _msgStore   = [];    // display-level: [{role,content,sources,timeStr}]
-try { _msgStore = JSON.parse(localStorage.getItem('sage_chat_msgs') || '[]'); } catch(e) {}
+let projects = [];
+try { projects = JSON.parse(localStorage.getItem(PROJECT_STORE_KEY) || '[]'); } catch(e) {}
+if (!Array.isArray(projects)) projects = [];
+projects = projects.filter(p => p && p.id && p.id !== 'default_project');
+let activeProjectId = localStorage.getItem(ACTIVE_PROJECT_KEY) || '';
+if (activeProjectId === 'default_project' || !projects.some(p => p.id === activeProjectId)) activeProjectId = '';
+
+let conversations = [];
+try { conversations = JSON.parse(localStorage.getItem(CONV_STORE_KEY) || '[]'); } catch(e) {}
+if (!Array.isArray(conversations) || conversations.length === 0) {
+  const migrated = _newConv('');
+  try { migrated.history = JSON.parse(localStorage.getItem('sage_chat_history') || '[]'); } catch(e) {}
+  try { migrated.messages = JSON.parse(localStorage.getItem('sage_chat_msgs') || '[]'); } catch(e) {}
+  conversations = [migrated];
+}
+conversations.forEach(c => {
+  if (!c.project_id || c.project_id === 'default_project') c.project_id = '';
+});
+
+let activeConversationId = localStorage.getItem(ACTIVE_CONV_KEY) || conversations[0].id;
+if (!conversations.some(c => c.id === activeConversationId)) activeConversationId = conversations[0].id;
+
+function activeConversation() {
+  return conversations.find(c => c.id === activeConversationId) || conversations[0];
+}
+
+function activeProject() {
+  if (!activeProjectId) return null;
+  return projects.find(p => p.id === activeProjectId) || null;
+}
+
+let SESSION_ID = activeConversation().id;
+let chatHistory = activeConversation().history || [];
+let _msgStore = activeConversation().messages || [];
+let sessionDocs = activeConversation().docs || [];
+let _serverSaveTimer = null;
+let _serverSyncPaused = false;
+let collapsedGroups = {};
+try { collapsedGroups = JSON.parse(localStorage.getItem(COLLAPSE_STORE_KEY) || '{}'); } catch(e) {}
+
+function latestConversationTs(list) {
+  return Math.max(0, ...((list || []).map(c => Number(c.updatedAt || c.createdAt || 0))));
+}
+
+function persistConversationsToServer(delay=600) {
+  if (_serverSyncPaused) return;
+  if (_serverSaveTimer) clearTimeout(_serverSaveTimer);
+  _serverSaveTimer = setTimeout(() => {
+    flushConversationsToServer();
+  }, delay);
+}
+
+function flushConversationsToServer(useBeacon=false) {
+  const payload = JSON.stringify({
+    active_id: activeConversationId,
+    active_project_id: activeProjectId,
+    projects,
+    conversations,
+  });
+  if (useBeacon && navigator.sendBeacon) {
+    try {
+      const blob = new Blob([payload], {type:'application/json'});
+      if (navigator.sendBeacon('/api/chat/conversations', blob)) return Promise.resolve();
+    } catch(e) {}
+  }
+  return fetch('/api/chat/conversations', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: payload,
+  }).catch(() => {});
+}
+
+function saveConversations() {
+  try { localStorage.setItem(PROJECT_STORE_KEY, JSON.stringify(projects)); } catch(e) {}
+  try { localStorage.setItem(CONV_STORE_KEY, JSON.stringify(conversations)); } catch(e) {}
+  try { localStorage.setItem(ACTIVE_PROJECT_KEY, activeProjectId); } catch(e) {}
+  try { localStorage.setItem(ACTIVE_CONV_KEY, activeConversationId); } catch(e) {}
+  persistConversationsToServer();
+}
+
+async function saveConversationsNow() {
+  saveConversations();
+  await flushConversationsToServer(false);
+}
+
+function isDefaultConversationTitle(title) {
+  const t = String(title || '').trim();
+  return !t || t === '新对话' || t === '旧对话' || t === 'New chat' || t === 'Old chat';
+}
+
+function conversationDisplayTitle(c) {
+  return isDefaultConversationTitle(c && c.title) ? T('conv_new_title') : String(c.title || '');
+}
+
+function saveActiveConversation(opts={}) {
+  const touch = !!opts.touch;
+  const c = activeConversation();
+  c.history = chatHistory.slice(-20);
+  c.messages = _msgStore.slice(-50);
+  c.docs = sessionDocs;
+  if (touch) {
+    c.updatedAt = Date.now();
+    const p = activeProject();
+    if (p) p.updatedAt = c.updatedAt;
+  }
+  if (isDefaultConversationTitle(c.title) && chatHistory.length) {
+    const firstUser = chatHistory.find(m => m.role === 'user');
+    if (firstUser) c.title = String(firstUser.content || '').slice(0, 24);
+  }
+  saveConversations();
+  renderConversationList();
+  maybeSummarizeUserMemorySilent();
+}
 
 function _persistHistory() {
-  try { localStorage.setItem('sage_chat_history', JSON.stringify(chatHistory.slice(-12))); } catch(e) {}
+  saveActiveConversation({touch:true});
 }
 
-let sessionDocs    = [];    // [{name, n_chunks}]
+async function loadConversationsFromServer() {
+  try {
+    const r = await fetch('/api/chat/conversations');
+    const d = await r.json();
+    const serverConvs = Array.isArray(d.conversations) ? d.conversations : [];
+    const serverProjects = Array.isArray(d.projects) ? d.projects : [];
+    if (!d.ok || serverConvs.length === 0) return;
+    if (latestConversationTs(serverConvs) < latestConversationTs(conversations)) return;
+
+    _serverSyncPaused = true;
+    if (serverProjects.length) projects = serverProjects.filter(p => p && p.id && p.id !== 'default_project');
+    activeProjectId = d.active_project_id && projects.some(p => p.id === d.active_project_id)
+      ? d.active_project_id
+      : '';
+    conversations = serverConvs;
+    conversations.forEach(c => { if (!c.project_id || c.project_id === 'default_project') c.project_id = ''; });
+    activeConversationId = d.active_id && conversations.some(c => c.id === d.active_id)
+      ? d.active_id
+      : (conversations.find(c => c.project_id === activeProjectId)?.id || conversations[0].id);
+    loadConversationState(activeConversationId);
+    saveConversations();
+    _serverSyncPaused = false;
+
+    renderWelcome();
+    _restoreChat();
+    refreshSessionSidebar();
+    renderProjectControls();
+    renderConversationList();
+    maybeSummarizeUserMemorySilent();
+    _resumePendingJob();
+  } catch(e) {
+    _serverSyncPaused = false;
+  }
+}
+
+document.addEventListener('DOMContentLoaded', loadConversationsFromServer);
+window.addEventListener('beforeunload', () => {
+  try {
+    saveActiveConversation();
+    flushConversationsToServer(true);
+  } catch(e) {}
+});
+
 let kbHasDocs      = false;
 let lastCodeStdout = '';    // 上一次 sendCode 的 stdout，供下一轮绘图注入路径
 let lastDataPath   = '';    // 用户消息中提取到的最近一次数据目录/文件路径
@@ -478,13 +791,346 @@ const typingIndicator = document.getElementById('typingIndicator');
 const contextBar      = document.getElementById('contextBar');
 const contextChips    = document.getElementById('contextChips');
 
+function projectDisplayTitle(p) {
+  const t = String(p?.title || '').trim();
+  return t || T('proj_default');
+}
+
+function dateGroupLabel(ts) {
+  const t = Number(ts || 0);
+  const d = t ? new Date(t) : new Date(0);
+  const now = new Date();
+  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startYesterday = startToday - 86400000;
+  const start7 = startToday - 6 * 86400000;
+  const start30 = startToday - 29 * 86400000;
+  if (t >= startToday) return currentLang === 'zh' ? '今天' : 'Today';
+  if (t >= startYesterday) return currentLang === 'zh' ? '昨天' : 'Yesterday';
+  if (t >= start7) return currentLang === 'zh' ? '近 7 天' : 'Last 7 days';
+  if (t >= start30) return currentLang === 'zh' ? '近 30 天' : 'Last 30 days';
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+}
+
+function groupByDate(items) {
+  const groups = [];
+  for (const item of items) {
+    const label = dateGroupLabel(item.updatedAt || item.createdAt);
+    let g = groups.find(x => x.label === label);
+    if (!g) { g = {label, items: []}; groups.push(g); }
+    g.items.push(item);
+  }
+  return groups;
+}
+
+function toggleDateGroup(kind, label) {
+  const key = `${kind}:${label}`;
+  collapsedGroups[key] = !collapsedGroups[key];
+  try { localStorage.setItem(COLLAPSE_STORE_KEY, JSON.stringify(collapsedGroups)); } catch(e) {}
+  if (kind === 'project') renderProjectControls();
+  else renderConversationLists();
+}
+
+function renderDateGroups(kind, groups, renderItem) {
+  return groups.map(g => {
+    const key = `${kind}:${g.label}`;
+    const collapsed = !!collapsedGroups[key];
+    return `<div class="date-group ${collapsed ? 'collapsed' : ''}">
+      <button class="date-group-head" onclick="toggleDateGroup('${kind}', '${_esc(g.label).replace(/'/g, "\\'")}')">
+        <span>${_esc(g.label)}</span>
+        <span><span style="opacity:.65">${g.items.length}</span> <i class="bi bi-chevron-down date-group-caret"></i></span>
+      </button>
+      <div class="date-group-body">${g.items.map(renderItem).join('')}</div>
+    </div>`;
+  }).join('');
+}
+
+function projectContextText() {
+  const p = activeProject();
+  if (!p) return '';
+  const docs = (p.docs || []).map(d => d.name).filter(Boolean).join(', ');
+  return [
+    p?.preface ? `项目背景：${p.preface}` : '',
+    p?.prompt ? `项目共享 Prompt：${p.prompt}` : '',
+    docs ? `项目文献：${docs}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+function renderProjectControls() {
+  const list = document.getElementById('projectList');
+  if (!list) return;
+  const sorted = [...projects].sort((a,b)=>(b.updatedAt||b.createdAt||0)-(a.updatedAt||a.createdAt||0));
+  list.innerHTML = renderDateGroups('project', groupByDate(sorted), p => `
+    <div class="conv-item ${p.id === activeProjectId ? 'active' : ''}" onclick="switchProject('${p.id}')">
+      <i class="bi bi-collection"></i>
+      <span class="conv-title" title="${_esc(projectDisplayTitle(p))}">${_esc(projectDisplayTitle(p))}</span>
+    </div>
+  `);
+  const p = activeProject();
+  const titleEl = document.getElementById('projectTitleInput');
+  const prefaceEl = document.getElementById('projectPrefaceInput');
+  const promptEl = document.getElementById('projectPromptInput');
+  if (titleEl) titleEl.value = p?.title || '';
+  if (prefaceEl) prefaceEl.value = p?.preface || '';
+  if (promptEl) promptEl.value = p?.prompt || '';
+}
+
+function currentProjectConversations() {
+  if (!activeProjectId) return [];
+  return conversations.filter(c => (c.project_id || '') === activeProjectId);
+}
+
+function dailyConversations() {
+  return conversations.filter(c => !(c.project_id || ''));
+}
+
+function selectedDailyConversation() {
+  const active = activeConversation();
+  if (active && !(active.project_id || '')) return active;
+  return dailyConversations().sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0))[0] || ensureDailyConversation();
+}
+
+function ensureProjectHasConversation() {
+  if (!activeProjectId) return ensureDailyConversation();
+  let conv = currentProjectConversations().sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0))[0];
+  if (!conv) {
+    conv = _newConv('');
+    conv.project_id = activeProjectId;
+    conversations.unshift(conv);
+  }
+  return conv;
+}
+
+function ensureDailyConversation() {
+  let conv = dailyConversations().sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0))[0];
+  if (!conv) {
+    conv = _newConv('');
+    conv.project_id = '';
+    conversations.unshift(conv);
+  }
+  return conv;
+}
+
+function _renderConversationList(elId, kind, list) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  const sorted = [...list].sort((a,b) => (b.updatedAt||0) - (a.updatedAt||0));
+  if (!sorted.length) {
+    el.innerHTML = `<div class="kb-info text-muted">${kind === 'projectConversation' ? (currentLang === 'zh' ? '请选择或新建项目' : 'Select or create a project') : T('conv_created')}</div>`;
+    return;
+  }
+  el.innerHTML = renderDateGroups(kind, groupByDate(sorted), c => `
+    <div class="conv-item ${c.id === activeConversationId ? 'active' : ''}" onclick="switchConversation('${c.id}')">
+      <i class="bi bi-chat-left-text"></i>
+      <span class="conv-title" title="${_esc(conversationDisplayTitle(c))}">${_esc(conversationDisplayTitle(c))}</span>
+      <button class="conv-del" title="${_esc(T('conv_delete'))}" onclick="deleteConversation(event, '${c.id}')"><i class="bi bi-x"></i></button>
+    </div>
+  `);
+}
+
+function renderConversationLists() {
+  _renderConversationList('projectConversationList', 'projectConversation', currentProjectConversations());
+  _renderConversationList('chatConversationList', 'chatConversation', dailyConversations());
+}
+
+function renderConversationList() {
+  renderConversationLists();
+}
+
+function switchProject(id) {
+  if (!projects.some(p => p.id === id)) return;
+  hideTyping();
+  saveActiveConversation();
+  activeProjectId = id;
+  const conv = ensureProjectHasConversation();
+  loadConversationState(conv.id);
+  renderProjectControls();
+  renderWelcome();
+  _restoreChat();
+  refreshSessionSidebar();
+  renderConversationLists();
+  saveConversations();
+}
+
+function newProject() {
+  saveActiveConversation();
+  const p = _newProject('');
+  projects.unshift(p);
+  activeProjectId = p.id;
+  const c = _newConv('');
+  c.project_id = p.id;
+  conversations.unshift(c);
+  loadConversationState(c.id);
+  renderProjectControls();
+  renderWelcome(T('welcome_title'), currentLang === 'zh' ? '新项目已创建。' : 'New project created.');
+  refreshSessionSidebar();
+  renderConversationLists();
+  saveConversations();
+}
+
+function toggleProjectSettings() {
+  const el = document.getElementById('projectSettings');
+  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+function updateProjectSettings() {
+  const p = activeProject();
+  if (!p) return;
+  p.title = document.getElementById('projectTitleInput')?.value || '';
+  p.preface = document.getElementById('projectPrefaceInput')?.value || '';
+  p.prompt = document.getElementById('projectPromptInput')?.value || '';
+  renderProjectControls();
+  saveConversations();
+}
+
+async function deleteProject() {
+  if (!activeProjectId) return;
+  if (!confirm(T('proj_delete_confirm'))) return;
+  const id = activeProjectId;
+  const convIds = conversations.filter(c => c.project_id === id).map(c => c.id);
+  for (const cid of convIds) {
+    await fetch(`/api/chat/conversations/${encodeURIComponent(cid)}`, {method:'DELETE'}).catch(() => {});
+    await fetch('/api/chat/clear_session', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({session_id:cid})}).catch(()=>{});
+    try { localStorage.removeItem(`sage_pending_job_${cid}`); } catch(e) {}
+  }
+  conversations = conversations.filter(c => c.project_id !== id);
+  projects = projects.filter(p => p.id !== id);
+  activeProjectId = '';
+  const conv = ensureProjectHasConversation();
+  loadConversationState(conv.id);
+  renderProjectControls();
+  renderWelcome();
+  refreshSessionSidebar();
+  renderConversationLists();
+  await saveConversationsNow();
+}
+
+function renderWelcome(title=T('welcome_title'), subtitle=T('welcome_sub')) {
+  chatMessages.innerHTML = `<div class="welcome" id="welcomePanel">
+    <h3><i class="bi bi-robot"></i> ${title}</h3>
+    <p class="text-muted">${subtitle}</p>
+  </div>`;
+}
+
+function loadConversationState(convId) {
+  const c = conversations.find(x => x.id === convId);
+  if (!c) return;
+  activeConversationId = c.id;
+  SESSION_ID = c.id;
+  chatHistory = c.history || [];
+  _msgStore = c.messages || [];
+  sessionDocs = c.docs || [];
+  const sendBtn = document.getElementById('sendBtn');
+  if (sendBtn) sendBtn.disabled = isSessionRunning(SESSION_ID);
+  saveConversations();
+}
+
+function switchConversation(id) {
+  if (id === activeConversationId) return;
+  hideTyping();
+  saveActiveConversation();
+  const conv = conversations.find(c => c.id === id);
+  activeProjectId = conv?.project_id || '';
+  loadConversationState(id);
+  renderWelcome();
+  _restoreChat();
+  refreshSessionSidebar();
+  renderProjectControls();
+  renderConversationList();
+  _resumePendingJob();
+}
+
+function newConversation() {
+  saveActiveConversation();
+  const c = _newConv();
+  c.project_id = activeProjectId || '';
+  conversations.unshift(c);
+  loadConversationState(c.id);
+  renderWelcome(T('welcome_title'), T('conv_created'));
+  refreshSessionSidebar();
+  renderProjectControls();
+  renderConversationLists();
+}
+
+function newDailyConversation() {
+  activeProjectId = '';
+  newConversation();
+}
+
+function newProjectConversation() {
+  if (!activeProjectId) {
+    if (!projects.length) newProject();
+    else switchProject(projects[0].id);
+    return;
+  }
+  const c = _newConv();
+  c.project_id = activeProjectId;
+  conversations.unshift(c);
+  loadConversationState(c.id);
+  renderWelcome(T('welcome_title'), T('conv_created'));
+  refreshSessionSidebar();
+  renderConversationLists();
+  saveConversations();
+}
+
+async function deleteConversation(event, id) {
+  event.stopPropagation();
+  if (!confirm(T('conv_delete_confirm'))) return;
+  await fetch('/api/chat/clear_session', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({session_id: id})
+  }).catch(() => {});
+  await fetch(`/api/chat/conversations/${encodeURIComponent(id)}`, {method:'DELETE'}).catch(() => {});
+  try { localStorage.removeItem(`sage_pending_job_${id}`); } catch(e) {}
+  conversations = conversations.filter(c => c.id !== id);
+  if (activeConversationId === id) {
+    const fallback = activeProjectId ? (currentProjectConversations()[0] || dailyConversations()[0] || ensureDailyConversation()) : (dailyConversations()[0] || ensureDailyConversation());
+    loadConversationState(fallback.id);
+    renderWelcome();
+    _restoreChat();
+    refreshSessionSidebar();
+  }
+  await saveConversationsNow();
+  renderConversationLists();
+}
+
+let _memorySummaryRunning = false;
+function _countProfileEligibleTurns() {
+  return conversations.reduce((n, c) => n + (Array.isArray(c.history) ? c.history.length : 0), 0);
+}
+
+async function maybeSummarizeUserMemorySilent(force=false) {
+  if (_memorySummaryRunning) return;
+  const turns = _countProfileEligibleTurns();
+  const last = Number(localStorage.getItem('sage_user_profile_last_summary') || '0');
+  if (!force && (turns < 4 || Date.now() - last < 3 * 60 * 1000)) return;
+  _memorySummaryRunning = true;
+  try {
+    await flushConversationsToServer();
+    const r = await fetch('/api/chat/memory/summarize', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({conversations}),
+    });
+    const d = await r.json();
+    if (d.ok) localStorage.setItem('sage_user_profile_last_summary', String(Date.now()));
+  } catch(e) {
+    // Long-term profile is soft context; never interrupt the active chat for it.
+  } finally {
+    _memorySummaryRunning = false;
+  }
+}
+
+async function summarizeUserMemory() {
+  saveActiveConversation();
+  await maybeSummarizeUserMemorySilent(true);
+}
+
 // ── KB status ──────────────────────────────────────────────────────────────
 async function loadKbStatus() {
   try {
     const r = await fetch('/api/knowledge/status');
     const d = await r.json();
     kbHasDocs = d.n_docs > 0;
-    const _isZh   = (localStorage.getItem('sage_lang') || 'zh') === 'zh';
+    const _isZh   = currentLang === 'zh';
     const _nDocs  = d.n_docs || 0;
     const _nChunk = d.n_vectors || d.n_chunks || 0;
     document.getElementById('kbInfo').innerHTML = _nDocs > 0
@@ -492,20 +1138,22 @@ async function loadKbStatus() {
           ? `<span style="color:#3949ab;font-weight:600">${_nDocs} 篇</span> 文献 · ${_nChunk} 个片段`
           : `<span style="color:#3949ab;font-weight:600">${_nDocs}</span> docs · ${_nChunk} chunks`)
       : (_isZh ? '知识库为空' : 'Knowledge base is empty');
-  } catch { document.getElementById('kbInfo').textContent = '无法连接'; }
+  } catch { document.getElementById('kbInfo').textContent = currentLang === 'zh' ? '无法连接' : 'Disconnected'; }
 }
 
 // ── Session doc sidebar ────────────────────────────────────────────────────
 function refreshSessionSidebar() {
   const list = document.getElementById('sessionDocList');
   if (sessionDocs.length === 0) {
-    list.innerHTML = '<div class="kb-info text-muted">暂无上传文档<br>点击 📎 上传 PDF</div>';
+    list.innerHTML = `<div class="kb-info text-muted">${T('sb_no_doc')}</div>`;
     return;
   }
   list.innerHTML = sessionDocs.map((d, i) => `
     <div class="sb-doc">
       <i class="bi bi-file-earmark-pdf text-danger" style="font-size:.9rem;flex-shrink:0"></i>
-      <span class="doc-name" title="${d.name}">${d.name}</span>
+      <span class="doc-name" title="${_esc(d.name)}">${_esc(d.name)}</span>
+      ${d.permanent ? `<span title="${_esc(T('doc_permanent'))}" style="color:#2e7d32;font-size:.75rem">${_esc(T('doc_permanent_badge'))}</span>` :
+        `<button class="rm-btn" title="${_esc(T('doc_promote'))}" onclick="promoteSessionDoc(event, ${i})"><i class="bi bi-journal-plus"></i></button>`}
       <button class="rm-btn" onclick="removeSessionDoc(${i})"><i class="bi bi-x"></i></button>
     </div>`).join('');
 }
@@ -520,6 +1168,107 @@ async function removeSessionDoc(i) {
       body: JSON.stringify({session_id: SESSION_ID})
     });
   }
+  saveActiveConversation();
+}
+
+async function promoteSessionDoc(event, i) {
+  event.stopPropagation();
+  const doc = sessionDocs[i];
+  if (!doc || !doc.upload_id) {
+    addMsg('assistant', '✗ 这个文档缺少临时文件记录，无法入库。');
+    return;
+  }
+  addMsg('assistant', `📚 正在将 **${doc.name}** 保存到永久知识库…`);
+  try {
+    const r = await fetch('/api/chat/promote_doc', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({session_id: SESSION_ID, upload_id: doc.upload_id}),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      doc.permanent = true;
+      refreshSessionSidebar();
+      saveActiveConversation();
+      addMsg('assistant', `✅ **${doc.name}** 已保存到永久知识库（${d.n_chunks} 个片段）。`);
+      loadKbStatus();
+    } else {
+      addMsg('assistant', `✗ 入库失败：${d.error}`);
+    }
+  } catch(e) {
+    addMsg('assistant', `✗ 入库出错：${e.message}`);
+  }
+}
+
+async function clearUserProfileMemory() {
+  if (!confirm(T('clear_profile_confirm'))) return;
+  try {
+    const r = await fetch('/api/chat/memory', {method:'DELETE'});
+    const d = await r.json();
+    if (d.ok) {
+      localStorage.removeItem('sage_user_profile_last_summary');
+      addMsg('assistant', `✅ ${T('clear_profile_done')}`);
+    } else {
+      addMsg('assistant', `✗ ${d.error || 'Failed'}`);
+    }
+  } catch(e) {
+    addMsg('assistant', `✗ ${e.message}`);
+  }
+}
+
+async function promoteProjectToKnowledge() {
+  const p = activeProject();
+  if (!p) {
+    addMsg('assistant', currentLang === 'zh' ? '✗ 请先选择一个项目。' : '✗ Select a project first.');
+    return;
+  }
+  const convs = currentProjectConversations();
+  try {
+    const r = await fetch('/api/chat/project/promote', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({project:p, conversations:convs}),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      addMsg('assistant', currentLang === 'zh'
+        ? `✅ 项目已添加到知识库：${d.doc_name}（${d.n_chunks} 个片段）。可在知识库页面删除。`
+        : `✅ Project added to the knowledge base: ${d.doc_name} (${d.n_chunks} chunks). It can be deleted from Knowledge.`);
+      loadKbStatus();
+    } else {
+      addMsg('assistant', `✗ ${d.error || 'Failed'}`);
+    }
+  } catch(e) {
+    addMsg('assistant', `✗ ${e.message}`);
+  }
+}
+
+async function promoteConversationToKnowledge() {
+  saveActiveConversation();
+  const conv = selectedDailyConversation();
+  const hasContent = (conv?.messages || []).some(m => String(m.content || '').trim()) ||
+    (conv?.history || []).some(m => String(m.content || '').trim());
+  if (!hasContent) {
+    addMsg('assistant', `✗ ${T('conv_promote_empty')}`);
+    return;
+  }
+  try {
+    const r = await fetch('/api/chat/conversation/promote', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({conversation: conv}),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      addMsg('assistant', currentLang === 'zh'
+        ? `✅ ${T('conv_promote_done')}：${d.doc_name}（${d.n_chunks} 个片段）。可在知识库页面删除。`
+        : `✅ ${T('conv_promote_done')}: ${d.doc_name} (${d.n_chunks} chunks). It can be deleted from Knowledge.`);
+      loadKbStatus();
+    } else {
+      addMsg('assistant', `✗ ${d.error || 'Failed'}`);
+    }
+  } catch(e) {
+    addMsg('assistant', `✗ ${e.message}`);
+  }
 }
 
 // ── File upload ────────────────────────────────────────────────────────────
@@ -533,12 +1282,20 @@ async function uploadFiles(files) {
     const fd = new FormData();
     fd.append('file', file);
     fd.append('session_id', SESSION_ID);
+    fd.append('project_id', activeProjectId);
     try {
       const r = await fetch('/api/chat/upload', {method:'POST', body:fd});
       const d = await r.json();
       if (d.ok) {
-        sessionDocs.push({name: file.name, n_chunks: d.n_chunks});
+        const docMeta = {name: file.name, n_chunks: d.n_chunks, upload_id: d.upload_id, permanent: false, project_id: activeProjectId};
+        sessionDocs.push(docMeta);
+        const p = activeProject();
+        if (p) {
+          p.docs = p.docs || [];
+          if (!p.docs.some(x => x.upload_id === d.upload_id)) p.docs.push(docMeta);
+        }
         refreshSessionSidebar();
+        saveActiveConversation();
         addMsg('assistant',
           `✅ **${file.name}** 已加载（${d.n_pages} 页，${d.n_chunks} 个片段）\n\n` +
           `现在可以直接问我关于这篇文献的任何问题，回答将自动引用文献内容。`);
@@ -554,7 +1311,26 @@ async function uploadFiles(files) {
 
 // ── Image upload / paste (VL models) ──────────────────────────────────────
 let pendingImages = [];   // [{id, b64, mime, objectUrl}]
-let isSending = false;
+const runningSessions = {};
+
+function hasPendingJob(sessionId=SESSION_ID) {
+  try {
+    return !!JSON.parse(localStorage.getItem(pendingJobKey(sessionId)) || 'null');
+  } catch(e) {
+    return false;
+  }
+}
+
+function isSessionRunning(sessionId=SESSION_ID) {
+  return !!runningSessions[sessionId] || hasPendingJob(sessionId);
+}
+
+function setSessionRunning(sessionId=SESSION_ID, running=false) {
+  if (running) runningSessions[sessionId] = true;
+  else delete runningSessions[sessionId];
+  const sendBtn = document.getElementById('sendBtn');
+  if (sendBtn && sessionId === SESSION_ID) sendBtn.disabled = isSessionRunning(sessionId);
+}
 
 function triggerImageUpload() { document.getElementById('imageFileInput').click(); }
 
@@ -651,6 +1427,7 @@ function addMsg(role, content, sources=[], imgUrls=[]) {
   const textDiv = document.createElement('div');
   textDiv.innerHTML = formatText(content) + _renderSourceChips(sources);
   bubble.appendChild(textDiv);
+  attachMessageCopyButton(bubble, content);
 
   div.appendChild(bubble);
 
@@ -665,7 +1442,7 @@ function addMsg(role, content, sources=[], imgUrls=[]) {
   // Persist to localStorage (cap at 30 messages, don't store large base64 image data)
   _msgStore.push({role, content, sources, timeStr: timeEl.textContent});
   if (_msgStore.length > 30) _msgStore.splice(0, _msgStore.length - 30);
-  try { localStorage.setItem('sage_chat_msgs', JSON.stringify(_msgStore)); } catch(e) {}
+  saveActiveConversation({touch:true});
 
   return div;
 }
@@ -812,20 +1589,66 @@ function copyCode(btn) {
   });
 }
 
+function copyTextToClipboard(text, btn=null) {
+  const value = String(text || '');
+  const done = () => {
+    if (!btn) return;
+    const old = btn.textContent;
+    btn.textContent = T('copied_msg');
+    setTimeout(() => btn.textContent = old || T('copy_msg'), 1200);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(value).then(done).catch(() => {});
+    return;
+  }
+  const ta = document.createElement('textarea');
+  ta.value = value;
+  ta.style.position = 'fixed';
+  ta.style.left = '-9999px';
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand('copy');
+  document.body.removeChild(ta);
+  done();
+}
+
+function attachMessageCopyButton(bubble, text) {
+  if (!bubble) return;
+  const btn = document.createElement('button');
+  btn.className = 'msg-copy-btn';
+  btn.type = 'button';
+  btn.textContent = T('copy_msg');
+  btn.onclick = (ev) => {
+    ev.stopPropagation();
+    copyTextToClipboard(text, btn);
+  };
+  bubble.appendChild(btn);
+}
+
 // ── Workspace directory ────────────────────────────────────────────────────
 let wsEnabled = false;
 let wsPath = '';
+let wsPaths = [];
+
+function parseWorkspacePaths(raw) {
+  return String(raw || '').split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
+}
+
+function workspacePayloadValue() {
+  return wsEnabled ? (wsPaths.length ? wsPaths.join('\n') : wsPath) : '';
+}
 
 async function loadWorkspace() {
   try {
     const r = await fetch('/api/workspace/config');
     const d = await r.json();
     wsEnabled = d.enabled || false;
-    wsPath = d.path || '';
+    wsPaths = Array.isArray(d.paths) ? d.paths : parseWorkspacePaths(d.path || '');
+    wsPath = d.path || (wsPaths[0] || '');
     document.getElementById('wsEnabled').checked = wsEnabled;
-    document.getElementById('wsPath').value = wsPath;
+    document.getElementById('wsPath').value = wsPaths.length ? wsPaths.join('\n') : wsPath;
     document.getElementById('wsDirRow').style.display = wsEnabled ? 'block' : 'none';
-    if (wsEnabled && wsPath) updateWsStatus(wsPath);
+    if (wsEnabled && (wsPaths[0] || wsPath)) updateWsStatus(wsPaths[0] || wsPath);
   } catch {}
 }
 
@@ -836,12 +1659,13 @@ function toggleWorkspace() {
 }
 
 async function saveWorkspace() {
-  wsPath = document.getElementById('wsPath').value.trim();
+  wsPaths = parseWorkspacePaths(document.getElementById('wsPath').value);
+  wsPath = wsPaths[0] || '';
   wsEnabled = document.getElementById('wsEnabled').checked;
   await fetch('/api/workspace/config', {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ enabled: wsEnabled, path: wsPath })
+    body: JSON.stringify({ enabled: wsEnabled, path: wsPath, paths: wsPaths })
   });
   if (wsEnabled && wsPath) updateWsStatus(wsPath);
 }
@@ -852,11 +1676,12 @@ async function updateWsStatus(path) {
     const r = await fetch(`/api/workspace/ls?path=${encodeURIComponent(path)}`);
     const d = await r.json();
     if (d.ok) {
-      el.innerHTML = `<span style="color:#3949ab">${d.entries.length} 个文件/目录</span>`;
+      el.innerHTML = `<span style="color:#3949ab">${d.entries.length} ${currentLang === 'zh' ? '个文件/目录' : 'files/folders'}</span>` +
+        (wsPaths.length > 1 ? `<div class="text-muted">${currentLang === 'zh' ? '已授权' : 'Authorized'} ${wsPaths.length} ${currentLang === 'zh' ? '个位置' : 'locations'}</div>` : '');
     } else {
       el.innerHTML = `<span style="color:#e53935">${d.error}</span>`;
     }
-  } catch { el.textContent = '无法访问'; }
+  } catch { el.textContent = currentLang === 'zh' ? '无法访问' : 'Cannot access'; }
 }
 
 async function loadLlmStatus() {
@@ -951,7 +1776,11 @@ async function classifyIntent(text) {
 
 // ── Send message ───────────────────────────────────────────────────────────
 async function sendMessage() {
-  if (isSending) return;
+  const runSessionId = SESSION_ID;
+  if (isSessionRunning(runSessionId)) {
+    _resumePendingJob();
+    return;
+  }
   const input = document.getElementById('userInput');
   const text  = input.value.trim();
   if (!text && pendingImages.length === 0) return;
@@ -960,9 +1789,7 @@ async function sendMessage() {
     input.value = '';
   }
   const msgText = text || (currentLang === 'zh' ? '请描述这张图片。' : 'Please describe this image.');
-  const sendBtn = document.getElementById('sendBtn');
-  isSending = true;
-  if (sendBtn) sendBtn.disabled = true;
+  setSessionRunning(runSessionId, true);
 
   // Capture and clear pending images before rendering
   const imgs       = pendingImages.map(x => x.b64);
@@ -1011,16 +1838,17 @@ async function sendMessage() {
       await sendNormal(msgText);                            // 普通对话
     }
   } catch(e) {
-    hideTyping();
-    addMsg('assistant', `✗ Request failed: ${e.message}`);
+    if (SESSION_ID === runSessionId) {
+      hideTyping();
+      addMsg('assistant', `✗ Request failed: ${e.message}`);
+    }
   } finally {
-    isSending = false;
-    if (sendBtn) sendBtn.disabled = false;
+    setSessionRunning(runSessionId, false);
   }
 }
 
 // ── Polling helper for async code jobs ────────────────────────────────────
-async function pollCodeJob(jobId) {
+async function pollCodeJob(jobId, ownerSessionId=SESSION_ID) {
   // Progress message labels (cycling through them looks alive)
   const codeLabel = T('typing_code');
   const progressLabels = {
@@ -1038,14 +1866,17 @@ async function pollCodeJob(jobId) {
 
   while (true) {
     await new Promise(res => setTimeout(res, POLL_MS));
+    if (SESSION_ID !== ownerSessionId) return {ok:false, detached:true};
     let poll;
     try {
       const pr = await fetch(`/api/chat/code/poll/${jobId}`);
+      if (!pr.ok) return {ok:false, error: currentLang === 'zh' ? '代码任务已过期或不存在' : 'Code job expired or not found'};
       poll = await pr.json();
     } catch(e) {
       // Network hiccup — keep retrying
       continue;
     }
+    if (poll.error && !poll.status) return {ok:false, error: poll.error};
 
     // Update typing indicator with latest progress message
     const progList = poll.progress || [];
@@ -1053,7 +1884,7 @@ async function pollCodeJob(jobId) {
       const latest = progList[progList.length - 1];
       const label = progressLabels[latest] || (T('typing_code') + ' (' + latest + ')');
       if (label !== lastShown) {
-        showTyping(label);
+        if (SESSION_ID === ownerSessionId) showTyping(label);
         lastShown = label;
       }
     }
@@ -1071,6 +1902,7 @@ async function pollCodeJob(jobId) {
 // ── CodeEngine 技能执行 ────────────────────────────────────────────────────
 // phase2Badge: 若为 true，在结果气泡顶部显示"步骤 2 — 代码实现"标签（链式调用时使用）
 async function sendCode(text, phase2Badge = false) {
+  const ownerSessionId = SESSION_ID;
   // ── 从当前消息或历史中提取数据路径 ────────────────────────────────────
   // 1. 从用户当前消息提取路径（如 "看下目录/data/seismic/waveform"）
   const pathInMsg = text.match(/([~\/][\w.\-/]{4,})/);
@@ -1098,343 +1930,46 @@ async function sendCode(text, phase2Badge = false) {
     const r = await fetch('/api/chat/code', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({message: enrichedText, session_id: SESSION_ID}),
+      body: JSON.stringify({message: enrichedText, session_id: ownerSessionId}),
     });
     startData = await r.json();
   } catch(e) {
-    hideTyping();
-    addMsg('assistant', `✗ ${T('skill_label')} error: ${e.message}`);
+    if (SESSION_ID === ownerSessionId) {
+      hideTyping();
+      addMsg('assistant', `✗ ${T('skill_label')} error: ${e.message}`);
+    }
     return;
   }
 
   if (!startData.ok) {
-    hideTyping();
-    addMsg('assistant', `✗ ${T('skill_label')} error: ${startData.error}`);
+    if (SESSION_ID === ownerSessionId) {
+      hideTyping();
+      addMsg('assistant', `✗ ${T('skill_label')} error: ${startData.error}`);
+    }
     return;
   }
 
   // Poll the job until it's done
   const jobId = startData.job_id;
-  const d = await pollCodeJob(jobId);
+  savePendingJob({
+    kind: 'code',
+    job_id: jobId,
+    session_id: ownerSessionId,
+    phase2Badge: !!phase2Badge,
+  });
+  const d = await pollCodeJob(jobId, ownerSessionId);
+  if (d.detached) return;
+  clearPendingJob(ownerSessionId);
 
-  hideTyping();
+  if (SESSION_ID === ownerSessionId) hideTyping();
 
   if (!d.ok) {
-    addMsg('assistant', `✗ ${T('skill_label')} error: ${d.error}`);
+    if (SESSION_ID === ownerSessionId) addMsg('assistant', `✗ ${T('skill_label')} error: ${d.error}`);
     return;
   }
 
-  // ── 直接构建 DOM，完全避免 markdown 解析问题 ──────────────────────────
-  const welcome = document.getElementById('welcomePanel');
-  if (welcome) welcome.remove();
-
-  const msgDiv = document.createElement('div');
-  msgDiv.className = 'msg msg-assistant';
-
-  const bubble = document.createElement('div');
-  bubble.className = 'bubble';
-  bubble.style.maxWidth = '82%';
-
-  // -1. Chain phase badge（串联调用时显示"步骤 2 — 代码实现"）
-  if (phase2Badge) {
-    const badgeEl = document.createElement('div');
-    badgeEl.style.cssText = 'display:inline-block;font-size:.72rem;padding:.08rem .5rem;background:#e8f5e9;border:1px solid #a5d6a7;border-radius:10px;color:#2e7d32;margin-bottom:.5rem;';
-    badgeEl.textContent = currentLang === 'zh' ? '⚙ 步骤 2 — 代码实现' : '⚙ Step 2 — Code Implementation';
-    bubble.appendChild(badgeEl);
-  }
-
-  // 0. Plan banner (shown above everything else)
-  if (d.plan && d.plan.length > 0) {
-    const planWrap = document.createElement('div');
-    planWrap.style.cssText = 'background:#f0f4ff;border:1px solid #c5cae9;border-radius:8px;padding:.45rem .8rem;margin-bottom:.6rem;font-size:.8rem;';
-    const planTitle = document.createElement('div');
-    planTitle.style.cssText = 'color:#3949ab;font-weight:700;margin-bottom:.3rem;';
-    planTitle.textContent = '📋 Plan';
-    planWrap.appendChild(planTitle);
-    d.plan.forEach((step, i) => {
-      const s = document.createElement('div');
-      s.style.cssText = 'color:#555;margin:.1rem 0;';
-      s.textContent = `${i + 1}. ${step}`;
-      planWrap.appendChild(s);
-    });
-    bubble.appendChild(planWrap);
-  }
-
-  // 1. 技能标签 / Skill badge
-  if (d.skill_used) {
-    const tag = document.createElement('div');
-    tag.style.cssText = 'font-size:.78rem;color:#3949ab;font-weight:600;margin-bottom:.5rem;';
-    tag.innerHTML = `🔧 ${T('skill_label')}：<code style="background:#e8eaf6;padding:1px 6px;border-radius:4px;font-size:.85em">${d.skill_used}</code>`;
-    bubble.appendChild(tag);
-  }
-
-  // 2. 执行状态
-  const status = document.createElement('div');
-  status.style.cssText = 'font-weight:600;margin-bottom:.4rem;color:' + (d.success ? '#2e7d32' : '#c62828') + ';';
-  const attempts = d.attempts || 1;
-  if (d.success && attempts > 1) {
-    status.textContent = T('exec_ok') + ` (auto-fixed in ${attempts} attempt${attempts > 1 ? 's' : ''})`;
-    status.style.color = '#1565c0';
-  } else {
-    status.textContent = d.success ? T('exec_ok') : T('exec_fail');
-  }
-  bubble.appendChild(status);
-
-  // 2a. 失败时显示错误详情（从 d.response 提取 Last error: 段落）
-  if (!d.success && d.response) {
-    // 提取 "Last error:" 之后的部分，如果没有则显示完整 response（去掉首行）
-    let errDetail = '';
-    const lastErrIdx = d.response.indexOf('Last error:');
-    if (lastErrIdx !== -1) {
-      errDetail = d.response.slice(lastErrIdx + 'Last error:'.length).trim();
-    } else {
-      // 去掉 "✗ Execution failed..." 首行，显示其余内容
-      const lines = d.response.split('\n');
-      errDetail = lines.slice(1).join('\n').trim();
-    }
-    if (errDetail) {
-      const errBox = document.createElement('pre');
-      errBox.style.cssText = 'background:#fff8f8;border:1px solid #fcc;border-radius:6px;padding:.5rem .75rem;margin:.3rem 0 .5rem;font-size:.8em;overflow-x:auto;white-space:pre-wrap;word-break:break-all;color:#b71c1c;max-height:200px;overflow-y:auto;';
-      errBox.textContent = errDetail;
-      bubble.appendChild(errBox);
-    }
-  }
-
-  // 2b. Debug trace (失败时自动展开，成功时折叠)
-  if (d.debug_trace && d.debug_trace.length > 0) {
-    const traceWrap = document.createElement('details');
-    traceWrap.style.cssText = 'margin:.4rem 0 .6rem;font-size:.8rem;border:1px solid #e0e7ff;border-radius:8px;overflow:hidden;';
-    // 执行失败时自动展开，方便用户直接看到调试过程
-    if (!d.success) traceWrap.open = true;
-
-    const traceSummary = document.createElement('summary');
-    traceSummary.style.cssText = 'padding:.35rem .75rem;background:#f0f4ff;cursor:pointer;color:#3949ab;font-weight:600;list-style:none;display:flex;align-items:center;gap:.4rem;';
-    const roundCount = attempts - 1;
-    traceSummary.innerHTML = `🔄 ${roundCount} debug round${roundCount !== 1 ? 's' : ''} — ${d.success ? 'click to inspect' : 'auto-debug log'}`;
-    traceWrap.appendChild(traceSummary);
-
-    d.debug_trace.forEach(t => {
-      const row = document.createElement('div');
-      row.style.cssText = 'padding:.4rem .75rem;border-top:1px solid #e8eaf6;';
-      const icon = t.success ? '✓' : '✗';
-      const col  = t.success ? '#2e7d32' : '#c62828';
-      row.innerHTML = `<span style="font-weight:600;color:${col}">${icon} Round ${t.attempt}</span>`;
-      if (t.diagnosis) {
-        const diag = document.createElement('div');
-        diag.style.cssText = 'color:#555;margin-top:.15rem;font-style:italic;';
-        diag.textContent = t.diagnosis;
-        row.appendChild(diag);
-      }
-      if (t.error && !t.success) {
-        const errEl = document.createElement('pre');
-        errEl.style.cssText = 'background:#fff8f8;border:1px solid #fcc;border-radius:4px;padding:.3rem .5rem;margin:.25rem 0 0;font-size:.76em;overflow-x:auto;white-space:pre-wrap;max-height:150px;overflow-y:auto;';
-        errEl.textContent = t.error;
-        row.appendChild(errEl);
-      }
-      traceWrap.appendChild(row);
-    });
-
-    bubble.appendChild(traceWrap);
-  }
-
-  // 3. 标准输出（只显示一次，去掉 [FIGURE] 行）
-  const cleanOut = (d.stdout || '')
-    .split('\n')
-    .filter(l => !l.startsWith('[FIGURE]') && !l.startsWith('[GMT_SCRIPT]'))
-    .join('\n').trim();
-  if (cleanOut) {
-    const pre = document.createElement('pre');
-    pre.style.cssText = 'background:#f6f8fa;border:1px solid #e0e0e0;border-radius:8px;padding:.6rem .8rem;overflow-x:auto;font-size:.82em;margin:.3rem 0;white-space:pre-wrap;word-break:break-all;';
-    pre.textContent = cleanOut;
-    bubble.appendChild(pre);
-  } else if (d.success && lastDataPath && !d.figures.length) {
-    // stdout 为空且无图时，至少显示访问了哪个目录
-    const pathNote = document.createElement('div');
-    pathNote.style.cssText = 'font-size:.8rem;color:#666;margin-top:.25rem;word-break:break-all;';
-    pathNote.textContent = `📁 ${lastDataPath}`;
-    bubble.appendChild(pathNote);
-  }
-
-  // 4. (code is now shown via the toggle in section 6)
-
-  // 5. HTML 交互产物（Plotly / Three.js 等）直接在气泡里预览
-  const htmlPreviews = d.html_previews || [];
-  if (htmlPreviews.length) {
-    htmlPreviews.forEach(preview => {
-      const previewWrap = document.createElement('div');
-      previewWrap.style.cssText = 'margin-top:.75rem;border:1px solid #d7ddea;border-radius:8px;overflow:hidden;background:#fff;';
-
-      const previewHead = document.createElement('div');
-      previewHead.style.cssText = 'display:flex;align-items:center;gap:.5rem;justify-content:space-between;padding:.45rem .65rem;background:#f6f8ff;border-bottom:1px solid #d7ddea;';
-
-      const previewName = document.createElement('span');
-      previewName.style.cssText = 'font-size:.78rem;font-weight:600;color:#3949ab;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
-      previewName.textContent = preview.name || 'interactive_preview.html';
-      previewHead.appendChild(previewName);
-
-      const previewActions = document.createElement('div');
-      previewActions.style.cssText = 'display:flex;align-items:center;gap:.35rem;flex-shrink:0;';
-
-      const bin = atob(preview.data || '');
-      const buf = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) {
-        buf[i] = bin.charCodeAt(i);
-      }
-      const htmlBlob = new Blob([buf], {type: preview.mimetype || 'text/html;charset=utf-8'});
-      const htmlSrc = URL.createObjectURL(htmlBlob);
-      const openBtn = document.createElement('a');
-      openBtn.href = htmlSrc;
-      openBtn.target = '_blank';
-      openBtn.rel = 'noopener';
-      openBtn.style.cssText = 'font-size:.74rem;padding:.16rem .5rem;border-radius:5px;background:#fff;color:#3949ab;border:1px solid #c5cae9;text-decoration:none;';
-      openBtn.textContent = currentLang === 'zh' ? '新窗口' : 'Open';
-      previewActions.appendChild(openBtn);
-
-      previewHead.appendChild(previewActions);
-      previewWrap.appendChild(previewHead);
-
-      const frame = document.createElement('iframe');
-      frame.title = preview.name || 'HTML preview';
-      frame.src = htmlSrc;
-      frame.loading = 'lazy';
-      frame.sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups';
-      frame.style.cssText = 'width:100%;height:min(62vh,560px);min-height:380px;border:0;display:block;background:#fff;';
-      frame.addEventListener('load', () => {
-        try {
-          frame.contentWindow.dispatchEvent(new Event('resize'));
-        } catch (e) {}
-      });
-      previewWrap.appendChild(frame);
-
-      bubble.appendChild(previewWrap);
-    });
-  }
-
-  // 6. 图像（内嵌 base64，直接在气泡里显示）+ 下载按钮
-  if (d.figures && d.figures.length) {
-    d.figures.forEach(fig => {
-      // 图像容器
-      const figWrap = document.createElement('div');
-      figWrap.style.cssText = 'margin-top:.75rem;';
-
-      // 图像本体
-      const imgSrc = `data:image/png;base64,${fig.data}`;
-      const img = document.createElement('img');
-      img.src = imgSrc;
-      img.alt = fig.name;
-      img.style.cssText = 'max-width:100%;border-radius:8px 8px 0 0;border:1px solid #e0e0e0;border-bottom:none;display:block;cursor:zoom-in;';
-      img.title = '点击放大';
-      img.onclick = () => {
-        const win = window.open();
-        win.document.write(`<!DOCTYPE html><html><body style="margin:0;background:#111">
-          <img src="${imgSrc}" style="max-width:100%;display:block;margin:auto">
-          </body></html>`);
-      };
-      figWrap.appendChild(img);
-
-      // 下载工具栏
-      const toolbar = document.createElement('div');
-      toolbar.style.cssText = 'display:flex;gap:.4rem;padding:.4rem .6rem;background:#f6f8fa;border:1px solid #e0e0e0;border-radius:0 0 8px 8px;flex-wrap:wrap;align-items:center;';
-
-      // 文件名标签
-      const fnLabel = document.createElement('span');
-      fnLabel.style.cssText = 'font-size:.75rem;color:#888;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
-      fnLabel.textContent = fig.name;
-      toolbar.appendChild(fnLabel);
-
-      // 下载图像按钮
-      const dlImg = document.createElement('a');
-      dlImg.href = imgSrc;
-      dlImg.download = fig.name;
-      dlImg.style.cssText = 'font-size:.75rem;padding:.18rem .55rem;border-radius:4px;background:#e8f4fd;color:#1565c0;border:1px solid #bbdefb;text-decoration:none;white-space:nowrap;cursor:pointer;';
-      dlImg.textContent = T('dl_image');
-      toolbar.appendChild(dlImg);
-
-      // GMT script download button (GMT figures only)
-      if (fig.gmt_script) {
-        const scriptBlob = new Blob([fig.gmt_script.content], {type: 'text/plain;charset=utf-8'});
-        const scriptUrl  = URL.createObjectURL(scriptBlob);
-        const dlScript   = document.createElement('a');
-        dlScript.href     = scriptUrl;
-        dlScript.download = fig.gmt_script.name;
-        dlScript.style.cssText = 'font-size:.75rem;padding:.18rem .55rem;border-radius:4px;background:#e8f5e9;color:#2e7d32;border:1px solid #c8e6c9;text-decoration:none;white-space:nowrap;cursor:pointer;';
-        dlScript.textContent = T('dl_script');
-        toolbar.appendChild(dlScript);
-      }
-
-      figWrap.appendChild(toolbar);
-      bubble.appendChild(figWrap);
-    });
-  }
-
-  // 7. Download script button (always shown when code was generated)
-  if ((d.downloads && d.downloads.length) || d.code) {
-    const dlBar = document.createElement('div');
-    dlBar.style.cssText = 'display:flex;align-items:center;gap:.5rem;margin-top:.6rem;flex-wrap:wrap;';
-
-    if (d.downloads && d.downloads.length) {
-      d.downloads.forEach(file => {
-        const bin = atob(file.data);
-        const buf = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) {
-          buf[i] = bin.charCodeAt(i);
-        }
-        const blob = new Blob([buf], {type: file.mimetype || 'application/octet-stream'});
-        const url = URL.createObjectURL(blob);
-        const dl = document.createElement('a');
-        dl.href = url;
-        dl.download = file.name;
-        dl.style.cssText = 'font-size:.78rem;padding:.22rem .7rem;border-radius:6px;background:#e8f5e9;color:#2e7d32;border:1px solid #a5d6a7;text-decoration:none;display:inline-flex;align-items:center;gap:.3rem;';
-        dl.textContent = `⬇ ${file.name}`;
-        dlBar.appendChild(dl);
-      });
-    }
-
-    if (d.code) {
-      const toggleBtn = document.createElement('button');
-      toggleBtn.style.cssText = 'font-size:.78rem;padding:.22rem .7rem;border-radius:6px;background:#f5f5f5;color:#555;border:1px solid #ddd;cursor:pointer;';
-      toggleBtn.textContent = '{ } View Code';
-      const codeDiv = document.createElement('pre');
-      codeDiv.style.cssText = 'display:none;background:#f6f8fa;border:1px solid #e0e0e0;border-radius:8px;padding:.65rem .8rem;overflow-x:auto;font-size:.8em;margin:.35rem 0 0;white-space:pre-wrap;';
-      codeDiv.textContent = d.code;
-      toggleBtn.onclick = () => {
-        const hidden = codeDiv.style.display === 'none';
-        codeDiv.style.display = hidden ? 'block' : 'none';
-        toggleBtn.textContent = hidden ? '{ } Hide Code' : '{ } View Code';
-      };
-      dlBar.appendChild(toggleBtn);
-      bubble.appendChild(dlBar);
-      bubble.appendChild(codeDiv);
-    } else {
-      bubble.appendChild(dlBar);
-    }
-  }
-
-  const timeEl = document.createElement('div');
-  timeEl.className = 'msg-time';
-  timeEl.textContent = new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});
-
-  msgDiv.appendChild(bubble);
-  msgDiv.appendChild(timeEl);
-  chatMessages.appendChild(msgDiv);
-  chatMessages.scrollTop = chatMessages.scrollHeight;
-
-  // 保存 stdout 供下一轮绘图注入路径
-  if (d.stdout) lastCodeStdout = d.stdout;
-
-  // 记录到 chatHistory（简洁摘要，供后续 RAG 上下文使用）
-  const summary = (d.skill_used ? `[技能:${d.skill_used}] ` : '') +
-    (d.success ? '执行成功' : '执行失败') +
-    (cleanOut ? '\n输出:\n' + cleanOut.slice(0, 300) : '');
-  chatHistory.push({role:'assistant', content: summary});
-  _persistHistory();
-  // Persist code result display summary
-  const _codeDisplaySummary = (d.success ? '✅ 代码执行成功' : '❌ 代码执行失败') +
-    (cleanOut ? '\n```\n' + cleanOut.slice(0, 200) + '\n```' : '') +
-    (d.figures && d.figures.length ? `\n📊 生成了 ${d.figures.length} 张图像` : '');
-  _msgStore.push({role:'assistant', content:_codeDisplaySummary, sources:[], timeStr: new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})});
-  if (_msgStore.length > 30) _msgStore.splice(0, _msgStore.length - 30);
-  try { localStorage.setItem('sage_chat_msgs', JSON.stringify(_msgStore)); } catch(e) {}
+  if (SESSION_ID !== ownerSessionId) return;
+  renderCodeResult(d, {phase2Badge, persist: true});
 
   // 标记此轮为代码模式，以便后续"改进/调整"指令自动路由到 code
   lastIntentWasCode = true;
@@ -1749,7 +2284,7 @@ async function streamToMsg(url, body) {
     const _ts = new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});
     _msgStore.push({role:'assistant', content: answer, sources, timeStr: _ts});
     if (_msgStore.length > 30) _msgStore.splice(0, _msgStore.length - 30);
-    try { localStorage.setItem('sage_chat_msgs', JSON.stringify(_msgStore)); } catch(e) {}
+    saveActiveConversation({touch:true});
   }
 
   return {answer, sources, errored};
@@ -1768,29 +2303,157 @@ async function submitAndPoll(body) {
   const init = await resp.json();
   if (!init.ok) throw new Error(init.error || 'Submit failed');
   const job_id = init.job_id;
+  const pendingKey = `sage_pending_job_${SESSION_ID}`;
 
   // Persist so we can resume if user navigates away
-  try { localStorage.setItem('sage_pending_job', JSON.stringify({job_id, ts: Date.now()})); } catch(e) {}
+  try { localStorage.setItem(pendingKey, JSON.stringify({job_id, ts: Date.now()})); } catch(e) {}
 
   // Poll until done
   while (true) {
     await new Promise(r => setTimeout(r, 1800));
     let pd;
+    let expired = false;
     try {
       const pr = await fetch(`/api/chat/job/${job_id}`);
-      pd = await pr.json();
+      if (!pr.ok) {
+        expired = true;
+      } else {
+        pd = await pr.json();
+      }
     } catch(e) { continue; }   // network blip — retry
 
+    if (expired) {
+      try { localStorage.removeItem(pendingKey); } catch(e) {}
+      throw new Error('Chat job expired');
+    }
+    if (pd.ok === false) {
+      try { localStorage.removeItem(pendingKey); } catch(e) {}
+      throw new Error(pd.error || 'Chat job failed');
+    }
     if (pd.status === 'done') {
-      try { localStorage.removeItem('sage_pending_job'); } catch(e) {}
+      try { localStorage.removeItem(pendingKey); } catch(e) {}
       return {answer: pd.answer || '', sources: pd.sources || []};
     }
     if (pd.status === 'error') {
-      try { localStorage.removeItem('sage_pending_job'); } catch(e) {}
+      try { localStorage.removeItem(pendingKey); } catch(e) {}
       throw new Error(pd.error || 'Chat job failed');
     }
     // still running — loop
   }
+}
+
+function pendingJobKey(id=SESSION_ID) {
+  return `sage_pending_job_${id}`;
+}
+
+function savePendingJob(meta) {
+  try {
+    localStorage.setItem(pendingJobKey(meta.session_id || SESSION_ID), JSON.stringify({
+      ...meta,
+      session_id: meta.session_id || SESSION_ID,
+      ts: Date.now(),
+    }));
+  } catch(e) {}
+}
+
+function clearPendingJob(sessionId=SESSION_ID) {
+  try { localStorage.removeItem(pendingJobKey(sessionId)); } catch(e) {}
+}
+
+async function startRecoverableChatJob(body) {
+  const ownerSessionId = body.session_id || SESSION_ID;
+  const resp = await fetch('/api/chat/submit', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+  const init = await resp.json();
+  if (!init.ok) throw new Error(init.error || 'Submit failed');
+  savePendingJob({
+    kind: 'chat',
+    job_id: init.job_id,
+    session_id: ownerSessionId,
+    body: {...body, images: undefined},
+  });
+  return init.job_id;
+}
+
+async function pollChatJobToBubble(jobId, meta={}) {
+  const ownerSessionId = meta.session_id || SESSION_ID;
+  const streamer = createStreamingBubble();
+  let sources = [];
+  let lastRaw = '';
+  let errored = false;
+
+  while (true) {
+    await new Promise(r => setTimeout(r, 900));
+    if (SESSION_ID !== ownerSessionId) return {answer:'', sources, errored:false, detached:true};
+    let pd;
+    try {
+      const pr = await fetch(`/api/chat/job/${jobId}`);
+      if (!pr.ok) throw new Error(currentLang === 'zh' ? '任务已过期' : 'Job expired');
+      pd = await pr.json();
+    } catch(e) {
+      // The page may have temporarily lost connection. Keep the job alive and retry.
+      await new Promise(r => setTimeout(r, 1200));
+      continue;
+    }
+
+    sources = pd.sources || sources || [];
+    const raw = pd.answer || '';
+    if (raw !== lastRaw) {
+      lastRaw = raw;
+      const parser = new ThinkParser();
+      parser.push(raw);
+      parser.flush();
+      if (!parser.contentText.trim() && parser.thinkText.trim()) {
+        parser.contentText = parser.thinkText;
+        parser.thinkText = '';
+        streamer.hideThink && streamer.hideThink();
+      }
+      streamer.updateThink(parser.thinkText);
+      streamer.updateContent(parser.contentText);
+    }
+
+    if (pd.status === 'done') {
+      const parser = new ThinkParser();
+      parser.push(pd.answer || '');
+      parser.flush();
+      if (!parser.contentText.trim() && parser.thinkText.trim()) {
+        parser.contentText = parser.thinkText;
+        parser.thinkText = '';
+        streamer.hideThink && streamer.hideThink();
+      }
+      streamer.finalise(parser.contentText || (currentLang === 'zh' ? '（无回复）' : '(No response)'), sources);
+      clearPendingJob(meta.session_id || SESSION_ID);
+
+      const answer = parser.contentText || '';
+      if (answer.trim()) {
+        const _ts = new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});
+        _msgStore.push({role:'assistant', content: answer, sources, timeStr: _ts});
+        if (_msgStore.length > 30) _msgStore.splice(0, _msgStore.length - 30);
+        saveActiveConversation({touch:true});
+      }
+      return {answer, sources, errored: false};
+    }
+
+    if (pd.status === 'error' || pd.ok === false) {
+      errored = true;
+      const msg = pd.error || (currentLang === 'zh' ? '任务失败' : 'Job failed');
+      streamer.finalise(`✗ ${msg}`, sources);
+      clearPendingJob(meta.session_id || SESSION_ID);
+      return {answer: '', sources, errored};
+    }
+  }
+}
+
+function normaliseThinkAnswer(text) {
+  const raw = String(text || '');
+  const thinkRe = /<think>([\s\S]*?)<\/think>/i;
+  const m = raw.match(thinkRe);
+  if (!m) return raw;
+  const outside = raw.replace(thinkRe, '').trim();
+  return outside || m[1].trim();
 }
 
 async function sendRag(text) {
@@ -1803,22 +2466,19 @@ async function sendRag(text) {
 
   let answer = '', sources = [];
   try {
-    const ragResult = await streamToMsg('/api/chat/rag/stream', {
+    const body = {
+      type: 'rag',
       message: text, session_id: SESSION_ID, mode,
-      history: chatHistory.slice(-8), workspace: wsEnabled ? wsPath : '',
+      history: chatHistory.slice(-8), workspace: workspacePayloadValue(),
+      project_id: activeProjectId,
+      project_context: projectContextText(),
       enable_think: thinkEnabled,
-      allow_code_handoff: true,
-    });
-    if (ragResult.handoff && ragResult.handoff.intent === 'code') {
-      hideTyping();
-      chatHistory.push({role:'assistant', content: ragResult.answer});
-      _persistHistory();
-      showTyping(currentLang === 'zh' ? '⚙ 已转入编程 Agent…' : '⚙ Handing off to Code Agent…');
-      await sendCode(ragResult.handoff.prompt || text, true);
-      return;
-    }
-    answer = ragResult.answer;
-    sources = ragResult.sources;
+    };
+    const jobId = await startRecoverableChatJob(body);
+    const ragResult = await pollChatJobToBubble(jobId, {session_id: SESSION_ID});
+    if (ragResult.detached) return;
+    answer = ragResult.answer || '';
+    sources = ragResult.sources || [];
   } catch(e) {
     hideTyping();
     addMsg('assistant', `✗ ${e.message}`);
@@ -1882,11 +2542,16 @@ async function sendChainRagCode(originalText) {
   let ragSources = [];
   try {
     hideTyping();
-    const {answer: _ra, sources: _rs} = await streamToMsg('/api/chat/rag/stream', {
+    const body = {
+      type: 'rag',
       message: originalText, session_id: SESSION_ID,
       mode: 'paper_read', history: chatHistory.slice(-8),
-      workspace: wsEnabled ? wsPath : '', enable_think: thinkEnabled,
-    });
+      workspace: workspacePayloadValue(), project_id: activeProjectId,
+      project_context: projectContextText(), enable_think: thinkEnabled,
+    };
+    const jobId = await startRecoverableChatJob(body);
+    const {answer: _ra, sources: _rs} = await pollChatJobToBubble(jobId, {session_id: SESSION_ID});
+    if (SESSION_ID !== body.session_id) return;
     ragAnswer  = _ra || '';
     ragSources = _rs || [];
     hideTyping();
@@ -1946,14 +2611,22 @@ async function sendNormal(text, images=[]) {
   hideTyping();
 
   let answer = '';
+  let sources = [];
   try {
     const body = {
+      type: 'plain',
       message: text,
-      history: chatHistory.slice(-8), workspace: wsEnabled ? wsPath : '',
+      history: chatHistory.slice(-8), workspace: workspacePayloadValue(),
+      project_id: activeProjectId,
+      project_context: projectContextText(),
       enable_think: thinkEnabled,
     };
     if (images && images.length > 0) body.images = images;
-    ({answer} = await streamToMsg('/api/chat/stream', body));
+    const jobId = await startRecoverableChatJob(body);
+    const result = await pollChatJobToBubble(jobId, {session_id: SESSION_ID});
+    if (result.detached) return;
+    answer = result.answer || '';
+    sources = result.sources || [];
   } catch(e) {
     hideTyping();
     addMsg('assistant', `✗ ${e.message}`);
@@ -1981,13 +2654,10 @@ function autoResize(el) {
 
 // ── Clear chat ─────────────────────────────────────────────────────────────
 function clearChat() {
-  if (!confirm('确定清空对话记录？')) return;
+  if (!confirm(currentLang === 'zh' ? '确定清空对话记录？' : 'Clear this conversation?')) return;
   chatHistory = [];
   _msgStore   = [];
-  chatMessages.innerHTML = `<div class="welcome" id="welcomePanel">
-    <h3><i class="bi bi-robot"></i> SeismicX AI 助手</h3>
-    <p class="text-muted">对话已清空，有什么可以帮您？</p>
-  </div>`;
+  renderWelcome(T('welcome_title'), currentLang === 'zh' ? '对话已清空，有什么可以帮您？' : 'Conversation cleared. How can I help?');
   contextBar.style.display = 'none';
   lastCodeStdout     = '';    // 清空路径缓存
   lastDataPath       = '';    // 清空数据目录缓存
@@ -1999,11 +2669,333 @@ function clearChat() {
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({session_id: SESSION_ID}),
   }).catch(() => {});
-  // Clear localStorage and rotate to a fresh session
-  localStorage.removeItem('sage_chat_history');
-  localStorage.removeItem('sage_chat_msgs');
-  SESSION_ID = 'sess_' + Math.random().toString(36).slice(2,10);
-  localStorage.setItem('sage_chat_session', SESSION_ID);
+  sessionDocs = [];
+  refreshSessionSidebar();
+  saveActiveConversation({touch:true});
+}
+
+function codeResultCopyText(d, cleanOut='') {
+  const parts = [];
+  parts.push(d.success ? T('exec_ok') : T('exec_fail'));
+  if (d.skill_used) parts.push(`${T('skill_label')}: ${d.skill_used}`);
+  if (cleanOut) parts.push(cleanOut);
+  if (d.code) parts.push(d.code);
+  return parts.join('\n\n');
+}
+
+function renderCodeResult(d, opts={}) {
+  const phase2Badge = !!opts.phase2Badge;
+  const persist = opts.persist !== false;
+
+  // ── 直接构建 DOM，完全避免 markdown 解析问题 ──────────────────────────
+  const welcome = document.getElementById('welcomePanel');
+  if (welcome) welcome.remove();
+
+  const msgDiv = document.createElement('div');
+  msgDiv.className = 'msg msg-assistant';
+
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  bubble.style.maxWidth = '82%';
+
+  // -1. Chain phase badge（串联调用时显示"步骤 2 — 代码实现"）
+  if (phase2Badge) {
+    const badgeEl = document.createElement('div');
+    badgeEl.style.cssText = 'display:inline-block;font-size:.72rem;padding:.08rem .5rem;background:#e8f5e9;border:1px solid #a5d6a7;border-radius:10px;color:#2e7d32;margin-bottom:.5rem;';
+    badgeEl.textContent = currentLang === 'zh' ? '⚙ 步骤 2 — 代码实现' : '⚙ Step 2 — Code Implementation';
+    bubble.appendChild(badgeEl);
+  }
+
+  // 0. Plan banner (shown above everything else)
+  if (d.plan && d.plan.length > 0) {
+    const planWrap = document.createElement('div');
+    planWrap.style.cssText = 'background:#f0f4ff;border:1px solid #c5cae9;border-radius:8px;padding:.45rem .8rem;margin-bottom:.6rem;font-size:.8rem;';
+    const planTitle = document.createElement('div');
+    planTitle.style.cssText = 'color:#3949ab;font-weight:700;margin-bottom:.3rem;';
+    planTitle.textContent = '📋 Plan';
+    planWrap.appendChild(planTitle);
+    d.plan.forEach((step, i) => {
+      const s = document.createElement('div');
+      s.style.cssText = 'color:#555;margin:.1rem 0;';
+      s.textContent = `${i + 1}. ${step}`;
+      planWrap.appendChild(s);
+    });
+    bubble.appendChild(planWrap);
+  }
+
+  // 1. 技能标签 / Skill badge
+  if (d.skill_used) {
+    const tag = document.createElement('div');
+    tag.style.cssText = 'font-size:.78rem;color:#3949ab;font-weight:600;margin-bottom:.5rem;';
+    tag.innerHTML = `🔧 ${T('skill_label')}：<code style="background:#e8eaf6;padding:1px 6px;border-radius:4px;font-size:.85em">${d.skill_used}</code>`;
+    bubble.appendChild(tag);
+  }
+
+  // 2. 执行状态
+  const status = document.createElement('div');
+  status.style.cssText = 'font-weight:600;margin-bottom:.4rem;color:' + (d.success ? '#2e7d32' : '#c62828') + ';';
+  const attempts = d.attempts || 1;
+  if (d.success && attempts > 1) {
+    status.textContent = T('exec_ok') + ` (auto-fixed in ${attempts} attempt${attempts > 1 ? 's' : ''})`;
+    status.style.color = '#1565c0';
+  } else {
+    status.textContent = d.success ? T('exec_ok') : T('exec_fail');
+  }
+  bubble.appendChild(status);
+
+  // 2a. 失败时显示错误详情（从 d.response 提取 Last error: 段落）
+  if (!d.success && d.response) {
+    let errDetail = '';
+    const lastErrIdx = d.response.indexOf('Last error:');
+    if (lastErrIdx !== -1) {
+      errDetail = d.response.slice(lastErrIdx + 'Last error:'.length).trim();
+    } else {
+      const lines = d.response.split('\n');
+      errDetail = lines.slice(1).join('\n').trim();
+    }
+    if (errDetail) {
+      const errBox = document.createElement('pre');
+      errBox.style.cssText = 'background:#fff8f8;border:1px solid #fcc;border-radius:6px;padding:.5rem .75rem;margin:.3rem 0 .5rem;font-size:.8em;overflow-x:auto;white-space:pre-wrap;word-break:break-all;color:#b71c1c;max-height:200px;overflow-y:auto;';
+      errBox.textContent = errDetail;
+      bubble.appendChild(errBox);
+    }
+  }
+
+  // 2b. Debug trace (失败时自动展开，成功时折叠)
+  if (d.debug_trace && d.debug_trace.length > 0) {
+    const traceWrap = document.createElement('details');
+    traceWrap.style.cssText = 'margin:.4rem 0 .6rem;font-size:.8rem;border:1px solid #e0e7ff;border-radius:8px;overflow:hidden;';
+    if (!d.success) traceWrap.open = true;
+
+    const traceSummary = document.createElement('summary');
+    traceSummary.style.cssText = 'padding:.35rem .75rem;background:#f0f4ff;cursor:pointer;color:#3949ab;font-weight:600;list-style:none;display:flex;align-items:center;gap:.4rem;';
+    const roundCount = attempts - 1;
+    traceSummary.innerHTML = `🔄 ${roundCount} debug round${roundCount !== 1 ? 's' : ''} — ${d.success ? 'click to inspect' : 'auto-debug log'}`;
+    traceWrap.appendChild(traceSummary);
+
+    d.debug_trace.forEach(t => {
+      const row = document.createElement('div');
+      row.style.cssText = 'padding:.4rem .75rem;border-top:1px solid #e8eaf6;';
+      const icon = t.success ? '✓' : '✗';
+      const col  = t.success ? '#2e7d32' : '#c62828';
+      row.innerHTML = `<span style="font-weight:600;color:${col}">${icon} Round ${t.attempt}</span>`;
+      if (t.diagnosis) {
+        const diag = document.createElement('div');
+        diag.style.cssText = 'color:#555;margin-top:.15rem;font-style:italic;';
+        diag.textContent = t.diagnosis;
+        row.appendChild(diag);
+      }
+      if (t.error && !t.success) {
+        const errEl = document.createElement('pre');
+        errEl.style.cssText = 'background:#fff8f8;border:1px solid #fcc;border-radius:4px;padding:.3rem .5rem;margin:.25rem 0 0;font-size:.76em;overflow-x:auto;white-space:pre-wrap;max-height:150px;overflow-y:auto;';
+        errEl.textContent = t.error;
+        row.appendChild(errEl);
+      }
+      traceWrap.appendChild(row);
+    });
+
+    bubble.appendChild(traceWrap);
+  }
+
+  // 3. 标准输出（只显示一次，去掉 [FIGURE] 行）
+  const cleanOut = (d.stdout || '')
+    .split('\n')
+    .filter(l => !l.startsWith('[FIGURE]') && !l.startsWith('[GMT_SCRIPT]'))
+    .join('\n').trim();
+  if (cleanOut) {
+    const pre = document.createElement('pre');
+    pre.style.cssText = 'background:#f6f8fa;border:1px solid #e0e0e0;border-radius:8px;padding:.6rem .8rem;overflow-x:auto;font-size:.82em;margin:.3rem 0;white-space:pre-wrap;word-break:break-all;';
+    pre.textContent = cleanOut;
+    bubble.appendChild(pre);
+  } else if (d.success && lastDataPath && !(d.figures || []).length) {
+    const pathNote = document.createElement('div');
+    pathNote.style.cssText = 'font-size:.8rem;color:#666;margin-top:.25rem;word-break:break-all;';
+    pathNote.textContent = `📁 ${lastDataPath}`;
+    bubble.appendChild(pathNote);
+  }
+
+  // 5. HTML 交互产物（Plotly / Three.js 等）直接在气泡里预览
+  const htmlPreviews = d.html_previews || [];
+  if (htmlPreviews.length) {
+    htmlPreviews.forEach(preview => {
+      const previewWrap = document.createElement('div');
+      previewWrap.style.cssText = 'margin-top:.75rem;border:1px solid #d7ddea;border-radius:8px;overflow:hidden;background:#fff;';
+
+      const previewHead = document.createElement('div');
+      previewHead.style.cssText = 'display:flex;align-items:center;gap:.5rem;justify-content:space-between;padding:.45rem .65rem;background:#f6f8ff;border-bottom:1px solid #d7ddea;';
+
+      const previewName = document.createElement('span');
+      previewName.style.cssText = 'font-size:.78rem;font-weight:600;color:#3949ab;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+      previewName.textContent = preview.name || 'interactive_preview.html';
+      previewHead.appendChild(previewName);
+
+      const previewActions = document.createElement('div');
+      previewActions.style.cssText = 'display:flex;align-items:center;gap:.35rem;flex-shrink:0;';
+
+      const bin = atob(preview.data || '');
+      const buf = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+      const htmlBlob = new Blob([buf], {type: preview.mimetype || 'text/html;charset=utf-8'});
+      const htmlSrc = URL.createObjectURL(htmlBlob);
+      const openBtn = document.createElement('a');
+      openBtn.href = htmlSrc;
+      openBtn.target = '_blank';
+      openBtn.rel = 'noopener';
+      openBtn.style.cssText = 'font-size:.74rem;padding:.16rem .5rem;border-radius:5px;background:#fff;color:#3949ab;border:1px solid #c5cae9;text-decoration:none;';
+      openBtn.textContent = currentLang === 'zh' ? '新窗口' : 'Open';
+      previewActions.appendChild(openBtn);
+
+      previewHead.appendChild(previewActions);
+      previewWrap.appendChild(previewHead);
+
+      const frame = document.createElement('iframe');
+      frame.title = preview.name || 'HTML preview';
+      frame.src = htmlSrc;
+      frame.loading = 'lazy';
+      frame.sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups';
+      frame.style.cssText = 'width:100%;height:min(62vh,560px);min-height:380px;border:0;display:block;background:#fff;';
+      frame.addEventListener('load', () => {
+        try { frame.contentWindow.dispatchEvent(new Event('resize')); } catch (e) {}
+      });
+      previewWrap.appendChild(frame);
+      bubble.appendChild(previewWrap);
+    });
+  }
+
+  // 6. 图像（内嵌 base64，直接在气泡里显示）+ 下载按钮
+  if (d.figures && d.figures.length) {
+    d.figures.forEach(fig => {
+      const figWrap = document.createElement('div');
+      figWrap.style.cssText = 'margin-top:.75rem;';
+
+      const imgSrc = `data:image/png;base64,${fig.data}`;
+      const img = document.createElement('img');
+      img.src = imgSrc;
+      img.alt = fig.name;
+      img.style.cssText = 'max-width:100%;border-radius:8px 8px 0 0;border:1px solid #e0e0e0;border-bottom:none;display:block;cursor:zoom-in;';
+      img.title = '点击放大';
+      img.onclick = () => {
+        const win = window.open();
+        win.document.write(`<!DOCTYPE html><html><body style="margin:0;background:#111">
+          <img src="${imgSrc}" style="max-width:100%;display:block;margin:auto">
+          </body></html>`);
+      };
+      figWrap.appendChild(img);
+
+      const toolbar = document.createElement('div');
+      toolbar.style.cssText = 'display:flex;gap:.4rem;padding:.4rem .6rem;background:#f6f8fa;border:1px solid #e0e0e0;border-radius:0 0 8px 8px;flex-wrap:wrap;align-items:center;';
+
+      const fnLabel = document.createElement('span');
+      fnLabel.style.cssText = 'font-size:.75rem;color:#888;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+      fnLabel.textContent = fig.name;
+      toolbar.appendChild(fnLabel);
+
+      const dlImg = document.createElement('a');
+      dlImg.href = imgSrc;
+      dlImg.download = fig.name;
+      dlImg.style.cssText = 'font-size:.75rem;padding:.18rem .55rem;border-radius:4px;background:#e8f4fd;color:#1565c0;border:1px solid #bbdefb;text-decoration:none;white-space:nowrap;cursor:pointer;';
+      dlImg.textContent = T('dl_image');
+      toolbar.appendChild(dlImg);
+
+      if (fig.gmt_script) {
+        const scriptBlob = new Blob([fig.gmt_script.content], {type: 'text/plain;charset=utf-8'});
+        const scriptUrl  = URL.createObjectURL(scriptBlob);
+        const dlScript   = document.createElement('a');
+        dlScript.href     = scriptUrl;
+        dlScript.download = fig.gmt_script.name;
+        dlScript.style.cssText = 'font-size:.75rem;padding:.18rem .55rem;border-radius:4px;background:#e8f5e9;color:#2e7d32;border:1px solid #c8e6c9;text-decoration:none;white-space:nowrap;cursor:pointer;';
+        dlScript.textContent = T('dl_script');
+        toolbar.appendChild(dlScript);
+      }
+
+      figWrap.appendChild(toolbar);
+      bubble.appendChild(figWrap);
+    });
+  }
+
+  // 7. Download script button (always shown when code was generated)
+  if ((d.downloads && d.downloads.length) || d.code) {
+    const dlBar = document.createElement('div');
+    dlBar.style.cssText = 'display:flex;align-items:center;gap:.5rem;margin-top:.6rem;flex-wrap:wrap;';
+
+    if (d.downloads && d.downloads.length) {
+      d.downloads.forEach(file => {
+        const bin = atob(file.data);
+        const buf = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+        const blob = new Blob([buf], {type: file.mimetype || 'application/octet-stream'});
+        const url = URL.createObjectURL(blob);
+        const dl = document.createElement('a');
+        dl.href = url;
+        dl.download = file.name;
+        dl.style.cssText = 'font-size:.78rem;padding:.22rem .7rem;border-radius:6px;background:#e8f5e9;color:#2e7d32;border:1px solid #a5d6a7;text-decoration:none;display:inline-flex;align-items:center;gap:.3rem;';
+        dl.textContent = `⬇ ${file.name}`;
+        dlBar.appendChild(dl);
+      });
+    }
+
+    if (d.code) {
+      const toggleBtn = document.createElement('button');
+      toggleBtn.style.cssText = 'font-size:.78rem;padding:.22rem .7rem;border-radius:6px;background:#f5f5f5;color:#555;border:1px solid #ddd;cursor:pointer;';
+      toggleBtn.textContent = '{ } View Code';
+      const copyCodeBtn = document.createElement('button');
+      copyCodeBtn.style.cssText = toggleBtn.style.cssText;
+      copyCodeBtn.textContent = T('copy_msg');
+      copyCodeBtn.onclick = () => copyTextToClipboard(d.code, copyCodeBtn);
+      const codeDiv = document.createElement('pre');
+      codeDiv.style.cssText = 'display:none;background:#f6f8fa;border:1px solid #e0e0e0;border-radius:8px;padding:.65rem .8rem;overflow-x:auto;font-size:.8em;margin:.35rem 0 0;white-space:pre-wrap;';
+      codeDiv.textContent = d.code;
+      toggleBtn.onclick = () => {
+        const hidden = codeDiv.style.display === 'none';
+        codeDiv.style.display = hidden ? 'block' : 'none';
+        toggleBtn.textContent = hidden ? '{ } Hide Code' : '{ } View Code';
+      };
+      dlBar.appendChild(toggleBtn);
+      dlBar.appendChild(copyCodeBtn);
+      bubble.appendChild(dlBar);
+      bubble.appendChild(codeDiv);
+    } else {
+      bubble.appendChild(dlBar);
+    }
+  }
+
+  attachMessageCopyButton(bubble, codeResultCopyText(d, cleanOut));
+
+  const timeEl = document.createElement('div');
+  timeEl.className = 'msg-time';
+  timeEl.textContent = opts.timeStr || new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});
+
+  msgDiv.appendChild(bubble);
+  msgDiv.appendChild(timeEl);
+  chatMessages.appendChild(msgDiv);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+
+  if (!persist) return {cleanOut};
+
+  // 保存 stdout 供下一轮绘图注入路径
+  if (d.stdout) lastCodeStdout = d.stdout;
+
+  // 记录到 chatHistory（简洁摘要，供后续 RAG 上下文使用）
+  const summary = (d.skill_used ? `[技能:${d.skill_used}] ` : '') +
+    (d.success ? '执行成功' : '执行失败') +
+    (cleanOut ? '\n输出:\n' + cleanOut.slice(0, 300) : '');
+  chatHistory.push({role:'assistant', content: summary});
+  _persistHistory();
+  const _codeDisplaySummary = (d.success ? '✅ 代码执行成功' : '❌ 代码执行失败') +
+    (cleanOut ? '\n```\n' + cleanOut.slice(0, 200) + '\n```' : '') +
+    (d.figures && d.figures.length ? `\n📊 生成了 ${d.figures.length} 张图像` : '');
+  _msgStore.push({
+    role:'assistant',
+    kind:'code_result',
+    content:_codeDisplaySummary,
+    data:d,
+    phase2Badge,
+    sources:[],
+    timeStr: timeEl.textContent,
+  });
+  if (_msgStore.length > 30) _msgStore.splice(0, _msgStore.length - 30);
+  saveActiveConversation({touch:true});
+  return {cleanOut};
 }
 
 // ── Waveform (keep existing Plotly logic) ──────────────────────────────────
@@ -2108,15 +3100,23 @@ function pollBatchTask(taskId, msgEl, picksFile, interval=3000) {
 // ── Restore persisted chat on page load ────────────────────────────────────
 function _restoreChat() {
   if (!_msgStore || _msgStore.length === 0) return;
+  _msgStore = _msgStore.filter(m => !/已更新长期用户画像|user_profile\.md/.test(String(m.content || '')));
+  saveActiveConversation();
+  if (_msgStore.length === 0) return;
   const welcome = document.getElementById('welcomePanel');
   if (welcome) welcome.remove();
   for (const m of _msgStore) {
+    if (m.kind === 'code_result' && m.data) {
+      renderCodeResult(m.data, {phase2Badge: !!m.phase2Badge, persist: false, timeStr: (m.timeStr || '') + ' ↩'});
+      continue;
+    }
     const div = document.createElement('div');
     div.className = `msg msg-${m.role}`;
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
     bubble.innerHTML = (typeof formatText === 'function' ? formatText(m.content) : m.content)
                      + _renderSourceChips(m.sources || []);
+    attachMessageCopyButton(bubble, m.content || '');
     div.appendChild(bubble);
     const t = document.createElement('div');
     t.className = 'msg-time';
@@ -2128,20 +3128,60 @@ function _restoreChat() {
 }
 document.addEventListener('DOMContentLoaded', _restoreChat);
 
+const _resumingPendingKeys = new Set();
+
+function renderResumedCodeResult(d) {
+  if (!d || !d.ok) {
+    addMsg('assistant', `✗ ${T('skill_label')} error: ${d?.error || 'Job failed'}`);
+    return;
+  }
+  renderCodeResult(d, {persist: true});
+}
+
 // ── Resume a pending job if the user navigated away mid-request ────────────
 async function _resumePendingJob() {
   let pending;
-  try { pending = JSON.parse(localStorage.getItem('sage_pending_job') || 'null'); } catch(e) {}
+  const pendingKey = `sage_pending_job_${SESSION_ID}`;
+  if (_resumingPendingKeys.has(pendingKey)) return;
+  try { pending = JSON.parse(localStorage.getItem(pendingKey) || 'null'); } catch(e) {}
   if (!pending) return;
+  _resumingPendingKeys.add(pendingKey);
 
   // Expire after 10 minutes
   if (Date.now() - pending.ts > 10 * 60 * 1000) {
-    localStorage.removeItem('sage_pending_job');
+    localStorage.removeItem(pendingKey);
+    _resumingPendingKeys.delete(pendingKey);
     return;
   }
 
   const {job_id} = pending;
   showTyping(currentLang === 'zh' ? '⏳ 正在恢复上次请求…' : '⏳ Resuming previous request…');
+
+  if (pending.kind === 'code') {
+    const d = await pollCodeJob(job_id);
+    if (d.detached) {
+      _resumingPendingKeys.delete(pendingKey);
+      return;
+    }
+    localStorage.removeItem(pendingKey);
+    if (pending.session_id === SESSION_ID) {
+      hideTyping();
+      renderResumedCodeResult(d);
+    }
+    _resumingPendingKeys.delete(pendingKey);
+    return;
+  }
+
+  if (pending.kind === 'chat') {
+    hideTyping();
+    const result = await pollChatJobToBubble(job_id, {session_id: SESSION_ID});
+    if (result.answer) {
+      chatHistory.push({role:'assistant', content: result.answer});
+      _persistHistory();
+    }
+    _resumingPendingKeys.delete(pendingKey);
+    return;
+  }
 
   while (true) {
     await new Promise(r => setTimeout(r, 1800));
@@ -2149,26 +3189,30 @@ async function _resumePendingJob() {
     try {
       const pr = await fetch(`/api/chat/job/${job_id}`);
       if (!pr.ok) {
-        localStorage.removeItem('sage_pending_job');
+        localStorage.removeItem(pendingKey);
         hideTyping();
         addMsg('assistant', currentLang === 'zh' ? '上次请求已过期，请重新发送。' : 'Previous request expired — please resend.');
+        _resumingPendingKeys.delete(pendingKey);
         return;
       }
       pd = await pr.json();
     } catch(e) { continue; }
 
     if (pd.status === 'done') {
-      localStorage.removeItem('sage_pending_job');
+      localStorage.removeItem(pendingKey);
       hideTyping();
-      addMsg('assistant', pd.answer || '（无回复）', pd.sources || []);
-      chatHistory.push({role:'assistant', content: pd.answer || ''});
+      const answer = normaliseThinkAnswer(pd.answer || '');
+      addMsg('assistant', answer || '（无回复）', pd.sources || []);
+      chatHistory.push({role:'assistant', content: answer || ''});
       _persistHistory();
+      _resumingPendingKeys.delete(pendingKey);
       return;
     }
     if (pd.status === 'error') {
-      localStorage.removeItem('sage_pending_job');
+      localStorage.removeItem(pendingKey);
       hideTyping();
       addMsg('assistant', `✗ ${currentLang === 'zh' ? '请求失败' : 'Request failed'}: ${pd.error}`);
+      _resumingPendingKeys.delete(pendingKey);
       return;
     }
   }

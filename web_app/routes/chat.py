@@ -1,5 +1,6 @@
 """聊天和任务管理路由"""
 from flask import Blueprint, request, jsonify, send_file, Response, stream_with_context
+import json
 import os
 import sys
 import threading
@@ -12,9 +13,333 @@ from state import (
     tasks, _session_docs, _geo_agent_jobs, _lit_jobs, _chat_jobs,
     UPLOAD_FOLDER_CHAT, GEO_WORKSPACE_ROOT, _PROJECT_ROOT,
 )
-from helpers import get_llm_config, llm_call, inject_workspace_context, get_kb_instance
+from helpers import (
+    USER_PROFILE_MD,
+    append_user_profile_to_system,
+    get_user_profile_context,
+    get_llm_config,
+    llm_call,
+    llm_stream,
+    inject_workspace_context,
+    get_workspace_config,
+    get_kb_instance,
+)
 
 bp = Blueprint('chat', __name__)
+
+
+# ── Persistent chat history ────────────────────────────────────────────────
+
+CHAT_HISTORY_DIR = _PROJECT_ROOT / "seismo_rag" / "chat_history"
+CHAT_HISTORY_JSON = CHAT_HISTORY_DIR / "conversations.json"
+USER_PROFILE_ARCHIVE_DIR = _PROJECT_ROOT / "seismo_rag" / "user_profiles"
+USER_PROFILE_SOURCE_JSON = _PROJECT_ROOT / "seismo_rag" / "user_profile_source.json"
+CHAT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+USER_PROFILE_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _clean_conversation_id(value: str) -> str:
+    return "".join(ch for ch in str(value or "default") if ch.isalnum() or ch in "_-")[:80] or "default"
+
+
+def _clean_conversation_title(value: str) -> str:
+    title = str(value or "").strip()
+    if title in {"新对话", "旧对话", "New chat", "Old chat"}:
+        return ""
+    return title[:120]
+
+
+def _conversation_to_markdown(conv: dict) -> str:
+    title = str(conv.get("title") or conv.get("id") or "Conversation")
+    lines = [
+        f"# {title}",
+        "",
+        f"- id: `{conv.get('id', '')}`",
+        f"- created_at: {conv.get('createdAt', '')}",
+        f"- updated_at: {conv.get('updatedAt', '')}",
+        "",
+    ]
+    for m in conv.get("messages") or []:
+        role = str(m.get("role") or "assistant")
+        content = str(m.get("content") or "").strip()
+        if not content:
+            continue
+        lines.extend([f"## {role}", "", content, ""])
+    return "\n".join(lines).strip() + "\n"
+
+
+def _load_persistent_conversations() -> dict:
+    if not CHAT_HISTORY_JSON.exists():
+        return {"conversations": [], "active_id": "", "projects": [], "active_project_id": ""}
+    try:
+        data = json.loads(CHAT_HISTORY_JSON.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {"conversations": [], "active_id": ""}
+        convs = data.get("conversations") or []
+        if not isinstance(convs, list):
+            convs = []
+        projects = data.get("projects") or []
+        if not isinstance(projects, list):
+            projects = []
+        return {
+            "conversations": convs,
+            "active_id": data.get("active_id") or "",
+            "projects": projects,
+            "active_project_id": data.get("active_project_id") or "",
+        }
+    except Exception:
+        return {"conversations": [], "active_id": "", "projects": [], "active_project_id": ""}
+
+
+def _save_persistent_conversations(
+    conversations: list,
+    active_id: str = "",
+    projects: list | None = None,
+    active_project_id: str = "",
+) -> None:
+    CHAT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    safe_convs = []
+    for c in conversations[:200]:
+        if not isinstance(c, dict):
+            continue
+        cid = _clean_conversation_id(c.get("id") or "")
+        if not cid:
+            continue
+        safe = {
+            "id": cid,
+            "title": _clean_conversation_title(c.get("title") or ""),
+            "project_id": _clean_conversation_id(c.get("project_id") or "") if c.get("project_id") else "",
+            "createdAt": c.get("createdAt"),
+            "updatedAt": c.get("updatedAt"),
+            "history": (c.get("history") or [])[-80:],
+            "messages": (c.get("messages") or [])[-200:],
+            "docs": c.get("docs") or [],
+        }
+        safe_convs.append(safe)
+
+    safe_projects = []
+    for p in (projects or []):
+        if not isinstance(p, dict):
+            continue
+        pid = _clean_conversation_id(p.get("id") or "")
+        if not pid:
+            continue
+        safe_projects.append({
+            "id": pid,
+            "title": str(p.get("title") or "")[:120],
+            "preface": str(p.get("preface") or ""),
+            "prompt": str(p.get("prompt") or ""),
+            "createdAt": p.get("createdAt"),
+            "updatedAt": p.get("updatedAt"),
+            "docs": p.get("docs") or [],
+        })
+
+    payload = {
+        "active_id": _clean_conversation_id(active_id),
+        "active_project_id": _clean_conversation_id(active_project_id or "") if active_project_id else "",
+        "projects": safe_projects,
+        "conversations": safe_convs,
+    }
+    tmp = CHAT_HISTORY_JSON.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(CHAT_HISTORY_JSON)
+
+    for conv in safe_convs:
+        md_path = CHAT_HISTORY_DIR / f"{conv['id']}.md"
+        md_path.write_text(_conversation_to_markdown(conv), encoding="utf-8")
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(content, encoding="utf-8")
+    tmp.replace(path)
+
+
+def _delete_kb_proj_folder(kb, proj_folder: str) -> int:
+    """Remove all KB docs in a logical folder before replacing it."""
+    if not kb or not proj_folder:
+        return 0
+    removed = 0
+    for doc in list(kb.list_docs()):
+        if (getattr(doc, "proj_folder", "") or "") == proj_folder:
+            try:
+                if kb.delete_doc(doc.doc_id):
+                    removed += 1
+            except Exception:
+                pass
+    return removed
+
+
+def _save_user_profile(content: str, conversations: list | None = None) -> None:
+    """Persist the canonical profile plus a timestamped archive and source manifest."""
+    now = datetime.now().isoformat(timespec="seconds")
+    if not content.lstrip().startswith("#"):
+        content = "# SAGE User Profile\n\n" + content.strip() + "\n"
+    if "Updated:" not in content[:500]:
+        content = content.rstrip() + f"\n\n---\nUpdated: {now}\n"
+
+    _atomic_write_text(USER_PROFILE_MD, content)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    _atomic_write_text(USER_PROFILE_ARCHIVE_DIR / f"user_profile_{stamp}.md", content)
+    if conversations is not None:
+        source = {
+            "updated_at": now,
+            "profile_path": str(USER_PROFILE_MD),
+            "archive_dir": str(USER_PROFILE_ARCHIVE_DIR),
+            "n_conversations": len(conversations),
+            "conversation_ids": [c.get("id") for c in conversations if isinstance(c, dict)],
+        }
+        tmp = USER_PROFILE_SOURCE_JSON.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(source, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(USER_PROFILE_SOURCE_JSON)
+
+
+@bp.route('/api/chat/conversations', methods=['GET'])
+def chat_conversations_get():
+    data = _load_persistent_conversations()
+    return jsonify({"ok": True, **data})
+
+
+@bp.route('/api/chat/conversations', methods=['POST'])
+def chat_conversations_save():
+    data = request.json or {}
+    conversations = data.get("conversations") or []
+    if not isinstance(conversations, list):
+        return jsonify({"ok": False, "error": "conversations must be a list"}), 400
+    try:
+        _save_persistent_conversations(
+            conversations,
+            data.get("active_id") or "",
+            data.get("projects") or [],
+            data.get("active_project_id") or "",
+        )
+        return jsonify({"ok": True, "path": str(CHAT_HISTORY_JSON)})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@bp.route('/api/chat/conversations/<conversation_id>', methods=['DELETE'])
+def chat_conversation_delete(conversation_id):
+    """Delete one persisted conversation and its Markdown mirror."""
+    cid = _clean_conversation_id(conversation_id)
+    data = _load_persistent_conversations()
+    conversations = [c for c in data.get("conversations", []) if _clean_conversation_id(c.get("id")) != cid]
+    active_id = data.get("active_id") or ""
+    if active_id == cid:
+        active_id = conversations[0].get("id", "") if conversations else ""
+    try:
+        _save_persistent_conversations(conversations, active_id, data.get("projects") or [], data.get("active_project_id") or "")
+        md_path = CHAT_HISTORY_DIR / f"{cid}.md"
+        if md_path.exists():
+            md_path.unlink()
+        _session_docs.pop(cid, None)
+        _chat_jobs.pop(cid, None)
+        return jsonify({"ok": True, "deleted": cid})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@bp.route('/api/chat/project/promote', methods=['POST'])
+def chat_project_promote():
+    """Persist a project's shared context and conversation summaries into the KB."""
+    data = request.json or {}
+    project = data.get("project") or {}
+    conversations = data.get("conversations") or []
+    pid = _clean_conversation_id(project.get("id") or "project")
+    title = str(project.get("title") or pid)
+    lines = [
+        f"# Project: {title}",
+        "",
+        f"- Project ID: `{pid}`",
+        f"- Source: SAGE Chat Project",
+        "",
+    ]
+    if project.get("preface"):
+        lines.extend(["## Preface / Research Background", "", str(project.get("preface")), ""])
+    if project.get("prompt"):
+        lines.extend(["## Shared Prompt", "", str(project.get("prompt")), ""])
+    docs = project.get("docs") or []
+    if docs:
+        lines.extend(["## Project Literature", ""])
+        for d in docs:
+            lines.append(f"- {d.get('name')} ({d.get('n_chunks', 0)} chunks)")
+        lines.append("")
+    if conversations:
+        lines.extend(["## Conversation Summaries", ""])
+        for c in conversations[:50]:
+            lines.append(f"### {c.get('title') or c.get('id')}")
+            for m in (c.get("messages") or [])[-20:]:
+                content = str(m.get("content") or "").strip()
+                if content:
+                    lines.append(f"- {m.get('role', '')}: {content[:1500]}")
+            lines.append("")
+
+    project_dir = CHAT_HISTORY_DIR / "projects"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    md_path = project_dir / f"{pid}.md"
+    md_path.write_text("\n".join(lines), encoding="utf-8")
+
+    try:
+        kb = get_kb_instance()
+        if not kb:
+            return jsonify({"ok": False, "error": "Knowledge base unavailable"}), 500
+        logs = []
+        proj_folder = f"chat_project/{pid}"
+        removed_old = _delete_kb_proj_folder(kb, proj_folder)
+        meta = kb.add_document(str(md_path), progress_cb=lambda m: logs.append(m), proj_folder=proj_folder, source_type="chat_project")
+        return jsonify({
+            "ok": True,
+            "doc_id": meta.doc_id,
+            "doc_name": meta.doc_name,
+            "n_chunks": meta.n_chunks,
+            "removed_old": removed_old,
+            "path": str(md_path),
+            "logs": logs[-20:],
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@bp.route('/api/chat/conversation/promote', methods=['POST'])
+def chat_conversation_promote():
+    """Persist the active chat conversation as one removable KB document."""
+    data = request.json or {}
+    conv = data.get("conversation") or {}
+    cid = _clean_conversation_id(conv.get("id") or "conversation")
+    title = _clean_conversation_title(conv.get("title") or "") or cid
+    md = _conversation_to_markdown({**conv, "title": title})
+
+    chat_dir = CHAT_HISTORY_DIR / "knowledge_chats"
+    chat_dir.mkdir(parents=True, exist_ok=True)
+    md_path = chat_dir / f"{cid}.md"
+    md_path.write_text(md, encoding="utf-8")
+
+    try:
+        kb = get_kb_instance()
+        if not kb:
+            return jsonify({"ok": False, "error": "Knowledge base unavailable"}), 500
+        logs = []
+        proj_folder = f"chat/{cid}"
+        removed_old = _delete_kb_proj_folder(kb, proj_folder)
+        meta = kb.add_document(
+            str(md_path),
+            progress_cb=lambda m: logs.append(m),
+            proj_folder=proj_folder,
+            source_type="chat_conversation",
+        )
+        return jsonify({
+            "ok": True,
+            "doc_id": meta.doc_id,
+            "doc_name": meta.doc_name,
+            "n_chunks": meta.n_chunks,
+            "removed_old": removed_old,
+            "path": str(md_path),
+            "logs": logs[-20:],
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
 
 
 # ── Task management ──────────────────────────────────────────────────────
@@ -412,12 +737,19 @@ def evidence_geo_agent():
             if _root not in _sys.path:
                 _sys.path.insert(0, _root)
             from sage_agents import EvidenceDrivenGeoAgent, AgentConfig
+            ws_cfg = get_workspace_config()
+            authorized_roots = []
+            if ws_cfg.get("enabled"):
+                authorized_roots.extend(ws_cfg.get("paths") or [])
+            authorized_roots.extend(data.get("authorized_roots") or [])
+            authorized_roots = [str(p).strip() for p in authorized_roots if str(p).strip()]
 
             # Build config from request
             cfg = AgentConfig(
                 workspace_root=data.get("workspace_root") or ".",
                 literature_root=data.get("literature_root") or "",
                 output_dir=data.get("output_dir") or "outputs/evidence_driven_geo_agent",
+                authorized_roots=authorized_roots,
                 allow_python=bool(data.get("allow_python", True)),
                 allow_shell=bool(data.get("allow_shell", False)),
                 allow_web_search=bool(data.get("allow_web_search", False)),
@@ -444,8 +776,19 @@ def evidence_geo_agent():
             if seed_path and not cfg.literature_root:
                 cfg.literature_root = str(Path(seed_path).parent)
 
+            profile = get_user_profile_context(max_chars=2500)
+            question_for_agent = question
+            project_context = (data.get("project_context") or "").strip()
+            if project_context and project_context not in question_for_agent:
+                question_for_agent += "\n\n===== Project shared context =====\n" + project_context[:4000]
+            if profile:
+                question_for_agent += (
+                    "\n\n===== Long-term user profile (soft context; do not mention unless useful) =====\n"
+                    + profile
+                )
+
             agent  = EvidenceDrivenGeoAgent(config=cfg, llm_cfg=get_llm_config())
-            result = agent.run(question, study_area, on_progress=_prog)
+            result = agent.run(question_for_agent, study_area, on_progress=_prog)
             _geo_agent_jobs[job_id]["status"] = "done"
             _geo_agent_jobs[job_id]["result"] = result
         except Exception as exc:
@@ -604,11 +947,14 @@ def chat_upload_pdf():
 
     f = request.files['file']
     session_id = request.form.get('session_id', 'default')
+    project_id = _clean_conversation_id(request.form.get('project_id', ''))
 
     if not f.filename.lower().endswith('.pdf'):
         return jsonify({"ok": False, "error": "Only PDF files are supported"}), 400
 
-    tmp_path = UPLOAD_FOLDER_CHAT / f"{session_id}_{f.filename}"
+    upload_id = _uuid.uuid4().hex[:10]
+    safe_name = Path(f.filename).name
+    tmp_path = UPLOAD_FOLDER_CHAT / f"{session_id}_{upload_id}_{safe_name}"
     f.save(str(tmp_path))
 
     try:
@@ -622,30 +968,86 @@ def chat_upload_pdf():
                 chunks.append({"page": page_idx + 1, "text": c})
 
         if session_id not in _session_docs:
-            _session_docs[session_id] = {"chunks": [], "doc_names": []}
+            _session_docs[session_id] = {"chunks": [], "doc_names": [], "files": {}}
 
         _session_docs[session_id]["chunks"].extend(chunks)
         _session_docs[session_id]["doc_names"].append(f.filename)
+        _session_docs[session_id].setdefault("files", {})[upload_id] = {
+            "name": f.filename,
+            "path": str(tmp_path),
+            "n_pages": len(pages),
+            "n_chunks": len(chunks),
+            "permanent": False,
+        }
+
+        if project_id:
+            project_key = f"project_{project_id}"
+            if project_key not in _session_docs:
+                _session_docs[project_key] = {"chunks": [], "doc_names": [], "files": {}}
+            _session_docs[project_key]["chunks"].extend(chunks)
+            if f.filename not in _session_docs[project_key]["doc_names"]:
+                _session_docs[project_key]["doc_names"].append(f.filename)
+            _session_docs[project_key].setdefault("files", {})[upload_id] = {
+                "name": f.filename,
+                "path": str(tmp_path),
+                "n_pages": len(pages),
+                "n_chunks": len(chunks),
+                "permanent": False,
+            }
 
         return jsonify({
             "ok": True,
             "doc_name": f.filename,
+            "upload_id": upload_id,
             "n_pages":  len(pages),
             "n_chunks": len(chunks),
             "session_id": session_id,
+            "project_id": project_id,
         })
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
-    finally:
-        try:
-            tmp_path.unlink(missing_ok=True)
-        except Exception:
-            pass
+
+
+@bp.route('/api/chat/promote_doc', methods=['POST'])
+def chat_promote_doc():
+    """Persist a temporary chat PDF into the permanent knowledge base."""
+    data = request.json or {}
+    session_id = data.get("session_id", "default")
+    upload_id = data.get("upload_id", "")
+    info = _session_docs.get(session_id, {}).get("files", {}).get(upload_id)
+    if not info:
+        return jsonify({"ok": False, "error": "Temporary document not found"}), 404
+
+    path = Path(info.get("path", ""))
+    if not path.exists():
+        return jsonify({"ok": False, "error": "Temporary file has expired"}), 404
+
+    try:
+        kb = get_kb_instance()
+        if not kb:
+            return jsonify({"ok": False, "error": "Knowledge base unavailable"}), 500
+        logs = []
+        meta = kb.add_pdf(str(path), progress_cb=lambda m: logs.append(m), source_type="upload")
+        info["permanent"] = True
+        return jsonify({
+            "ok": True,
+            "doc_id": meta.doc_id,
+            "doc_name": meta.doc_name,
+            "n_chunks": meta.n_chunks,
+            "logs": logs[-20:],
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 @bp.route('/api/chat/clear_session', methods=['POST'])
 def chat_clear_session():
     sid = request.json.get('session_id', 'default')
+    for info in _session_docs.get(sid, {}).get("files", {}).values():
+        try:
+            Path(info.get("path", "")).unlink(missing_ok=True)
+        except Exception:
+            pass
     _session_docs.pop(sid, None)
     return jsonify({"ok": True})
 
@@ -829,10 +1231,14 @@ def _build_rag_messages(data: dict):
             context_parts.append("===== 本地文件系统 =====\n" + ws_ctx)
 
     session = _session_docs.get(session_id, {})
-    if session.get("chunks"):
+    project_id = _clean_conversation_id(data.get("project_id", ""))
+    project_session = _session_docs.get(f"project_{project_id}", {}) if project_id else {}
+    merged_chunks = list(project_session.get("chunks") or []) + list(session.get("chunks") or [])
+    merged_doc_names = list(dict.fromkeys((project_session.get("doc_names") or []) + (session.get("doc_names") or [])))
+    if merged_chunks:
         query_words = set(user_msg.lower().split())
         scored = []
-        for c in session["chunks"]:
+        for c in merged_chunks:
             words = set(c["text"].lower().split())
             score = len(query_words & words) / (len(query_words) + 1)
             scored.append((score, c))
@@ -840,8 +1246,12 @@ def _build_rag_messages(data: dict):
         for score, c in scored[:4]:
             if score > 0 or mode == "paper_read":
                 context_parts.append(f"[上传文档 第{c['page']}页]\n{c['text']}")
-        if session.get("doc_names"):
-            sources.extend(session["doc_names"])
+        if merged_doc_names:
+            sources.extend(merged_doc_names)
+
+    project_context = (data.get("project_context") or "").strip()
+    if project_context:
+        context_parts.append("===== 项目共享上下文 =====\n" + project_context[:4000])
 
     try:
         kb = get_kb_instance()
@@ -906,24 +1316,18 @@ def _build_rag_messages(data: dict):
                 "Be concise and accurate.\n"
             )
 
-    # Think-mode: model will produce <think>…</think> naturally for deepseek-r1/QwQ;
-    # for other models we add a soft prompt to encourage reasoning.
+    system = append_user_profile_to_system(system)
+
+    # Think-mode must be model-neutral. OpenAI-compatible reasoning streams are
+    # normalized in helpers.llm_stream; non-reasoning local/online models are
+    # instructed to emit the same tags so the UI can show/collapse them.
     enable_think = bool(data.get("enable_think", False))
-    model_name = llm_cfg.get("model", "").lower()
-    is_reasoning_model = any(keyword in model_name for keyword in ["deepseek-r1", "qwq", "r1"])
     
     if enable_think:
-        if is_reasoning_model:
-            # For reasoning models, they naturally produce <think> tags
-            system += (
-                "\n\n请在正式回答前先进行详细推理，将思考过程放在 <think>…</think> 标签内，"
-                "然后在标签之外给出最终回答。"
-            )
-        else:
-            # For other models, use a softer prompt without requiring specific tags
-            system += (
-                "\n\n请在回答前先进行详细推理，然后给出最终回答。"
-            )
+        system += (
+            "\n\n如果需要推理，请严格把中间思考放在 <think>...</think> 标签内；"
+            "标签外只输出给用户看的最终回答。"
+        )
 
     if context_parts:
         system += "\n\n===== Reference passages =====\n" + "\n\n".join(context_parts)
@@ -1004,31 +1408,27 @@ def chat_stream():
     llm_cfg = get_llm_config()
 
     enable_think = bool(data.get("enable_think", False))
-    model_name = llm_cfg.get("model", "").lower()
-    is_reasoning_model = any(keyword in model_name for keyword in ["deepseek-r1", "qwq", "r1"])
-    
     system = (
         "You are SAGE, an expert seismology assistant with deep knowledge of "
         "seismology, geophysics and data processing.\n"
         "Answer the user's question using your own knowledge. Be concise and accurate.\n"
     )
+    system = append_user_profile_to_system(system)
     if enable_think:
-        if is_reasoning_model:
-            system += (
-                "\n请在正式回答前先进行详细推理，将思考过程放在 <think>…</think> 标签内，"
-                "然后在标签之外给出最终回答。"
-            )
-        else:
-            # For other models, use a softer prompt without requiring specific tags
-            system += (
-                "\n\n请在回答前先进行详细推理，然后给出最终回答。"
-            )
+        system += (
+            "\n\n如果需要推理，请严格把中间思考放在 <think>...</think> 标签内；"
+            "标签外只输出给用户看的最终回答。"
+        )
 
     workspace_path = data.get("workspace", "")
     if workspace_path:
         ws_ctx = inject_workspace_context(user_msg, workspace_path)
         if ws_ctx:
             system += "\n\n===== 本地文件系统 =====\n" + ws_ctx
+
+    project_context = (data.get("project_context") or "").strip()
+    if project_context:
+        system += "\n\n===== 项目共享上下文 =====\n" + project_context[:4000]
 
     messages = [{"role": "system", "content": system},
                 {"role": "user",   "content": user_msg}]
@@ -1075,20 +1475,16 @@ def _build_plain_messages(data: dict):
     user_msg     = data.get('message', '').strip()
     enable_think = bool(data.get('enable_think', False))
     llm_cfg      = get_llm_config()
-    model_name   = llm_cfg.get('model', '').lower()
-    is_reasoning = any(k in model_name for k in ['deepseek-r1', 'qwq', 'r1', 'deepseek-reasoner'])
-
     system = (
         'You are SAGE, an expert seismology assistant with deep knowledge of '
         'seismology, geophysics and data processing.\n'
         'Answer the user\'s question using your own knowledge. Be concise and accurate.\n'
     )
+    system = append_user_profile_to_system(system)
     if enable_think:
         system += (
-            '\n请在正式回答前先进行详细推理，将思考过程放在 <think>…</think> 标签内，'
-            '然后在标签之外给出最终回答。'
-            if is_reasoning else
-            '\n\n请在回答前先进行详细推理，然后给出最终回答。'
+            '\n\n如果需要推理，请严格把中间思考放在 <think>...</think> 标签内；'
+            '标签外只输出给用户看的最终回答。'
         )
 
     workspace_path = data.get('workspace', '')
@@ -1142,9 +1538,17 @@ def chat_submit():
                 )
                 return
 
-            answer = llm_call(messages, llm_cfg, max_tokens=2000,
-                              images=images if images else None)
-            _chat_jobs[job_id].update(answer=answer, sources=sources, status='done')
+            answer_parts = []
+            for chunk in llm_stream(messages, llm_cfg, max_tokens=2000,
+                                    images=images if images else None):
+                answer_parts.append(chunk)
+                _chat_jobs[job_id].update(
+                    answer=''.join(answer_parts),
+                    sources=sources,
+                    status='running',
+                    ts=_time.time(),
+                )
+            _chat_jobs[job_id].update(answer=''.join(answer_parts), sources=sources, status='done')
         except Exception as exc:
             _chat_jobs[job_id].update(status='error', error=str(exc))
 
@@ -1164,4 +1568,107 @@ def chat_job_poll(job_id):
         'answer':  job['answer'],
         'sources': job['sources'],
         'error':   job['error'],
+    })
+
+
+@bp.route('/api/chat/memory', methods=['GET'])
+def chat_memory_get():
+    return jsonify({
+        "ok": True,
+        "path": str(USER_PROFILE_MD),
+        "content": get_user_profile_context(max_chars=20000),
+        "exists": USER_PROFILE_MD.exists(),
+        "archive_dir": str(USER_PROFILE_ARCHIVE_DIR),
+        "source_path": str(USER_PROFILE_SOURCE_JSON),
+    })
+
+
+@bp.route('/api/chat/memory', methods=['DELETE'])
+def chat_memory_delete():
+    """Delete persistent user profile / personalization files."""
+    deleted = []
+    for path in [USER_PROFILE_MD, USER_PROFILE_SOURCE_JSON]:
+        try:
+            if path.exists():
+                path.unlink()
+                deleted.append(str(path))
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 500
+    try:
+        if USER_PROFILE_ARCHIVE_DIR.exists():
+            for p in USER_PROFILE_ARCHIVE_DIR.glob("user_profile_*.md"):
+                p.unlink()
+                deleted.append(str(p))
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    return jsonify({"ok": True, "deleted": deleted})
+
+
+@bp.route('/api/chat/memory/summarize', methods=['POST'])
+def chat_memory_summarize():
+    """Summarize multiple local conversations into a persistent Markdown user profile."""
+    data = request.json or {}
+    conversations = data.get("conversations") or []
+    if not conversations:
+        conversations = _load_persistent_conversations().get("conversations") or []
+    if not conversations:
+        return jsonify({"ok": False, "error": "No conversations available"}), 400
+
+    snippets = []
+    for conv in conversations[:20]:
+        title = conv.get("title") or conv.get("id") or "Untitled"
+        lines = [f"## Conversation: {title}"]
+        for m in (conv.get("history") or [])[-20:]:
+            role = m.get("role", "")
+            content = str(m.get("content", ""))[:1200]
+            if content.strip():
+                lines.append(f"- {role}: {content}")
+        snippets.append("\n".join(lines))
+    corpus = "\n\n".join(snippets)[:30000]
+
+    fallback = (
+        "# SAGE User Profile\n\n"
+        f"Updated: {datetime.now().isoformat(timespec='seconds')}\n\n"
+        "## Inferred identity and work context\n"
+        "- The user works on seismology/geophysics workflows and SAGE development.\n\n"
+        "## Habits and preferences\n"
+        "- Prefers executable workflows, debugging ability, intermediate artifacts, and traceable reasoning.\n"
+        "- Often asks for Chinese explanations with practical code support.\n\n"
+        "## Knowledge level\n"
+        "- Advanced technical user familiar with earthquake monitoring, phase picking, RAG, skills, and coding agents.\n\n"
+        "## Intent hints\n"
+        "- Explanation-style requests should use QA/RAG.\n"
+        "- Requests involving implementation, plotting, detection, processing, or '上述/这个方法 + 代码' should route to coding.\n"
+    )
+
+    try:
+        llm_cfg = get_llm_config()
+        if llm_cfg.get("api_base"):
+            prompt = (
+                "请根据以下多个对话，生成一份简洁、可长期使用的 Markdown 用户画像。"
+                "目标是帮助后续助手判断用户身份、研究方向、习惯、知识水平、偏好的回答深度、"
+                "常见意图和路由偏好。不要记录隐私敏感信息，不要逐字复述对话。\n\n"
+                "请使用以下结构：\n"
+                "# SAGE User Profile\n"
+                "## Inferred identity and work context\n"
+                "## Research/software interests\n"
+                "## Habits and preferences\n"
+                "## Knowledge level\n"
+                "## Intent and routing hints\n"
+                "## Open uncertainties\n\n"
+                f"对话材料：\n{corpus}"
+            )
+            content = llm_call([{"role": "user", "content": prompt}], llm_cfg, max_tokens=1800)
+        else:
+            content = fallback
+    except Exception:
+        content = fallback
+
+    _save_user_profile(content, conversations=conversations)
+    return jsonify({
+        "ok": True,
+        "path": str(USER_PROFILE_MD),
+        "archive_dir": str(USER_PROFILE_ARCHIVE_DIR),
+        "source_path": str(USER_PROFILE_SOURCE_JSON),
+        "content": content,
     })

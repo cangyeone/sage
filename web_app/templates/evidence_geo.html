@@ -228,6 +228,11 @@ body{background:var(--bg);height:100vh;display:flex;flex-direction:column;overfl
 <div class="app-body">
   <!-- ── Left sidebar: config ─────────────────────────────────────────────── -->
   <div class="cfg-sidebar">
+    <div class="sb-section">
+      <div class="sb-title"><i class="bi bi-collection me-1"></i><span data-i18n="proj_title">项目</span></div>
+      <select id="cfgProject" class="form-control form-control-sm mb-1" style="font-size:.78rem" onchange="applySelectedProjectContext()"></select>
+      <div id="cfgProjectHint" class="form-label-sm" style="color:#888"></div>
+    </div>
 
     <!-- Workspace paths -->
     <div class="sb-section">
@@ -235,6 +240,9 @@ body{background:var(--bg);height:100vh;display:flex;flex-direction:column;overfl
       <div class="form-label-sm" data-i18n="lbl_workspace">Workspace Root</div>
       <input type="text" class="form-control form-control-sm mb-2" id="cfgWorkspace"
              data-i18n-placeholder="ph_workspace" placeholder="./examples/weiyuan" value="./examples/evidence_geo_agent">
+      <div class="form-label-sm" data-i18n="lbl_authorized_roots">Authorized Extra Roots</div>
+      <textarea class="form-control form-control-sm mb-2" id="cfgAuthorizedRoots" rows="3"
+             placeholder="/data/seismic&#10;/Users/you/project" style="resize:vertical"></textarea>
       <div class="form-label-sm" data-i18n="lbl_literature">Literature Root</div>
       <input type="text" class="form-control form-control-sm mb-2" id="cfgLiterature"
              data-i18n-placeholder="ph_literature" placeholder="./papers">
@@ -628,9 +636,12 @@ async function runAgent() {
   document.getElementById('progSpinner').style.display   = '';
   document.getElementById('progTitleText').textContent   = 'Agent 正在运行…';
 
+  const authorizedRoots = parseAuthorizedRoots(document.getElementById('cfgAuthorizedRoots')?.value || '');
+  const projectContext = getSelectedProjectContext();
+
   // Build request payload
   const payload = {
-    question,
+    question: projectContext ? `${question}\n\n===== 项目共享上下文 =====\n${projectContext}` : question,
     study_area:           studyArea,
     workspace_root:       document.getElementById('cfgWorkspace').value   || './examples/evidence_geo_agent',
     literature_root:      document.getElementById('cfgLiterature').value  || '',
@@ -648,6 +659,9 @@ async function runAgent() {
     use_local_files:      document.getElementById('togLocalFiles').checked,
     produce_latex:        true,
     use_code_engine:      true,
+    authorized_roots:     authorizedRoots,
+    project_context:      projectContext,
+    project_id:           document.getElementById('cfgProject')?.value || '',
     session_id:           SESSION_WS,
     uploaded_files:       uploadedFiles.map(f => f.path),
   };
@@ -959,14 +973,84 @@ function escHtml(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+function parseAuthorizedRoots(raw) {
+  return String(raw || '').split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
+}
+
+async function loadSharedWorkspaceRoots() {
+  try {
+    const r = await fetch('/api/workspace/config');
+    const d = await r.json();
+    if (d.enabled && Array.isArray(d.paths) && d.paths.length) {
+      const el = document.getElementById('cfgAuthorizedRoots');
+      if (el && !el.value.trim()) el.value = d.paths.join('\n');
+    }
+  } catch(e) {}
+}
+
+let _sharedProjects = [];
+function _projectTitle(p) {
+  return (p && p.title) || ((currentLang || localStorage.getItem('sage_lang') || 'zh') === 'zh' ? '默认项目' : 'Default project');
+}
+
+async function loadSharedProjects() {
+  try {
+    const r = await fetch('/api/chat/conversations');
+    const d = await r.json();
+    _sharedProjects = Array.isArray(d.projects) && d.projects.length ? d.projects : [];
+    const sel = document.getElementById('cfgProject');
+    if (!sel) return;
+    sel.innerHTML = `<option value="">${(currentLang || localStorage.getItem('sage_lang') || 'zh') === 'zh' ? '不使用项目' : 'No project'}</option>` +
+      _sharedProjects.map(p => `<option value="${p.id}">${escHtml(_projectTitle(p))}</option>`).join('');
+    if (d.active_project_id && _sharedProjects.some(p => p.id === d.active_project_id)) {
+      sel.value = d.active_project_id;
+      applySelectedProjectContext();
+    }
+  } catch(e) {}
+}
+
+function getSelectedProject() {
+  const id = document.getElementById('cfgProject')?.value || '';
+  return _sharedProjects.find(p => p.id === id);
+}
+
+function getSelectedProjectContext() {
+  const p = getSelectedProject();
+  if (!p) return '';
+  const docs = (p.docs || []).map(d => d.name).filter(Boolean).join(', ');
+  return [
+    p.preface ? `项目背景：${p.preface}` : '',
+    p.prompt ? `项目共享 Prompt：${p.prompt}` : '',
+    docs ? `项目文献：${docs}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+function applySelectedProjectContext() {
+  const p = getSelectedProject();
+  const hint = document.getElementById('cfgProjectHint');
+  if (!hint) return;
+  if (!p) {
+    hint.textContent = '';
+    return;
+  }
+  const nDocs = (p.docs || []).length;
+  hint.textContent = currentLang === 'zh'
+    ? `将引用项目上下文和 ${nDocs} 篇项目文献`
+    : `Will use project context and ${nDocs} project document(s)`;
+}
+
 // ── Init ───────────────────────────────────────────────────────────────────
 document.getElementById('questionInput').focus();
+loadSharedWorkspaceRoots();
+loadSharedProjects();
 
 // ── i18n ───────────────────────────────────────────────────────────────────
 const I18N_GEO = {
   zh: {
     nav_chat:'对话', nav_geo:'地学解译', nav_knowledge:'知识库', nav_skills:'技能',
+    proj_title:'项目',
     sb_workspace:'工作目录', lbl_workspace:'Workspace Root', ph_workspace:'./examples/weiyuan',
+    lbl_authorized_roots:'额外授权位置',
     lbl_literature:'Literature Root', ph_literature:'./papers',
     lbl_output:'输出目录', ph_output:'outputs/evidence_geo_agent',
     sb_loop:'循环参数', lbl_max_iter:'最大迭代次数', lbl_max_tools:'每次最大工具调用', lbl_score:'Score 阈值',
@@ -1006,7 +1090,9 @@ const I18N_GEO = {
   },
   en: {
     nav_chat:'Chat', nav_geo:'Geo Agent', nav_knowledge:'Knowledge', nav_skills:'Skills',
+    proj_title:'Project',
     sb_workspace:'Workspace', lbl_workspace:'Workspace Root', ph_workspace:'./examples/weiyuan',
+    lbl_authorized_roots:'Authorized Extra Roots',
     lbl_literature:'Literature Root', ph_literature:'./papers',
     lbl_output:'Output Dir', ph_output:'outputs/evidence_geo_agent',
     sb_loop:'Loop Parameters', lbl_max_iter:'Max Iterations', lbl_max_tools:'Max Tool Calls/Iter', lbl_score:'Score Threshold',

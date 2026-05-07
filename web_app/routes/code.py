@@ -7,7 +7,10 @@ import time as _time
 import uuid as _uuid
 from pathlib import Path
 from state import _code_engine_lock, _code_engines, _code_jobs, _PROJECT_ROOT
-from helpers import get_llm_config, get_code_engine, gc_code_jobs, serialize_code_result
+from helpers import (
+    get_llm_config, get_code_engine, gc_code_jobs, serialize_code_result,
+    get_user_profile_context,
+)
 
 bp = Blueprint('code', __name__)
 
@@ -63,8 +66,16 @@ def chat_code():
             def _on_progress(p):
                 _code_jobs[job_id]['progress'].append(p.get('phase', p.get('message', '')))
 
+            profile = get_user_profile_context(max_chars=2500)
+            engine_msg = user_msg
+            if profile:
+                engine_msg += (
+                    "\n\n===== Long-term user profile (soft context; do not mention unless useful) =====\n"
+                    + profile
+                )
+
             result = engine.run(
-                user_msg,
+                engine_msg,
                 timeout=180,
                 max_debug_rounds=6,
                 run_verify=False,
@@ -151,9 +162,16 @@ def chat_workflow():
                     _code_jobs[job_id]['progress'].append(label)
 
                 engine = get_code_engine(session_id, llm_cfg)
+                profile = get_user_profile_context(max_chars=2000)
+                workflow_msg = user_msg
+                if profile:
+                    workflow_msg += (
+                        "\n\n===== Long-term user profile (soft context; do not mention unless useful) =====\n"
+                        + profile
+                    )
                 result = engine.run_workflow(
                     workflow_name=workflow_name,
-                    user_request=user_msg,
+                    user_request=workflow_msg,
                     data_hint=data_hint,
                     max_debug_rounds=5,
                     timeout=180,
@@ -281,6 +299,7 @@ def chat_route():
             role_label = "用户" if h.get("role") == "user" else "AI"
             lines.append(f"{role_label}：{str(h.get('content',''))[:100]}")
         history_text = "\n".join(lines)
+    profile_text = get_user_profile_context(max_chars=1200)
 
     # ── 精简 prompt：短而直接，适配弱模型 ────────────────────────────────────
     routing_prompt = f"""Classify the intent of the following user message. Output only one of: code, qa, or chat. Do not output anything else.
@@ -312,6 +331,7 @@ Examples:
 "Hello" → chat
 
 {f"Context: {history_text}" if history_text else ""}
+{f"Long-term user profile: {profile_text}" if profile_text else ""}
 User message: {message}
 Intent:"""
 
