@@ -335,10 +335,16 @@ def get_online_api_models():
             return jsonify({
                 'models': models,
                 'source': 'chat_probe' if verified else 'fallback',
-                'warning': (
-                    f'/models 接口不可用或返回 HTTP {e.code}，'
-                    '但聊天接口可以继续使用；已使用当前/预设模型。'
-                ),
+                **({
+                    'notice': (
+                        f'已验证当前模型可用；该平台的 /models 列表接口返回 HTTP {e.code}。'
+                    )
+                } if verified else {
+                    'warning': (
+                        f'/models 接口不可用或返回 HTTP {e.code}，'
+                        '但聊天接口可能仍可使用；已使用当前/预设模型。'
+                    )
+                }),
             })
 
         detail = msgs.get(e.code, f'HTTP {e.code}: {e.reason}')

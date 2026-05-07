@@ -444,6 +444,7 @@ const I18N = {
     btn_fetch_models: '获取模型',
     fetch_models_loading: '正在获取模型列表…',
     fetch_models_ok: '✓ 已获取 {n} 个模型',
+    fetch_models_notice: '✓ {msg}',
     fetch_models_warn: '⚠ {msg}',
     fetch_models_fail: '获取失败: ',
     fetch_models_need_key: '请先填写 API Key 再获取模型列表',
@@ -512,6 +513,7 @@ const I18N = {
     btn_fetch_models: 'Fetch Models',
     fetch_models_loading: 'Fetching model list…',
     fetch_models_ok: '✓ {n} models loaded',
+    fetch_models_notice: '✓ {msg}',
     fetch_models_warn: '⚠ {msg}',
     fetch_models_fail: 'Failed: ',
     fetch_models_need_key: 'Please enter your API Key before fetching models',
@@ -946,7 +948,10 @@ async function fetchOnlineModels(isDeepseek = false) {
       statusEl.style.color = '#c62828';
     } else {
       const models = d.models || [];
-      if (d.warning) {
+      if (d.notice) {
+        statusEl.textContent = T('fetch_models_notice').replace('{msg}', d.notice);
+        statusEl.style.color = '#2e7d32';
+      } else if (d.warning) {
         statusEl.textContent = T('fetch_models_warn').replace('{msg}', d.warning);
         statusEl.style.color = '#b26a00';
       } else {

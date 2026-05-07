@@ -60,7 +60,8 @@ class TestOnlineModelsFallback(unittest.TestCase):
         body = resp.get_json()
         self.assertEqual(body["models"], ["qwen3.6-plus"])
         self.assertEqual(body["source"], "chat_probe")
-        self.assertIn("warning", body)
+        self.assertIn("notice", body)
+        self.assertNotIn("warning", body)
 
 
 if __name__ == "__main__":
