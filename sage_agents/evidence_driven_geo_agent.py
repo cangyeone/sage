@@ -82,6 +82,7 @@ import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -180,6 +181,7 @@ class AgentConfig:
     allow_python:      bool = True        # enable CodeExecutionTool.run_python
     allow_shell:       bool = False       # enable CodeExecutionTool.run_shell
     allow_web_search:  bool = False       # enable WebSearchTool (web_search / scholar_search / download_pdf)
+    web_search_sources: List[str] = field(default_factory=lambda: ["semantic_scholar"])  # semantic_scholar | openalex | arxiv | web
     use_multimodal:    bool = False       # enable ImageAnalysisTool (analyze_image / extract_table)
     use_rag:           bool = True        # enable RAGIndexTool.search_rag
     use_local_files:   bool = True        # enable LocalFileSearchTool
@@ -2220,8 +2222,10 @@ class WebSearchTool:
     """
     Optional web and scholar search.  Disabled by default (allow_web_search=False).
 
-    web_search:    DuckDuckGo HTML scrape (no API key required)
-    scholar_search: Semantic Scholar public API (no key required)
+    openalex_search: OpenAlex Works API (no API key required)
+    scholar_search:  Semantic Scholar public API (no key required)
+    arxiv_search:    arXiv Atom API (no API key required)
+    web_search:      DuckDuckGo HTML scrape fallback (no API key required)
     download_pdf:  Fetch and save a PDF from a URL to output_dir
     """
 
@@ -2239,6 +2243,107 @@ class WebSearchTool:
             )}
         return None
 
+    @staticmethod
+    def _abstract_from_openalex(inv: Any) -> str:
+        if not isinstance(inv, dict):
+            return ""
+        pos: List[Tuple[int, str]] = []
+        for word, idxs in inv.items():
+            if isinstance(idxs, list):
+                for i in idxs:
+                    if isinstance(i, int):
+                        pos.append((i, word))
+        return " ".join(w for _, w in sorted(pos))[:1200]
+
+    def openalex_search(self, query: str, max_results: int = 8) -> Dict[str, Any]:
+        """Search OpenAlex works. Returns normalized paper records."""
+        err = self._check_allowed()
+        if err:
+            return err
+        params = urllib.parse.urlencode({
+            "search": query,
+            "per-page": max(1, min(int(max_results), 25)),
+            "select": "id,doi,title,display_name,publication_year,authorships,abstract_inverted_index,primary_location,open_access,cited_by_count",
+            "mailto": "seismicx@example.com",
+        })
+        url = f"https://api.openalex.org/works?{params}"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "SeismicX/1.0 (mailto: seismicx@example.com)"})
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+            papers = []
+            for p in body.get("results", []) or []:
+                loc = p.get("primary_location") or {}
+                landing = (loc.get("landing_page_url") or loc.get("pdf_url") or p.get("id") or "")
+                authors = []
+                for au in (p.get("authorships") or [])[:6]:
+                    name = ((au.get("author") or {}).get("display_name") or "").strip()
+                    if name:
+                        authors.append(name)
+                papers.append({
+                    "title": p.get("display_name") or p.get("title") or "",
+                    "authors": authors,
+                    "year": p.get("publication_year"),
+                    "abstract": self._abstract_from_openalex(p.get("abstract_inverted_index")),
+                    "url": landing,
+                    "doi": (p.get("doi") or "").replace("https://doi.org/", ""),
+                    "source": "openalex",
+                    "cited_by_count": p.get("cited_by_count"),
+                    "open_access": p.get("open_access") or {},
+                })
+            return {"query": query, "papers": papers, "count": len(papers), "source": "openalex"}
+        except Exception as exc:
+            return {"query": query, "papers": [], "count": 0, "source": "openalex", "error": str(exc)}
+
+    def arxiv_search(self, query: str, max_results: int = 8) -> Dict[str, Any]:
+        """Search arXiv Atom API. Returns normalized paper records."""
+        err = self._check_allowed()
+        if err:
+            return err
+        params = urllib.parse.urlencode({
+            "search_query": f"all:{query}",
+            "start": 0,
+            "max_results": max(1, min(int(max_results), 25)),
+            "sortBy": "relevance",
+            "sortOrder": "descending",
+        })
+        url = f"https://export.arxiv.org/api/query?{params}"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "SeismicX/1.0 (research assistant)"})
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                xml = resp.read()
+            root = ET.fromstring(xml)
+            ns = {"atom": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
+            papers = []
+            for entry in root.findall("atom:entry", ns):
+                title = " ".join(entry.findtext("atom:title", default="", namespaces=ns).split())
+                summary = " ".join((entry.findtext("atom:summary", default="", namespaces=ns) or "").split())
+                authors = [
+                    (a.findtext("atom:name", default="", namespaces=ns) or "").strip()
+                    for a in entry.findall("atom:author", ns)
+                ]
+                links = entry.findall("atom:link", ns)
+                pdf_url = ""
+                page_url = entry.findtext("atom:id", default="", namespaces=ns)
+                for link in links:
+                    if link.attrib.get("title") == "pdf" or link.attrib.get("type") == "application/pdf":
+                        pdf_url = link.attrib.get("href", "")
+                        break
+                published = entry.findtext("atom:published", default="", namespaces=ns)
+                papers.append({
+                    "title": title,
+                    "authors": [a for a in authors if a][:6],
+                    "year": int(published[:4]) if published[:4].isdigit() else None,
+                    "abstract": summary[:1200],
+                    "url": page_url,
+                    "pdf_url": pdf_url,
+                    "doi": entry.findtext("arxiv:doi", default="", namespaces=ns) or "",
+                    "source": "arxiv",
+                })
+            return {"query": query, "papers": papers, "count": len(papers), "source": "arxiv"}
+        except Exception as exc:
+            return {"query": query, "papers": [], "count": 0, "source": "arxiv", "error": str(exc)}
+
     def web_search(self, query: str, max_results: int = 8) -> Dict[str, Any]:
         """Search the web via DuckDuckGo HTML (no API key required)."""
         err = self._check_allowed()
@@ -2251,7 +2356,7 @@ class WebSearchTool:
                 url,
                 headers={"User-Agent": "Mozilla/5.0 (compatible; SeismicX/1.0)"},
             )
-            with urllib.request.urlopen(req, timeout=20) as resp:
+            with urllib.request.urlopen(req, timeout=8) as resp:
                 html = resp.read().decode("utf-8", errors="replace")
 
             # Minimal HTML scrape — extract result titles and snippets
@@ -2319,7 +2424,7 @@ class WebSearchTool:
         last_error = ""
         for attempt in range(2):
             try:
-                with urllib.request.urlopen(req, timeout=20) as resp:
+                with urllib.request.urlopen(req, timeout=8) as resp:
                     body = json.loads(resp.read().decode())
 
                 papers = []
@@ -2364,6 +2469,72 @@ class WebSearchTool:
             "source": "semantic_scholar",
             "warning": "Semantic Scholar is rate-limited; no fallback results found." if "429" in last_error else "",
             "error": last_error,
+        }
+
+    def literature_search(self, query: str, max_results: int = 8, sources: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Search multiple scholarly/web sources and return a deduplicated paper list."""
+        err = self._check_allowed()
+        if err:
+            return err
+        selected = sources or self._cfg.web_search_sources or ["semantic_scholar"]
+        aliases = {
+            "semantic": "semantic_scholar",
+            "semantic_scholar": "semantic_scholar",
+            "scholar": "semantic_scholar",
+            "openalex": "openalex",
+            "arxiv": "arxiv",
+            "web": "web",
+            "duckduckgo": "web",
+        }
+        ordered = []
+        for s in selected:
+            v = aliases.get(str(s).strip().lower())
+            if v and v not in ordered:
+                ordered.append(v)
+        if not ordered:
+            ordered = ["semantic_scholar"]
+
+        results_by_source = {}
+        all_papers = []
+        per_source = max(1, min(int(max_results), 20))
+        for src in ordered:
+            if src == "openalex":
+                res = self.openalex_search(query, per_source)
+            elif src == "arxiv":
+                res = self.arxiv_search(query, per_source)
+            elif src == "web":
+                res = self.web_search(query, per_source)
+                res["papers"] = self._web_results_to_papers(res)
+                res["source"] = "web"
+            else:
+                res = self.scholar_search(query, per_source)
+            results_by_source[src] = res
+            for p in res.get("papers", []) or []:
+                all_papers.append(p)
+            if len(all_papers) >= max_results:
+                break
+
+        seen = set()
+        deduped = []
+        for p in all_papers:
+            key = (p.get("doi") or p.get("url") or p.get("title") or "").strip().lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(p)
+            if len(deduped) >= max_results:
+                break
+        warnings = [r.get("warning") for r in results_by_source.values() if r.get("warning")]
+        errors = {k: v.get("error") for k, v in results_by_source.items() if v.get("error")}
+        return {
+            "query": query,
+            "papers": deduped,
+            "count": len(deduped),
+            "source": "multi",
+            "sources": ordered,
+            "results_by_source": results_by_source,
+            "warning": " | ".join(warnings),
+            "errors": errors,
         }
 
     def download_pdf(self, url: str, filename: Optional[str] = None) -> Dict[str, Any]:
@@ -2533,7 +2704,14 @@ class ToolRegistry:
         CapabilitySpec(
             name="web_search",
             role="Online web and scholarly literature discovery.",
-            methods=["web_search(query,max_results)", "scholar_search(query,max_results)", "download_pdf(url,filename)"],
+            methods=[
+                "literature_search(query,max_results,sources)",
+                "openalex_search(query,max_results)",
+                "scholar_search(query,max_results)",
+                "arxiv_search(query,max_results)",
+                "web_search(query,max_results)",
+                "download_pdf(url,filename)",
+            ],
             priority=8,
             gated_by="allow_web_search",
             use_when="Local/RAG evidence is insufficient or current literature is needed.",
@@ -3360,6 +3538,8 @@ class LoopController:
             "table": "image_analysis",
             "web": "web_search",
             "scholar": "web_search",
+            "openalex": "web_search",
+            "arxiv": "web_search",
             "file": "local_file_search",
             "local": "local_file_search",
             "code": "code_engine",
@@ -3374,7 +3554,7 @@ class LoopController:
             "literature_library": ("search_papers", {"query": question}),
             "document_analysis": ("analyze_document", {"path": ".", "question": question, "max_chars": 8000}),
             "image_analysis": ("analyze_pdf_visuals", {"path": ".", "question": question, "max_pages": 4}),
-            "web_search": ("scholar_search", {"query": question, "max_results": 5}),
+            "web_search": ("literature_search", {"query": question, "max_results": 5, "sources": self._cfg.web_search_sources}),
             "local_file_search": ("search_files", {"query": question, "root": "."}),
             "code_engine": ("run_task", {"prompt": question, "data_hint": ""}),
             "seismo_data": ("read_catalog", {"path": "."}),
@@ -3461,8 +3641,8 @@ class LoopController:
         if self._cfg.allow_web_search and "web_search" not in recent:
             return {
                 "tool": "web_search",
-                "method": "scholar_search",
-                "args": {"query": question, "max_results": 5},
+                "method": "literature_search",
+                "args": {"query": question, "max_results": 5, "sources": self._cfg.web_search_sources},
                 "purpose": "Search external scholarly sources because local selection failed.",
                 "reason": "Rule fallback after malformed selector output and insufficient local evidence.",
                 "done": False,

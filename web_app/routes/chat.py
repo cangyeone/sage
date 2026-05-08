@@ -786,7 +786,11 @@ def evidence_geo_agent():
             query = " ".join(query_bits)
             progress_cb({"phase": "web_search", "message": f"Searching online literature: {query[:120]}"})
             tool = WebSearchTool(cfg)
-            result = tool.scholar_search(query=query, max_results=int(data.get("web_max_results", 8)))
+            result = tool.literature_search(
+                query=query,
+                max_results=int(data.get("web_max_results", 8)),
+                sources=data.get("web_search_sources") or ["semantic_scholar"],
+            )
             if result.get("warning"):
                 progress_cb({"phase": "web_search", "message": result["warning"]})
             papers = result.get("papers", [])
@@ -854,6 +858,7 @@ def evidence_geo_agent():
                 use_local_files=bool(data.get("use_local_files", True)),
                 produce_latex=bool(data.get("produce_latex", True)),
                 use_code_engine=bool(data.get("use_code_engine", True)),
+                web_search_sources=data.get("web_search_sources") or ["openalex", "semantic_scholar"],
                 max_iterations=int(data.get("max_iterations", 3)),
                 max_tool_calls_per_iter=int(data.get("max_tool_calls_per_iter", 8)),
                 rag_top_k=int(data.get("rag_top_k", 8)),
@@ -1027,10 +1032,16 @@ def evidence_geo_agent_web_search():
         cfg  = AgentConfig(allow_web_search=True)
         tool = WebSearchTool(cfg)
 
-        if search_type == 'scholar':
-            result = tool.dispatch('scholar_search', {'query': query, 'max_results': max_results})
+        if search_type in ('literature', 'multi'):
+            result = tool.literature_search(query, max_results=max_results, sources=data.get('sources') or ['semantic_scholar'])
+        elif search_type == 'openalex':
+            result = tool.openalex_search(query, max_results=max_results)
+        elif search_type == 'arxiv':
+            result = tool.arxiv_search(query, max_results=max_results)
+        elif search_type in ('scholar', 'semantic_scholar'):
+            result = tool.scholar_search(query, max_results=max_results)
         else:
-            result = tool.dispatch('web_search', {'query': query, 'max_results': max_results})
+            result = tool.web_search(query, max_results=max_results)
 
         if 'error' in result:
             return jsonify({"ok": False, "error": result['error']})
@@ -1424,6 +1435,41 @@ def chat_rag():
 
 # ── 流式 RAG 对话 ─────────────────────────────────────────────────────────────
 
+def _chat_web_search_context(data: dict, query: str):
+    """Optional chat-side web/literature search context."""
+    if not data.get("enable_web_search"):
+        return "", []
+    try:
+        from sage_agents.evidence_driven_geo_agent import AgentConfig, WebSearchTool
+        sources = data.get("web_search_sources") or ["openalex", "semantic_scholar"]
+        tool = WebSearchTool(AgentConfig(allow_web_search=True, web_search_sources=sources))
+        result = tool.literature_search(query=query, max_results=int(data.get("web_max_results", 6)), sources=sources)
+        papers = result.get("papers", []) or []
+        if not papers:
+            return "", []
+        lines = [
+            "Use the following online literature/search records only when directly relevant. "
+            "Cite records by source/title/URL; do not invent claims beyond the abstracts/snippets."
+        ]
+        refs = []
+        for i, p in enumerate(papers[:8], 1):
+            title = p.get("title") or "Untitled"
+            authors = ", ".join(p.get("authors", []) or [])
+            year = p.get("year") or ""
+            url = p.get("url") or p.get("pdf_url") or ""
+            doi = p.get("doi") or ""
+            abstract = (p.get("abstract") or p.get("snippet") or "")[:900]
+            src = p.get("source") or "web"
+            lines.append(
+                f"[Web {i} | {src}] {title}\n"
+                f"Authors: {authors}\nYear: {year}\nDOI: {doi}\nURL: {url}\n"
+                f"Abstract/snippet: {abstract}\n"
+            )
+            refs.append(f"{src}: {title}" + (f" ({url})" if url else ""))
+        return "\n".join(lines), refs
+    except Exception as exc:
+        return f"Web search failed: {exc}", []
+
 def _build_rag_messages(data: dict):
     """
     Shared helper: build (messages, sources, llm_cfg) for both /api/chat/rag
@@ -1467,6 +1513,11 @@ def _build_rag_messages(data: dict):
     project_context = (data.get("project_context") or "").strip()
     if project_context:
         context_parts.append("===== 项目共享上下文 =====\n" + project_context[:4000])
+
+    web_ctx, web_sources = _chat_web_search_context(data, user_msg)
+    if web_ctx:
+        context_parts.append("===== Web literature/search context =====\n" + web_ctx)
+    sources.extend(web_sources)
 
     try:
         kb = get_kb_instance()
@@ -1708,12 +1759,16 @@ def _build_plain_messages(data: dict):
         if ws_ctx:
             system += '\n\n===== 本地文件系统 =====\n' + ws_ctx
 
+    web_ctx, web_sources = _chat_web_search_context(data, user_msg)
+    if web_ctx:
+        system += '\n\n===== Web literature/search context =====\n' + web_ctx
+
     messages = [{'role': 'system', 'content': system},
                 {'role': 'user',   'content': user_msg}]
     history = data.get('history', [])
     if history:
         messages = [messages[0]] + history[-6:] + [messages[-1]]
-    return messages, [], llm_cfg
+    return messages, web_sources, llm_cfg
 
 
 @bp.route('/api/chat/submit', methods=['POST'])

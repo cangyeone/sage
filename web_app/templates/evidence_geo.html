@@ -339,6 +339,13 @@ body{background:var(--bg);height:100vh;display:flex;flex-direction:column;overfl
            background:#fff8e1;border-radius:6px;padding:.2rem .5rem;line-height:1.4;" data-i18n="web_hint">
         将先联网检索文献摘要，再结合本地数据自主编程分析和推理
       </div>
+      <div id="webSourceOptions" style="display:none;margin-top:.45rem;font-size:.76rem;">
+        <div class="form-label-sm" data-i18n="web_sources">检索源</div>
+        <label class="me-2"><input class="form-check-input web-src" type="checkbox" value="openalex" checked> OpenAlex</label>
+        <label class="me-2"><input class="form-check-input web-src" type="checkbox" value="semantic_scholar" checked> Semantic Scholar</label>
+        <label class="me-2"><input class="form-check-input web-src" type="checkbox" value="arxiv"> arXiv</label>
+        <label><input class="form-check-input web-src" type="checkbox" value="web"> Web</label>
+      </div>
     </div>
 
     <!-- File uploads -->
@@ -536,6 +543,11 @@ function toggleWebSearch() {
   const on = document.getElementById('togWebSearch').checked;
   document.getElementById('webSearchHint').style.display   = on ? 'block' : 'none';
   document.getElementById('webSearchSection').style.display = on ? 'block' : 'none';
+  document.getElementById('webSourceOptions').style.display = on ? 'block' : 'none';
+}
+
+function selectedWebSources() {
+  return Array.from(document.querySelectorAll('.web-src:checked')).map(x => x.value);
 }
 
 // ── Quick-fill examples ────────────────────────────────────────────────────
@@ -607,6 +619,7 @@ function collectInterpState() {
       local_files: !!document.getElementById('togLocalFiles')?.checked,
       multimodal: !!document.getElementById('togMultimodal')?.checked,
       web_search: !!document.getElementById('togWebSearch')?.checked,
+      web_sources: selectedWebSources(),
     },
     selected_project_ids: getSelectedProjectIds(),
     selected_geo_project_ids: getSelectedGeoProjectIds(),
@@ -635,6 +648,8 @@ function applyInterpState(state={}) {
   setChk('togLocalFiles', caps.local_files, true);
   setChk('togMultimodal', caps.multimodal, false);
   setChk('togWebSearch', caps.web_search, false);
+  const srcs = caps.web_sources || ['openalex', 'semantic_scholar'];
+  document.querySelectorAll('.web-src').forEach(el => { el.checked = srcs.includes(el.value); });
   toggleWebSearch();
   uploadedFiles = Array.isArray(state.uploaded_files) ? state.uploaded_files : [];
   lastResult = state.last_result || null;
@@ -830,7 +845,7 @@ async function doWebSearch() {
     const r = await fetch('/api/evidence_geo_agent/web_search', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({query: q, search_type: 'scholar'}),
+      body: JSON.stringify({query: q, search_type: 'literature', sources: selectedWebSources()}),
     });
     const d = await r.json();
     if (d.ok && d.results && d.results.length) {
@@ -841,7 +856,7 @@ async function doWebSearch() {
                        : (item.title || '无标题')}
           </div>
           <div class="sr-snippet">${(item.snippet||item.abstract||'').slice(0,200)}${(item.snippet||item.abstract||'').length>200?'…':''}</div>
-          <div class="sr-meta">${item.authors||''} ${item.year?'('+item.year+')':''} ${item.venue||''}</div>
+          <div class="sr-meta">${item.source ? '['+item.source+'] ' : ''}${Array.isArray(item.authors) ? item.authors.join(', ') : (item.authors||'')} ${item.year?'('+item.year+')':''} ${item.venue||''}</div>
         </div>`).join('');
     } else {
       el.innerHTML = `<div style="font-size:.78rem;color:#aaa;padding:.3rem 0">无结果${d.error?'：'+d.error:''}</div>`;
@@ -905,6 +920,7 @@ async function runAgent() {
     allow_python:         document.getElementById('togPython').checked,
     allow_shell:          false,
     allow_web_search:     document.getElementById('togWebSearch').checked,
+    web_search_sources:   selectedWebSources(),
     web_max_results:      8,
     use_multimodal:       document.getElementById('togMultimodal').checked,
     use_rag:              document.getElementById('togRag').checked,
@@ -1450,7 +1466,7 @@ const I18N_GEO = {
     sb_loop:'循环参数', lbl_max_iter:'最大迭代次数', lbl_max_tools:'每次最大工具调用', lbl_score:'Score 阈值',
     sb_caps:'能力开关',
     tog_python:'🐍 Python 代码执行', tog_rag:'📚 RAG 知识库',
-    tog_local:'📁 本地文件访问', tog_multimodal:'🖼 多模态图像分析', tog_web:'🌐 Web 文献检索',
+    tog_local:'📁 本地文件访问', tog_multimodal:'🖼 多模态图像分析', tog_web:'🌐 Web 文献检索', web_sources:'检索源',
     web_hint:'将先联网检索文献摘要，再结合本地数据自主编程分析和推理',
     sb_upload:'上传研究文件',
     uz_text:'拖拽或点击上传<br><small style="font-size:.7rem;color:#bbb">PDF · PNG/JPG · CSV</small>',
@@ -1493,7 +1509,7 @@ const I18N_GEO = {
     sb_loop:'Loop Parameters', lbl_max_iter:'Max Iterations', lbl_max_tools:'Max Tool Calls/Iter', lbl_score:'Score Threshold',
     sb_caps:'Capabilities',
     tog_python:'🐍 Python Execution', tog_rag:'📚 RAG Knowledge Base',
-    tog_local:'📁 Local File Access', tog_multimodal:'🖼 Multimodal Analysis', tog_web:'🌐 Web Literature Search',
+    tog_local:'📁 Local File Access', tog_multimodal:'🖼 Multimodal Analysis', tog_web:'🌐 Web Literature Search', web_sources:'Search sources',
     web_hint:'Search online literature first, then combine it with autonomous data coding and reasoning',
     sb_upload:'Upload Research Files',
     uz_text:'Drag & drop or click to upload<br><small style="font-size:.7rem;color:#bbb">PDF · PNG/JPG · CSV</small>',

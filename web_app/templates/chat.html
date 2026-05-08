@@ -391,6 +391,7 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
         <button class="qbtn" id="qbtn_summary" onclick="sendQuick(T('qbtn_summary_msg'))">📖 <span data-i18n="qbtn_summary">总结文献</span></button>
         <button class="qbtn" id="qbtn_formula" onclick="sendQuick(T('qbtn_formula_msg'))">🔢 <span data-i18n="qbtn_formula">解读公式</span></button>
         <button class="qbtn" id="qbtn_pick" onclick="sendQuick(T('qbtn_pick_msg'))">🔍 <span data-i18n="qbtn_pick">拾取震相</span></button>
+        <button class="qbtn" id="webSearchPill" onclick="toggleChatWebSearch()">🌐 <span id="webSearchLabel" data-i18n="web_off">联网：关</span></button>
         <div class="think-pill" id="thinkPill" onclick="toggleThink()" data-i18n-title="think_tip" title="启用思考模式：模型会先推理再回答" style="margin-left:auto">
           <span class="pill-dot"></span>
           <span id="thinkPillLabel">🧠 <span data-i18n="think_off">思考：关</span></span>
@@ -399,6 +400,13 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
           <i class="bi bi-cpu"></i> <span id="llmStatusText">LLM</span>
         </a>
         <button class="qbtn" onclick="clearChat()">🗑 <span data-i18n="qbtn_clear">清空</span></button>
+      </div>
+      <div id="chatWebSearchOptions" style="display:none;margin:-.25rem 0 .55rem;font-size:.78rem;color:#666;">
+        <span data-i18n="web_sources">检索源</span>：
+        <label class="me-2"><input class="form-check-input chat-web-src" type="checkbox" value="openalex" checked> OpenAlex</label>
+        <label class="me-2"><input class="form-check-input chat-web-src" type="checkbox" value="semantic_scholar" checked> Semantic Scholar</label>
+        <label class="me-2"><input class="form-check-input chat-web-src" type="checkbox" value="arxiv"> arXiv</label>
+        <label><input class="form-check-input chat-web-src" type="checkbox" value="web"> Web</label>
       </div>
       <div id="imgPreviews" class="img-preview-strip" style="display:none;"></div>
       <div class="input-row">
@@ -466,6 +474,7 @@ const I18N = {
     feat_code: '数据处理', feat_code_sub: '生成 Python 代码并执行',
     qbtn_filter: '滤波方法', qbtn_summary: '总结文献',
     qbtn_formula: '解读公式', qbtn_pick: '拾取震相', qbtn_clear: '清空',
+    web_on: '联网：开', web_off: '联网：关', web_sources: '检索源',
     attach_title: '上传 PDF', img_upload_title: '上传图片（VL 模型）', input_placeholder: '输入问题或指令…',
     think_tip: '显示或折叠模型思考过程',
     llm_tip: '查看或切换当前 LLM 后端',
@@ -524,6 +533,7 @@ const I18N = {
     feat_code: 'Data Processing', feat_code_sub: 'Generate & execute Python code',
     qbtn_filter: 'Filtering', qbtn_summary: 'Summarize paper',
     qbtn_formula: 'Explain formula', qbtn_pick: 'Phase picking', qbtn_clear: 'Clear',
+    web_on: 'Web: On', web_off: 'Web: Off', web_sources: 'Sources',
     attach_title: 'Upload PDF', img_upload_title: 'Upload image (VL model)', input_placeholder: 'Type a question or command…',
     think_tip: 'Show or collapse model reasoning',
     llm_tip: 'View or switch the current LLM backend',
@@ -576,6 +586,7 @@ function applyLang() {
   try { refreshSessionSidebar(); } catch(e) {}
   try { loadKbStatus(); } catch(e) {}
   try { _applyThinkPill(); } catch(e) {}
+  try { _applyChatWebSearchPill(); } catch(e) {}
   try { loadLlmStatus(); } catch(e) {}
 }
 
@@ -2114,6 +2125,40 @@ function _applyThinkPill() {
 
 document.addEventListener('DOMContentLoaded', _applyThinkPill);
 
+// ── Chat Web Search toggle ───────────────────────────────────────────────
+let chatWebSearchEnabled = localStorage.getItem('sage_chat_web_search') === '1';
+
+function selectedChatWebSources() {
+  const vals = Array.from(document.querySelectorAll('.chat-web-src:checked')).map(x => x.value);
+  return vals.length ? vals : ['openalex', 'semantic_scholar'];
+}
+
+function toggleChatWebSearch() {
+  chatWebSearchEnabled = !chatWebSearchEnabled;
+  localStorage.setItem('sage_chat_web_search', chatWebSearchEnabled ? '1' : '0');
+  _applyChatWebSearchPill();
+}
+
+function _applyChatWebSearchPill() {
+  const pill = document.getElementById('webSearchPill');
+  const label = document.getElementById('webSearchLabel');
+  const panel = document.getElementById('chatWebSearchOptions');
+  if (!pill || !label || !panel) return;
+  pill.classList.toggle('active', chatWebSearchEnabled);
+  label.textContent = chatWebSearchEnabled ? T('web_on') : T('web_off');
+  panel.style.display = chatWebSearchEnabled ? 'block' : 'none';
+}
+
+function chatWebSearchPayload() {
+  return {
+    enable_web_search: chatWebSearchEnabled,
+    web_search_sources: selectedChatWebSources(),
+    web_max_results: 6,
+  };
+}
+
+document.addEventListener('DOMContentLoaded', _applyChatWebSearchPill);
+
 // ── Think parser (state machine for <think>…</think> tags) ────────────────
 class ThinkParser {
   constructor() {
@@ -2584,6 +2629,7 @@ async function sendRag(text) {
       project_id: activeProjectId,
       project_context: projectContextText(),
       enable_think: thinkEnabled,
+      ...chatWebSearchPayload(),
     };
     const jobId = await startRecoverableChatJob(body);
     const ragResult = await pollChatJobToBubble(jobId, {session_id: SESSION_ID});
@@ -2659,6 +2705,7 @@ async function sendChainRagCode(originalText) {
       mode: 'paper_read', history: chatHistory.slice(-8),
       workspace: workspacePayloadValue(), project_id: activeProjectId,
       project_context: projectContextText(), enable_think: thinkEnabled,
+      ...chatWebSearchPayload(),
     };
     const jobId = await startRecoverableChatJob(body);
     const {answer: _ra, sources: _rs} = await pollChatJobToBubble(jobId, {session_id: SESSION_ID});
@@ -2731,6 +2778,7 @@ async function sendNormal(text, images=[]) {
       project_id: activeProjectId,
       project_context: projectContextText(),
       enable_think: thinkEnabled,
+      ...chatWebSearchPayload(),
     };
     if (images && images.length > 0) body.images = images;
     const jobId = await startRecoverableChatJob(body);
