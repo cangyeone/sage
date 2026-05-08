@@ -78,8 +78,19 @@ _DOC_SKILL_GENERATOR = "seismo_skill_docs_builder"
 _SKILL_BUILDER_CACHE_DIR = _KB_DIR / "skill_builder_cache"
 _MARKDOWN_NORMALIZER_VERSION = "v2"
 
-# 每个项目最多索引多少文件（优先高价值格式，避免处理海量叶子页）
-MAX_FILES_PER_PROJECT = 120
+def _env_optional_int(name: str) -> Optional[int]:
+    try:
+        value = int(os.environ.get(name, "").strip())
+        return value if value > 0 else None
+    except Exception:
+        return None
+
+
+# 默认不限制文件数。GMT/ObsPy 这类手册通常有数百个页面，扫描阶段不应先砍掉文档；
+# 如需临时限流，可设置 SEISMICX_MAX_RAG_FILES_PER_PROJECT / SEISMICX_MAX_SKILL_FILES_PER_PROJECT。
+MAX_RAG_FILES_PER_PROJECT = _env_optional_int("SEISMICX_MAX_RAG_FILES_PER_PROJECT")
+MAX_SKILL_FILES_PER_PROJECT = _env_optional_int("SEISMICX_MAX_SKILL_FILES_PER_PROJECT")
+MAX_FILES_PER_PROJECT = MAX_RAG_FILES_PER_PROJECT
 
 
 # ── 文件优先级与智能选取 ──────────────────────────────────────────────────────
@@ -114,7 +125,7 @@ def _file_priority(path: Path) -> Tuple[int, int]:
     return (9, depth)
 
 
-def _select_key_files(files: List[Path], max_count: int = MAX_FILES_PER_PROJECT) -> List[Path]:
+def _select_key_files(files: List[Path], max_count: Optional[int] = MAX_RAG_FILES_PER_PROJECT) -> List[Path]:
     """
     从文件列表中智能选取最有价值的文件，最多 max_count 个。
 
@@ -127,12 +138,12 @@ def _select_key_files(files: List[Path], max_count: int = MAX_FILES_PER_PROJECT)
     return _select_link_aware_files(files, max_count=max_count)
 
 
-def _select_skill_builder_files(files: List[Path], max_count: int = MAX_FILES_PER_PROJECT) -> List[Path]:
+def _select_skill_builder_files(files: List[Path], max_count: Optional[int] = MAX_SKILL_FILES_PER_PROJECT) -> List[Path]:
     """Select a balanced directory digest for LLM skill synthesis."""
     return _select_link_aware_files(files, max_count=max_count)
 
 
-def _select_link_aware_files(files: List[Path], max_count: int = MAX_FILES_PER_PROJECT) -> List[Path]:
+def _select_link_aware_files(files: List[Path], max_count: Optional[int] = MAX_RAG_FILES_PER_PROJECT) -> List[Path]:
     """
     Select files for RAG/Skill Builder while preserving documentation links.
 
@@ -141,8 +152,9 @@ def _select_link_aware_files(files: List[Path], max_count: int = MAX_FILES_PER_P
     a docs tree from degenerating into only index pages.
     """
     sorted_files = sorted(files, key=_file_priority)
-    if len(sorted_files) <= max_count:
-        return sorted_files
+    if not sorted_files:
+        return []
+    effective_max = max_count if max_count and max_count > 0 else len(sorted_files)
 
     try:
         source_root = Path(os.path.commonpath([str(p.parent) for p in sorted_files])).resolve()
@@ -153,7 +165,7 @@ def _select_link_aware_files(files: List[Path], max_count: int = MAX_FILES_PER_P
     seen: set[str] = set()
     file_set = {p.resolve() for p in sorted_files}
     entry_names = {"readme.md", "readme.rst", "readme.txt", "index.md", "index.rst", "readme"}
-    entry_budget = max(8, max_count // 4)
+    entry_budget = max(8, effective_max // 4)
     entry_added = 0
 
     def add(path: Path):
@@ -165,7 +177,7 @@ def _select_link_aware_files(files: List[Path], max_count: int = MAX_FILES_PER_P
         if path.name.lower() in entry_names and entry_added >= entry_budget:
             return
         key = str(path)
-        if key not in seen and len(selected) < max_count:
+        if key not in seen and len(selected) < effective_max:
             selected.append(path)
             seen.add(key)
             if path.name.lower() in entry_names:
@@ -180,7 +192,7 @@ def _select_link_aware_files(files: List[Path], max_count: int = MAX_FILES_PER_P
 
     def drain_queue(max_steps: int):
         steps = 0
-        while queue and len(selected) < max_count and steps < max_steps:
+        while queue and len(selected) < effective_max and steps < max_steps:
             steps += 1
             cur = queue.pop(0)
             cur_key = str(cur.resolve())
@@ -195,12 +207,12 @@ def _select_link_aware_files(files: List[Path], max_count: int = MAX_FILES_PER_P
                 add(ref)
                 if len(selected) > before and ref.suffix.lower() in {".md", ".rst", ".txt", ".html", ".htm"}:
                     queue.append(ref)
-                if len(selected) >= max_count:
+                if len(selected) >= effective_max:
                     break
 
     for entry in entry_files:
         add(entry)
-        if len(selected) >= max_count:
+        if len(selected) >= effective_max:
             break
         text = _read_source_text(entry, max_chars=50000)
         direct_refs = _extract_referenced_source_paths(entry, source_root, text)
@@ -211,11 +223,11 @@ def _select_link_aware_files(files: List[Path], max_count: int = MAX_FILES_PER_P
             add(ref)
             if len(selected) > before and ref.suffix.lower() in {".md", ".rst", ".txt", ".html", ".htm"}:
                 queue.append(ref)
-            if len(selected) >= max_count:
+            if len(selected) >= effective_max:
                 break
         drain_queue(max_steps=8)
 
-    drain_queue(max_steps=max_count)
+    drain_queue(max_steps=effective_max)
 
     # Keep representative pages from every documentation sub-area instead of
     # letting one large directory consume the whole context budget.
@@ -819,15 +831,19 @@ class KnowledgeIndexer:
             source_root = proj_path.parent if is_single_file else proj_path
             proj_name = proj_path.stem if is_single_file else proj_path.name
             _log(f"\n[{idx}/{len(projects)}] {proj_name}")
-            files = [proj_path] if is_single_file else _select_skill_builder_files(self._iter_skill_source_files(proj_path))
+            all_source_files = [proj_path] if is_single_file else self._iter_skill_source_files(proj_path)
+            files = [proj_path] if is_single_file else _select_skill_builder_files(all_source_files)
             if not files:
                 result.skipped.append(proj_name)
                 _log("   ⚠ 未发现支持的文档文件，跳过。")
                 continue
 
             docs = []
-            max_docs = 1 if is_single_file else min(len(files), MAX_FILES_PER_PROJECT)
-            _log(f"   📚 收集目录证据：{max_docs} 个候选文件")
+            max_docs = len(files)
+            if is_single_file:
+                _log("   📚 收集目录证据：1 个文件")
+            else:
+                _log(f"   📚 收集目录证据：选择 {max_docs}/{len(all_source_files)} 个候选文件")
             for doc_i, path in enumerate(files[:max_docs], 1):
                 if stop_event and stop_event.is_set():
                     result.interrupted = True
@@ -1901,6 +1917,11 @@ def _markdown_cache_file(path: Path, text: str) -> Path:
 
 def _llm_hierarchical_skill_plan(proj_name: str, docs: List[dict]) -> dict:
     """Skill Builder Agent: plan, design, generate, and self-check a hierarchical skill package."""
+    if len(docs) > 80 and os.environ.get("SEISMICX_SKILL_BUILDER_MODE", "map_reduce") != "single":
+        mapped = _llm_map_reduce_skill_plan(proj_name, docs)
+        if _normalize_llm_units(_extract_subskill_units(mapped)):
+            return mapped
+
     digest = _doc_digest_for_llm(docs)
     if not digest:
         return {}
@@ -1995,6 +2016,135 @@ SOURCE_EVIDENCE:
             return {"_error": "LLM 返回的 subskills 缺少 title_zh/title 或 content", "_raw_preview": str(raw)[:800]}
         plan["subskills"] = cleaned_refs
         return plan
+    except Exception as exc:
+        return {"_error": str(exc)}
+
+
+def _llm_map_reduce_skill_plan(proj_name: str, docs: List[dict]) -> dict:
+    """
+    Build a skill plan with small-model-friendly map-reduce calls.
+
+    Full directories still enter the RAG/indexing pipeline, but the LLM planner
+    only sees compact evidence batches and merges capability-level subskills.
+    """
+    try:
+        evidence_limit = int(os.environ.get("SEISMICX_SKILL_BUILDER_EVIDENCE_DOCS", "96"))
+    except Exception:
+        evidence_limit = 96
+    try:
+        batch_size = int(os.environ.get("SEISMICX_SKILL_BUILDER_BATCH_SIZE", "8"))
+    except Exception:
+        batch_size = 8
+    evidence_limit = max(16, evidence_limit)
+    batch_size = max(4, min(16, batch_size))
+
+    ranked = _rank_docs_for_skill_digest(docs)[:evidence_limit]
+    all_units: List[dict] = []
+    failed = 0
+    for start in range(0, len(ranked), batch_size):
+        batch = ranked[start:start + batch_size]
+        batch_plan = _llm_subskills_from_doc_batch(
+            proj_name=proj_name,
+            docs=batch,
+            batch_no=start // batch_size + 1,
+            batch_total=(len(ranked) + batch_size - 1) // batch_size,
+        )
+        units = _normalize_llm_units(_extract_subskill_units(batch_plan))
+        if units:
+            all_units.extend(units)
+        else:
+            failed += 1
+
+    merged_units = _filter_usable_subskills(_merge_similar_subskills(all_units))
+    if not merged_units:
+        return {
+            "_error": f"map-reduce 未生成有效子技能；失败批次 {failed}",
+            "subskills": [],
+        }
+
+    keywords = _extract_keywords(proj_name, [str(d.get("text", ""))[:1000] for d in ranked[:8]])
+    return {
+        "display_name": f"{proj_name} 技能包",
+        "display_name_en": f"{proj_name} skill package",
+        "description": "基于完整文档目录索引和分批证据抽取整理的可复用技能包。",
+        "description_en": "Reusable skill package built from indexed documentation with batched evidence extraction.",
+        "keywords": keywords,
+        "workflow": [
+            "先读取 SKILL.md 判断任务范围",
+            "打开 references/outline.md 定位相关子技能",
+            "根据 subskills/*.md 中的命令、参数、示例和验证步骤完成任务",
+            "回答时区分文档已说明和文档未说明，避免编造",
+        ],
+        "validation": [
+            "检查使用的命令、参数或 API 是否能在子技能来源依据中找到",
+            "对代码任务运行最小示例或语法检查",
+            "若证据不足，明确说明缺失信息",
+        ],
+        "coverage_audit": {
+            "covered_capabilities": [str(u.get("title_zh") or u.get("title") or "") for u in merged_units[:24]],
+            "missing_or_weak": [
+                f"完整目录共有 {len(docs)} 个文档项；本轮 LLM 编排使用排序后的 {len(ranked)} 个代表证据文档。",
+                "其余文档仍保留在索引/清单中，可通过 RAG 或后续增量构建补充。",
+            ],
+            "suggested_tests": [
+                "用 3-5 个常见任务查询检查能否命中对应子技能",
+                "抽查命令型子技能中的示例是否能运行或至少通过语法检查",
+            ],
+        },
+        "subskills": merged_units,
+    }
+
+
+def _llm_subskills_from_doc_batch(proj_name: str, docs: List[dict], batch_no: int, batch_total: int) -> dict:
+    digest = _doc_digest_for_llm(docs, max_chars=16000)
+    if not digest:
+        return {}
+    prompt = f"""你是 Skill Builder Agent 的分批证据抽取器。请从当前文档批次中抽取可复用 SKILL 子技能。
+
+要求：
+1. 按功能能力合并，不要按文件名、章节名、index 页机械拆分。
+2. 只使用本批次证据，不能编造命令、参数、结果或案例。
+3. 输出 RAW TEXT，不要 JSON。
+4. 每个子技能必须有可执行步骤、命令/API、关键参数、验证方法和来源依据。
+5. 如果多个片段属于同一任务，合并成一个子技能。
+
+RAW TEXT 格式：
+=== SUBSKILL ===
+SLUG: english_slug
+TITLE_ZH: 中文功能标题
+TITLE_EN: English title
+PURPOSE: 这个子技能解决什么问题
+CONTENT:
+整理后的中文技能正文，包含步骤、示例和说明。
+COMMANDS:
+- 命令或 API
+PARAMETERS:
+- 参数说明
+WORKFLOW:
+- 步骤
+VALIDATION:
+- 检查方法
+SOURCE_EVIDENCE:
+- 文件名或章节线索
+=== END_SUBSKILL ===
+
+项目：{proj_name}
+批次：{batch_no}/{batch_total}
+
+文档证据：
+{digest}
+"""
+    try:
+        _web = Path(__file__).parent.parent / "web_app"
+        if str(_web) not in sys.path:
+            sys.path.insert(0, str(_web))
+        from helpers import get_llm_config, llm_call  # type: ignore
+        raw = llm_call(
+            [{"role": "user", "content": prompt}],
+            get_llm_config(),
+            max_tokens=4500,
+        )
+        return _plan_from_llm_text(raw)
     except Exception as exc:
         return {"_error": str(exc)}
 
