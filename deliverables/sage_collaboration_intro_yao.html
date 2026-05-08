@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SAGE / SeismicX 合作介绍</title>
+  <style>
+    :root {
+      --ink: #182033;
+      --muted: #5f6678;
+      --line: #d9deea;
+      --bg: #f6f8fc;
+      --panel: #ffffff;
+      --blue: #4767d8;
+      --violet: #7b4ac9;
+      --green: #22885b;
+      --amber: #b66a00;
+      --red: #b74141;
+      --radius: 8px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--bg);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "Microsoft YaHei", Arial, sans-serif;
+      line-height: 1.55;
+    }
+    a { color: var(--blue); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .topbar {
+      height: 56px;
+      padding: 0 34px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255,255,255,.92);
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      backdrop-filter: blur(8px);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 800;
+      color: var(--blue);
+      letter-spacing: 0;
+    }
+    .brand img { width: 30px; height: 30px; object-fit: contain; }
+    .nav {
+      display: flex;
+      gap: 18px;
+      font-size: 14px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .hero {
+      background:
+        linear-gradient(90deg, rgba(71,103,216,.95), rgba(123,74,201,.9)),
+        url("../logo.png");
+      background-size: cover, 220px;
+      background-repeat: no-repeat;
+      background-position: center, calc(100% - 48px) center;
+      color: white;
+      padding: 58px 34px 66px;
+    }
+    .hero-inner, main {
+      max-width: 1120px;
+      margin: 0 auto;
+    }
+    .eyebrow {
+      font-size: 14px;
+      font-weight: 700;
+      opacity: .85;
+      margin-bottom: 14px;
+    }
+    h1 {
+      margin: 0;
+      max-width: 840px;
+      font-size: clamp(32px, 4vw, 52px);
+      line-height: 1.12;
+      letter-spacing: 0;
+    }
+    .lead {
+      max-width: 830px;
+      margin: 22px 0 0;
+      font-size: 19px;
+      opacity: .92;
+    }
+    .hero-actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 28px;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 40px;
+      padding: 8px 14px;
+      border-radius: 6px;
+      border: 1px solid rgba(255,255,255,.5);
+      background: rgba(255,255,255,.15);
+      color: white;
+      font-weight: 700;
+      font-size: 14px;
+    }
+    .btn.primary {
+      background: white;
+      color: var(--blue);
+      border-color: white;
+    }
+    main { padding: 34px 34px 70px; }
+    section {
+      margin-top: 28px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 28px;
+      box-shadow: 0 10px 26px rgba(20,30,60,.05);
+    }
+    h2 {
+      margin: 0 0 14px;
+      font-size: 24px;
+      letter-spacing: 0;
+    }
+    h3 {
+      margin: 0 0 8px;
+      font-size: 17px;
+      letter-spacing: 0;
+    }
+    p { margin: 0 0 12px; }
+    .muted { color: var(--muted); }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 18px;
+    }
+    .two-col {
+      display: grid;
+      grid-template-columns: 1.1fr .9fr;
+      gap: 18px;
+      align-items: start;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 16px;
+      background: #fbfcff;
+    }
+    .tag {
+      display: inline-block;
+      margin: 0 6px 8px 0;
+      padding: 3px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: white;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .tag.green { color: var(--green); border-color: #b8dec9; background: #eef9f3; }
+    .tag.amber { color: var(--amber); border-color: #edd2a4; background: #fff8ea; }
+    .tag.blue { color: var(--blue); border-color: #bfcbff; background: #eef2ff; }
+    .pipeline {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 18px;
+    }
+    .step {
+      min-height: 126px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 14px;
+      background: white;
+      position: relative;
+    }
+    .step::after {
+      content: "";
+      position: absolute;
+      right: -8px;
+      top: 50%;
+      width: 14px;
+      height: 1px;
+      background: var(--line);
+    }
+    .step:last-child::after { display: none; }
+    .num {
+      display: inline-flex;
+      width: 26px;
+      height: 26px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      background: #eef2ff;
+      color: var(--blue);
+      font-weight: 800;
+      font-size: 13px;
+      margin-bottom: 10px;
+    }
+    .mini {
+      font-size: 13px;
+      color: var(--muted);
+      margin: 0;
+    }
+    .quote {
+      border-left: 4px solid var(--blue);
+      padding: 12px 16px;
+      background: #f2f5ff;
+      border-radius: 0 8px 8px 0;
+      margin-top: 14px;
+      color: #303a55;
+    }
+    ul {
+      margin: 10px 0 0;
+      padding-left: 18px;
+    }
+    li { margin: 7px 0; }
+    .callout {
+      border: 1px solid #b8dec9;
+      background: #eef9f3;
+      color: #204f38;
+      border-radius: var(--radius);
+      padding: 16px;
+      margin-top: 16px;
+    }
+    .risk {
+      border-color: #edd2a4;
+      background: #fff8ea;
+      color: #5f3b00;
+    }
+    .footer {
+      margin-top: 28px;
+      padding: 20px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      border-top: 1px solid var(--line);
+    }
+    .source-list {
+      font-size: 13px;
+      color: var(--muted);
+    }
+    @media (max-width: 900px) {
+      .grid, .two-col, .pipeline { grid-template-columns: 1fr; }
+      .step::after { display: none; }
+      .hero { background-image: linear-gradient(90deg, rgba(71,103,216,.95), rgba(123,74,201,.9)); }
+      .topbar { padding: 0 18px; }
+      .nav { display: none; }
+      main, .hero { padding-left: 20px; padding-right: 20px; }
+      section { padding: 20px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="../logo.png" alt="SeismicX logo">
+      <span>SAGE / SeismicX</span>
+    </div>
+    <nav class="nav">
+      <span>地震学工作流</span>
+      <span>可复现执行</span>
+      <span>专家约束</span>
+    </nav>
+  </header>
+
+  <div class="hero">
+    <div class="hero-inner">
+      <div class="eyebrow">面向地球物理专家的合作介绍</div>
+      <h1>SAGE：把地震学常用数据处理流程变成可复现、可审查、可协作的研究助手</h1>
+      <p class="lead">
+        SAGE 不是要替代地球物理学家的判断，而是希望把波形读取、震相拾取、事件目录、知识检索、代码执行和结果记录连接成一套透明的科研工作流，让专家能更快检查假设、复现实验并沉淀方法规范。
+      </p>
+      <div class="hero-actions">
+        <a class="btn primary" href="#collaboration">合作切入点</a>
+        <a class="btn" href="#demo">当前原型能力</a>
+      </div>
+    </div>
+  </div>
+
+  <main>
+    <section>
+      <div class="two-col">
+        <div>
+          <h2>为什么需要地球物理专家参与</h2>
+          <p>
+            过去几年，震相拾取、事件关联、地震定位、背景噪声成像和台阵分析等工具不断成熟，但实际研究中仍常见三类问题：流程分散、参数选择依赖经验、结果质量难以系统追踪。SAGE 的目标是把这些“隐性经验”转化为可执行、可复查的工作流。
+          </p>
+          <p>
+            对非 AI 方向的地球物理专家来说，SAGE 的价值不在于“模型有多新”，而在于它能否遵守地震学逻辑、保留中间证据、暴露不确定性，并让专家能及时纠正错误。
+          </p>
+          <div class="quote">
+            合作的核心问题：如何让智能体不仅会运行工具，而且知道哪些结果在地球物理上不可信。
+          </div>
+        </div>
+        <div class="card">
+          <h3>建议合作对象画像</h3>
+          <span class="tag blue">固体地球物理</span>
+          <span class="tag blue">地震波成像</span>
+          <span class="tag blue">台阵方法</span>
+          <span class="tag blue">地球物理反演</span>
+          <p class="muted">
+            以姚华建教授这类地震学与成像专家为例，公开资料显示其研究涵盖地震波成像、背景噪声层析成像、地壳浅层及岩石圈结构、大地震破裂过程、台阵方法与地球物理反演。这类研究方向非常适合为 SAGE 提供真实问题、质量标准和 benchmark case。
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section id="demo">
+      <h2>当前原型已经具备的能力</h2>
+      <div class="grid">
+        <div class="card">
+          <h3>自然语言到可执行代码</h3>
+          <p class="muted">用户可以用中文描述任务，例如读取 SAC、绘制波形、做震相拾取或生成结果表。系统会生成代码、运行、保留 stdout、图件和下载文件。</p>
+        </div>
+        <div class="card">
+          <h3>地震学技能库</h3>
+          <p class="muted">已接入 waveform I/O、可视化、PNSN 震相拾取、事件关联、地形/地图绘制等技能说明，减少模型临时编造 API 或命令的风险。</p>
+        </div>
+        <div class="card">
+          <h3>知识库与 Web Search</h3>
+          <p class="muted">支持上传文献、构建本地知识库，并在 Config 中统一配置 arXiv、OpenAlex、Brave 等搜索源，服务 Chat 与 Geo Agent。</p>
+        </div>
+        <div class="card">
+          <h3>可复现实验记录</h3>
+          <p class="muted">每次 smoke workflow 会输出 run id、目录、CSV、图件和报告，避免后续对话丢失上下文或重新生成错误数据。</p>
+        </div>
+        <div class="card">
+          <h3>质量防线</h3>
+          <p class="muted">新增了震相拾取 guard：禁止把 STA/LTA 的第一个触发直接当成震相，避免把记录开头的滤波/taper 假触发误标为 P/S 到时。</p>
+        </div>
+        <div class="card">
+          <h3>专家可审查</h3>
+          <p class="muted">系统强调中间产物、候选触发、参数、图件和日志。专家可以检查每一步，而不是只看到一个黑箱答案。</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>SAGE 的工作流视角</h2>
+      <div class="pipeline">
+        <div class="step">
+          <div class="num">1</div>
+          <h3>问题定义</h3>
+          <p class="mini">用自然语言描述区域、数据、科学问题与期望输出。</p>
+        </div>
+        <div class="step">
+          <div class="num">2</div>
+          <h3>资料读取</h3>
+          <p class="mini">读取 SAC/MSEED/CSV/PDF，记录数据路径、采样率、台站与时间范围。</p>
+        </div>
+        <div class="step">
+          <div class="num">3</div>
+          <h3>工具执行</h3>
+          <p class="mini">调用 ObsPy、PNSN、绘图、检索、地理工具或用户已有脚本。</p>
+        </div>
+        <div class="step">
+          <div class="num">4</div>
+          <h3>结果检查</h3>
+          <p class="mini">检查空结果、假触发、缺文件、不可读图像和参数不合理。</p>
+        </div>
+        <div class="step">
+          <div class="num">5</div>
+          <h3>产物沉淀</h3>
+          <p class="mini">保存目录、图件、表格、报告和可复现 run record。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="collaboration">
+      <h2>建议与姚华建老师讨论的合作切入点</h2>
+      <div class="grid">
+        <div class="card">
+          <h3>1. 真实 benchmark case</h3>
+          <p class="muted">选择一个小而完整的地震学案例，例如一段连续波形的震相拾取与事件目录构建、一个台阵波形处理任务，或一个背景噪声资料处理流程。</p>
+        </div>
+        <div class="card">
+          <h3>2. 专家质量标准</h3>
+          <p class="muted">定义什么叫“可信结果”：到时误差、事件数量、S-P 合理性、台站覆盖、图件检查项、参数范围和失败条件。</p>
+        </div>
+        <div class="card">
+          <h3>3. 可复现教学与科研模板</h3>
+          <p class="muted">把常见研究流程整理成可复用模板，让学生先理解科学逻辑，再逐步深入每个工具和参数。</p>
+        </div>
+      </div>
+      <div class="callout">
+        <strong>第一次会议建议目标：</strong> 不讨论“大模型能不能替代科学家”，只请老师帮助判断一个具体原型是否值得继续做：选一个代表性地球物理流程，明确输入数据、期望产物和专家验收标准。
+      </div>
+    </section>
+
+    <section>
+      <h2>可以直接发给老师的简短说明</h2>
+      <p>姚老师您好，我们最近在尝试开发一个面向地震学研究流程的开源原型系统 SAGE / SeismicX。它不是单个 AI 拾取器或聊天机器人，而是希望把波形读取、震相拾取、事件目录、文献知识库、代码执行、图件和中间结果记录连接起来，形成一套可复现、可审查的地震学工作流助手。</p>
+      <p>我们特别希望请地球物理专家参与，是因为这类系统真正困难的地方不只是“会调用工具”，而是要知道哪些结果在地震学上不可信。例如近期我们就发现，简单 STA/LTA 容易把记录开头的滤波假触发误判为震相，因此系统需要专家定义质量标准、失败条件和 benchmark case。</p>
+      <p>如果您方便，我们想请您从地震波成像、台阵地震学、背景噪声或地震目录构建等方向，帮我们选择一个小而完整的真实流程，看看 SAGE 是否能把数据、代码、参数、图件和结果检查完整记录下来。我们希望先做一个能被专家审查的原型，而不是做一个不可解释的“AI 自动科研”演示。</p>
+    </section>
+
+    <section>
+      <h2>当前限制与诚实边界</h2>
+      <div class="callout risk">
+        SAGE 目前仍是研究原型：底层结果依赖数据质量、台站覆盖、工具配置和专家约束。它不能保证自动得出正确地球物理解释，也不应替代人工审稿式检查。当前最合适的定位是“把流程跑通、把证据留下、把错误暴露出来”。
+      </div>
+    </section>
+
+    <section>
+      <h2>参考信息</h2>
+      <div class="source-list">
+        <p>姚华建教授公开研究方向参考：</p>
+        <ul>
+          <li><a href="https://ess.ustc.edu.cn/2022/0929/c32208a572162/pagem.htm">中国科学技术大学地球和空间科学学院个人页</a></li>
+          <li><a href="https://yaolab.ustc.edu.cn/main.htm">Huajian Yao Lab / USTC</a></li>
+          <li><a href="https://ras.ac.uk/journals/Editorial-Boards-and-Team/prof-huajian-yao">Geophysical Journal International editorial board profile</a></li>
+        </ul>
+      </div>
+      <div class="footer">
+        版本：SAGE / SeismicX 合作介绍草案，面向地球物理专家沟通使用。
+      </div>
+    </section>
+  </main>
+</body>
+</html>
