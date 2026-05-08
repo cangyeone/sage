@@ -5,8 +5,8 @@ knowledge_indexer.py — seismo_skill/knowledge/ 目录文档索引器
 ----
 1. 扫描 seismo_skill/knowledge/ 下的文档（多层级目录，支持 PDF/DOCX/TXT/MD/RST/HTML）
 2. 维护 manifest（seismo_rag/dir_manifest.json）检测新增/修改/删除
-3. 每个顶级子文件夹作为一个"项目"，统一索引为 RAG，并由 LLM 生成一个 Skill
-4. knowledge/ 根目录下的文件按原来的逐文件方式处理
+3. 每个顶级子文件夹作为一个"项目"，统一索引为 RAG，并可生成一个文件夹型 Skill
+4. knowledge/ 根目录下的单个文件也会作为独立文档项处理，并可生成一个文件夹型 Skill
 5. 支持中断后继续（manifest 按文件粒度记录，skill 按项目粒度生成）
 
 项目文件夹约定
@@ -625,7 +625,11 @@ class KnowledgeIndexer:
         overwrite: bool = True,
     ) -> BuildResult:
         """
-        将 seismo_skill/docs/ 下的每个顶级子文件夹转换为一个文件夹型 Skill。
+        将 seismo_skill/docs/ 下的每个顶级文档项转换为一个文件夹型 Skill。
+
+        顶级文档项包括：
+        - 子文件夹：一个文件夹 = 一个 Skill，内部可包含多层文档；
+        - 根目录单文件：一个 PDF/MD/DOCX/TXT/HTML 文件 = 一个 Skill。
 
         目标格式：
             seismo_skill/skills/<skill_name>/SKILL.md
@@ -646,7 +650,14 @@ class KnowledgeIndexer:
         try:
             projects = [
                 p for p in sorted(self.knowledge_dir.iterdir())
-                if p.is_dir() and not p.name.startswith(".")
+                if (
+                    not p.name.startswith(".")
+                    and p.name != ".gitkeep"
+                    and (
+                        p.is_dir()
+                        or (p.is_file() and p.suffix.lower() in SUPPORTED_EXTS)
+                    )
+                )
             ]
         except Exception as exc:
             result.failed.append(str(exc))
@@ -654,19 +665,21 @@ class KnowledgeIndexer:
             return result
 
         if not projects:
-            _log("ℹ️  seismo_skill/docs 下暂无子文件夹，未生成文件夹型 Skill。")
+            _log("ℹ️  seismo_skill/docs 下暂无支持的文档文件或文件夹，未生成文件夹型 Skill。")
             return result
 
-        _log(f"📦 将 {len(projects)} 个文档文件夹转换为文件夹型 Skill…")
+        _log(f"📦 将 {len(projects)} 个文档项转换为文件夹型 Skill…")
         for idx, proj_path in enumerate(projects, 1):
             if stop_event and stop_event.is_set():
                 result.interrupted = True
                 _log("⚠  已中断（文件夹型 Skill 构建停止）。")
                 break
 
-            proj_name = proj_path.name
+            is_single_file = proj_path.is_file()
+            source_root = proj_path.parent if is_single_file else proj_path
+            proj_name = proj_path.stem if is_single_file else proj_path.name
             _log(f"\n[{idx}/{len(projects)}] {proj_name}")
-            files = _select_key_files(self._iter_supported_files(proj_path))
+            files = [proj_path] if is_single_file else _select_key_files(self._iter_supported_files(proj_path))
             if not files:
                 result.skipped.append(proj_name)
                 _log("   ⚠ 未发现支持的文档文件，跳过。")
@@ -674,11 +687,16 @@ class KnowledgeIndexer:
 
             docs = []
             for path in files[:40]:
-                text = _read_source_text(path, max_chars=7000)
+                # Skill generation should digest the source documents, not just
+                # keep a pointer to the original PDFs. Single-file skills get a
+                # larger text budget so a whole paper/manual can be converted
+                # into hierarchical Markdown references.
+                text_budget = 140000 if is_single_file else 70000
+                text = _read_source_text(path, max_chars=text_budget)
                 if not text.strip():
                     continue
                 docs.append({
-                    "path": str(path.relative_to(proj_path)),
+                    "path": str(path.relative_to(source_root)),
                     "abs_path": str(path),
                     "text": text,
                     "headings": _extract_headings(text),
@@ -697,15 +715,16 @@ class KnowledgeIndexer:
                 target = _resolve_generated_skill_target(skill_name, overwrite=overwrite)
                 final_name = target.name
                 spec["name"] = final_name
-                self._write_folder_skill(target, proj_name, proj_path, files, docs, spec, _log)
+                self._write_folder_skill(target, proj_name, source_root, files, docs, spec, _log, use_llm=use_llm)
                 self._proj_manifest[proj_name] = {
                     "proj_name": proj_name,
                     "skill_name": final_name,
                     "skill_path": str(target),
-                    "skill_kind": "folder",
+                    "skill_kind": "single_file" if is_single_file else "folder",
                     "skill_location": "builtin",
                     "generated_by": _DOC_SKILL_GENERATOR,
                     "generated_at": datetime.now().isoformat(timespec="seconds"),
+                    "source_path": str(proj_path),
                 }
                 self._save_proj_manifest()
                 result.skills_generated.append(final_name)
@@ -727,41 +746,76 @@ class KnowledgeIndexer:
         docs: List[dict],
         spec: dict,
         log: Callable[[str], None],
+        use_llm: bool = True,
     ) -> None:
         if target.exists():
             shutil.rmtree(target)
         (target / "references").mkdir(parents=True, exist_ok=True)
+        (target / "subskills").mkdir(parents=True, exist_ok=True)
         (target / "agents").mkdir(parents=True, exist_ok=True)
 
         ref_lines = [
-            f"# Source Manifest: {proj_name}",
+            f"# 转换清单：{proj_name}",
             "",
             f"- Generated by: `{_DOC_SKILL_GENERATOR}`",
-            f"- Source folder: `{proj_path}`",
+            f"- Source root: `{proj_path}`",
             f"- Generated at: `{datetime.now().isoformat(timespec='seconds')}`",
             f"- Selected files: {len(files)}",
             "",
-            "## Files",
+            "## 已转换文件",
         ]
         for path in files:
             rel = path.relative_to(proj_path)
             ref_lines.append(f"- `{rel}`")
         (target / "references" / "manifest.md").write_text("\n".join(ref_lines) + "\n", encoding="utf-8")
 
-        for i, doc in enumerate(docs[:30], 1):
-            ref_name = f"{i:02d}_{_safe_filename(Path(doc['path']).stem)}.md"
-            body = [
-                f"# {doc['path']}",
-                "",
-                f"Source: `{doc['abs_path']}`",
-                "",
-                "## Extracted Notes",
-                "",
-                doc["text"][:12000].strip(),
-                "",
-            ]
-            (target / "references" / ref_name).write_text("\n".join(body), encoding="utf-8")
+        skill_plan = {}
+        if use_llm:
+            log("   🧠 Skill Builder Agent：读取文档并规划层级 SKILL 结构…")
+            skill_plan = _llm_hierarchical_skill_plan(proj_name, docs) if docs else {}
+        outline_lines = [f"# {proj_name} 层级技能资料", ""]
+        ref_count = 0
 
+        planned_units = skill_plan.get("subskills") or skill_plan.get("references") or []
+        if planned_units:
+            outline_lines.append("## Skill Builder Agent 规划的子技能")
+            for unit_idx, unit in enumerate(planned_units[:80], 1):
+                ref_count += 1
+                title = str(unit.get("title_zh") or unit.get("title") or f"章节 {unit_idx}").strip()
+                slug = _ascii_slug(str(unit.get("slug") or ""), fallback="")
+                if not slug:
+                    slug = _fallback_english_slug(str(unit.get("title_en") or title), fallback=f"subskill_{unit_idx}")
+                ref_name = f"{unit_idx:02d}_{slug}.md"
+                outline_lines.append(f"- `subskills/{ref_name}`：{title}")
+                body = _render_llm_subskill(unit)
+                (target / "subskills" / ref_name).write_text(body, encoding="utf-8")
+            outline_lines.append("")
+        else:
+            log("   ⚠ LLM 规划失败，回退为机械章节拆分。")
+            for doc_idx, doc in enumerate(docs[:30], 1):
+                units = _split_document_into_skill_units(doc["path"], doc["text"])
+                outline_lines.append(f"## {doc['path']}")
+                if not units:
+                    outline_lines.append("- 未能抽取有效内容")
+                    continue
+                for unit_idx, unit in enumerate(units, 1):
+                    ref_count += 1
+                    title = str(unit.get("title_zh") or unit.get("title") or f"章节 {unit_idx}").strip()
+                    slug = _ascii_slug(str(unit.get("slug") or ""), fallback="")
+                    if not slug:
+                        slug = _fallback_english_slug(str(unit.get("title_en") or title), fallback=f"section_{unit_idx}")
+                    ref_name = f"{doc_idx:02d}_{unit_idx:02d}_{slug}.md"
+                    outline_lines.append(f"- `subskills/{ref_name}`：{title}")
+                    body = _render_converted_reference(doc["path"], unit)
+                    (target / "subskills" / ref_name).write_text(body, encoding="utf-8")
+                outline_lines.append("")
+        (target / "references" / "outline.md").write_text("\n".join(outline_lines).strip() + "\n", encoding="utf-8")
+        log(f"   🧩 已生成 {ref_count} 个子技能 Markdown 文档")
+
+        if skill_plan:
+            spec = _merge_hierarchical_plan_into_spec(spec, skill_plan)
+            audit = _skill_builder_audit(skill_plan, ref_count)
+            (target / "references" / "builder_audit.md").write_text(audit, encoding="utf-8")
         skill_md = _render_folder_skill_md(proj_name, spec, docs)
         (target / "SKILL.md").write_text(skill_md, encoding="utf-8")
         (target / "agents" / "openai.yaml").write_text(_render_agent_yaml(spec), encoding="utf-8")
@@ -864,7 +918,7 @@ class KnowledgeIndexer:
                     "indexed_files": 1 if entry.get("status") == "indexed" else 0,
                     "failed_files": 1 if entry.get("status") == "failed" else 0,
                     "status": status,
-                    "skill_name": entry.get("skill_name", ""),
+                    "skill_name": entry.get("skill_name", "") or proj_entry.get("skill_name", ""),
                     "skill_generated_at": proj_entry.get("generated_at", ""),
                     "files": [{
                         "name": item.name,
@@ -1022,6 +1076,48 @@ def _safe_filename(name: str) -> str:
     return re.sub(r"[^\w\-]+", "_", (name or "reference").strip().lower()).strip("_-")[:80] or "reference"
 
 
+def _ascii_slug(text: str, fallback: str = "subskill") -> str:
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", (text or "").strip().lower()).strip("_")
+    return (slug[:72].rstrip("_") or fallback)
+
+
+_CN_SLUG_TERMS = {
+    "线条": "line",
+    "颜色": "color",
+    "宽度": "width",
+    "样式": "style",
+    "背景": "background",
+    "填充": "fill",
+    "字体": "font",
+    "标注": "annotation",
+    "投影": "projection",
+    "区域": "region",
+    "图层": "layer",
+    "顺序": "order",
+    "色标": "colorbar",
+    "符号": "symbol",
+    "震相": "phase",
+    "拾取": "picking",
+    "波形": "waveform",
+    "滤波": "filtering",
+    "地形": "terrain",
+    "地图": "map",
+    "绘图": "plotting",
+    "控制": "control",
+}
+
+
+def _fallback_english_slug(text: str, fallback: str = "subskill") -> str:
+    raw = str(text or "")
+    parts = []
+    for cn, en in _CN_SLUG_TERMS.items():
+        if cn in raw and en not in parts:
+            parts.append(en)
+    ascii_bits = re.findall(r"[A-Za-z0-9]+", raw)
+    parts.extend(bit.lower() for bit in ascii_bits if bit.lower() not in parts)
+    return _ascii_slug("_".join(parts), fallback=fallback)
+
+
 def _strip_html(text: str) -> str:
     text = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", text)
     text = re.sub(r"(?s)<[^>]+>", " ", text)
@@ -1138,7 +1234,7 @@ def _fallback_folder_skill_spec(proj_name: str, docs: List[dict]) -> dict:
     keywords = _extract_keywords(proj_name, [d["text"][:1200] for d in docs[:5]])
     title = proj_name.replace("_", " ").replace("-", " ").strip() or proj_name
     return {
-        "name": _safe_skill_slug(proj_name),
+        "name": _fallback_english_slug(proj_name, fallback="document_skill"),
         "display_name": title,
         "description": (
             f"Use this skill when working with {title} documentation, APIs, workflows, "
@@ -1183,8 +1279,338 @@ def _normalize_folder_skill_spec(spec: dict, proj_name: str, docs: List[dict]) -
             cleaned = [str(v).strip() for v in val if str(v).strip()]
             if cleaned:
                 out[key] = cleaned[:14]
-    out["name"] = _safe_skill_slug(out["name"])
+    ascii_name = _ascii_slug(str(out.get("name") or ""), fallback="")
+    if not ascii_name:
+        ascii_name = _fallback_english_slug(
+            str(out.get("display_name_en") or out.get("display_name") or proj_name),
+            fallback="document_skill",
+        )
+    out["name"] = ascii_name
     return out
+
+
+def _doc_digest_for_llm(docs: List[dict], max_chars: int = 52000) -> str:
+    parts = []
+    used = 0
+    for doc in docs[:8]:
+        text = str(doc.get("text") or "").strip()
+        if not text:
+            continue
+        remaining = max_chars - used
+        if remaining <= 0:
+            break
+        excerpt = text[:remaining]
+        used += len(excerpt)
+        parts.append(f"文件：{doc.get('path')}\n\n{excerpt}")
+    return "\n\n---\n\n".join(parts)
+
+
+def _llm_hierarchical_skill_plan(proj_name: str, docs: List[dict]) -> dict:
+    """Skill Builder Agent: plan, design, generate, and self-check a hierarchical skill package."""
+    digest = _doc_digest_for_llm(docs)
+    if not digest:
+        return {}
+
+    prompt = f"""你是 Skill Builder Agent，负责把 PDF/文档转成可复用的 seismo_skill 文件夹型 SKILL。
+
+你必须按四步工作：
+1. 读文档：识别文档覆盖的功能模块、概念、命令/API、参数、输入输出、常见错误和验证方法。
+2. 设计结构：不要只按页码切分，要按“功能能力”拆成多个子技能。例如 GMT 文档可拆成：线条颜色、背景控制、投影区域、字体标注、图层顺序、色标控制等。
+3. 生成内容：每个子技能都要是一页可独立使用的中文 Markdown，不要要求用户再去看 PDF。
+4. 自检覆盖：指出覆盖了哪些能力、哪些内容文档不足、哪些地方需要人工复核。
+
+任务：把下面的 PDF/文档内容转换成层级化 SKILL 包。
+要求：
+1. 用中文组织，不要只是引用 PDF，也不要只给摘要。
+2. 子技能标题必须是具体功能能力，不要使用“第 1 章”“第 2 页”这种标题。
+3. 每个 subskill 都要是一页可独立阅读的 Markdown 技能资料，内容必须来自文档，不确定处写“文档未说明”。
+4. 不要编造文档里没有的命令、参数、结果或案例。
+5. SKILL 内部必须中英文双语：中文优先，英文用于给其它系统复用。
+6. 每个 subskill 必须给出英文 slug，只能包含小写英文字母、数字和下划线，用作文件名。
+7. 输出必须是 JSON，不要写 markdown 代码围栏。
+
+JSON 结构：
+{{
+  "display_name": "中文技能名",
+  "display_name_en": "English skill name",
+  "description": "中文：何时使用该技能",
+  "description_en": "English description",
+  "keywords": ["关键词"],
+  "when_to_use": ["触发场景"],
+  "when_to_use_en": ["English trigger situations"],
+  "workflow": ["使用步骤"],
+  "workflow_en": ["English workflow steps"],
+  "validation": ["检查项"],
+  "validation_en": ["English validation checks"],
+  "example_prompts": ["用户可能怎么问"],
+  "subskills": [
+    {{
+      "slug": "line_color_control",
+      "title_zh": "具体功能子技能标题，例如：线条颜色控制",
+      "title_en": "Line color control",
+      "purpose": "中文：这个子技能解决什么问题",
+      "purpose_en": "English purpose",
+      "when_to_use": ["何时使用"],
+      "when_to_use_en": ["When to use"],
+      "content": "整理后的中文正文，尽量包含细节、步骤、参数、公式或命令；不要说去看PDF",
+      "content_en": "English version of the organized content",
+      "key_points": ["要点"],
+      "key_points_en": ["English key points"],
+      "commands_or_api": ["文档中明确出现的命令/API/函数；没有则空数组"],
+      "parameters": ["文档中明确出现的重要参数、选项或字段；没有则空数组"],
+      "mini_workflow": ["使用这个子技能的步骤"],
+      "mini_workflow_en": ["English mini workflow"],
+      "pitfalls": ["注意事项或常见错误"],
+      "pitfalls_en": ["English pitfalls"],
+      "validation": ["如何验证这一页内容被正确使用"],
+      "validation_en": ["English validation"],
+      "source_evidence": ["来自原文的短证据或章节线索"]
+    }}
+  ],
+  "coverage_audit": {{
+    "covered_capabilities": ["已覆盖能力"],
+    "missing_or_weak": ["文档不足或需要人工复核的内容"],
+    "suggested_tests": ["建议用来验证该 SKILL 的测试问题或小任务"]
+  }}
+}}
+
+文档项目名：{proj_name}
+
+文档内容：
+{digest}
+"""
+    try:
+        _web = Path(__file__).parent.parent / "web_app"
+        if str(_web) not in sys.path:
+            sys.path.insert(0, str(_web))
+        from helpers import get_llm_config, llm_call  # type: ignore
+        raw = llm_call(
+            [{"role": "user", "content": prompt}],
+            get_llm_config(),
+            max_tokens=5000,
+        )
+        plan = _json_from_text(raw)
+        if not isinstance(plan, dict):
+            return {}
+        units = plan.get("subskills") or plan.get("references")
+        if not isinstance(units, list) or not units:
+            return {}
+        cleaned_refs = []
+        for ref in units[:80]:
+            if not isinstance(ref, dict):
+                continue
+            title = str(ref.get("title") or "").strip()
+            content = str(ref.get("content") or "").strip()
+            if title and content:
+                cleaned_refs.append(ref)
+        if not cleaned_refs:
+            return {}
+        plan["subskills"] = cleaned_refs
+        return plan
+    except Exception:
+        return {}
+
+
+def _as_list(value, limit: int = 12) -> List[str]:
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()][:limit]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
+def _merge_hierarchical_plan_into_spec(spec: dict, plan: dict) -> dict:
+    merged = dict(spec or {})
+    for key in ("display_name", "description"):
+        if isinstance(plan.get(key), str) and plan[key].strip():
+            merged[key] = plan[key].strip()
+    for key in ("display_name_en", "description_en"):
+        if isinstance(plan.get(key), str) and plan[key].strip():
+            merged[key] = plan[key].strip()
+    for key in (
+        "keywords", "when_to_use", "when_to_use_en", "workflow", "workflow_en",
+        "validation", "validation_en", "example_prompts",
+    ):
+        vals = _as_list(plan.get(key), 14)
+        if vals:
+            merged[key] = vals
+    return merged
+
+
+def _render_llm_subskill(unit: dict) -> str:
+    title = str(unit.get("title_zh") or unit.get("title") or "未命名章节").strip()
+    title_en = str(unit.get("title_en") or "").strip()
+    purpose = str(unit.get("purpose") or "").strip()
+    purpose_en = str(unit.get("purpose_en") or "").strip()
+    content = str(unit.get("content") or "").strip()
+    content_en = str(unit.get("content_en") or "").strip()
+    when = _as_list(unit.get("when_to_use"), 12)
+    when_en = _as_list(unit.get("when_to_use_en"), 12)
+    key_points = _as_list(unit.get("key_points"), 20)
+    key_points_en = _as_list(unit.get("key_points_en"), 20)
+    commands = _as_list(unit.get("commands_or_api"), 30)
+    parameters = _as_list(unit.get("parameters"), 30)
+    mini_workflow = _as_list(unit.get("mini_workflow"), 20)
+    mini_workflow_en = _as_list(unit.get("mini_workflow_en"), 20)
+    pitfalls = _as_list(unit.get("pitfalls"), 20)
+    pitfalls_en = _as_list(unit.get("pitfalls_en"), 20)
+    validation = _as_list(unit.get("validation"), 20)
+    validation_en = _as_list(unit.get("validation_en"), 20)
+    evidence = _as_list(unit.get("source_evidence"), 20)
+
+    sections = [f"# {title}", ""]
+    if title_en:
+        sections += [f"**English:** {title_en}", ""]
+    if purpose:
+        sections += ["## 用途 / Purpose", "", purpose, ""]
+        if purpose_en:
+            sections += [f"**English:** {purpose_en}", ""]
+    if when:
+        sections += ["## 何时使用 / When To Use", "", _yaml_list(when), ""]
+        if when_en:
+            sections += ["**English**", "", _yaml_list(when_en), ""]
+    sections += ["## 技能内容 / Skill Content", "", content or "文档未说明。", ""]
+    if content_en:
+        sections += ["**English**", "", content_en, ""]
+    if key_points:
+        sections += ["## 关键要点 / Key Points", "", _yaml_list(key_points), ""]
+        if key_points_en:
+            sections += ["**English**", "", _yaml_list(key_points_en), ""]
+    if commands:
+        sections += ["## 命令 / API / Commands", "", _yaml_list(commands), ""]
+    if parameters:
+        sections += ["## 参数与选项 / Parameters", "", _yaml_list(parameters), ""]
+    if mini_workflow:
+        sections += ["## 子技能工作流 / Mini Workflow", "", _yaml_list(mini_workflow), ""]
+        if mini_workflow_en:
+            sections += ["**English**", "", _yaml_list(mini_workflow_en), ""]
+    if pitfalls:
+        sections += ["## 注意事项 / Pitfalls", "", _yaml_list(pitfalls), ""]
+        if pitfalls_en:
+            sections += ["**English**", "", _yaml_list(pitfalls_en), ""]
+    if validation:
+        sections += ["## 验证方法 / Validation", "", _yaml_list(validation), ""]
+        if validation_en:
+            sections += ["**English**", "", _yaml_list(validation_en), ""]
+    if evidence:
+        sections += ["## 来源依据", "", _yaml_list(evidence), ""]
+    return "\n".join(sections).strip() + "\n"
+
+
+def _skill_builder_audit(plan: dict, generated_count: int) -> str:
+    audit = plan.get("coverage_audit") if isinstance(plan.get("coverage_audit"), dict) else {}
+    covered = _as_list(audit.get("covered_capabilities"), 40)
+    weak = _as_list(audit.get("missing_or_weak"), 40)
+    tests = _as_list(audit.get("suggested_tests"), 40)
+    lines = [
+        "# Skill Builder Agent 自检报告",
+        "",
+        f"- 生成子技能数：{generated_count}",
+        f"- 生成时间：{datetime.now().isoformat(timespec='seconds')}",
+        "",
+        "## 已覆盖能力",
+        "",
+        _yaml_list(covered) if covered else "- 文档未说明",
+        "",
+        "## 缺失或薄弱内容",
+        "",
+        _yaml_list(weak) if weak else "- 暂未发现，仍建议人工抽查关键参数和命令。",
+        "",
+        "## 建议验证任务",
+        "",
+        _yaml_list(tests) if tests else "- 随机抽取 3 个用户问题，检查能否定位到对应 subskills 文档并给出有依据回答。",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _split_document_into_skill_units(path_name: str, text: str, max_units: int = 12) -> List[dict]:
+    """Fallback splitter when the LLM Skill Builder Agent is unavailable."""
+    lines = [ln.rstrip() for ln in str(text or "").splitlines()]
+    sections: List[Tuple[str, List[str]]] = []
+    current_title = Path(path_name).stem
+    current_body: List[str] = []
+
+    heading_re = re.compile(r"^(#{1,4}\s+|第[一二三四五六七八九十\d]+[章节节、.]\s*|[0-9]+(?:\.[0-9]+)*\s+)(.+)$")
+    for ln in lines:
+        s = ln.strip()
+        m = heading_re.match(s)
+        if m and len(s) <= 120:
+            if current_body:
+                sections.append((current_title, current_body))
+            current_title = m.group(2).strip() if m.lastindex and m.group(2).strip() else s.lstrip("#").strip()
+            current_body = []
+        else:
+            current_body.append(ln)
+    if current_body:
+        sections.append((current_title, current_body))
+
+    if not sections:
+        clean = str(text or "").strip()
+        sections = [(Path(path_name).stem, [clean])]
+
+    units = []
+    for idx, (title, body_lines) in enumerate(sections[:max_units], 1):
+        body = "\n".join(body_lines).strip()
+        if not body:
+            continue
+        title = title.strip() or f"文档内容 {idx}"
+        units.append({
+            "title_zh": title,
+            "title_en": _fallback_english_slug(title, fallback=f"section_{idx}").replace("_", " ").title(),
+            "slug": _fallback_english_slug(title, fallback=f"section_{idx}"),
+            "purpose": "根据原始文档章节整理出的可复用技能资料。",
+            "purpose_en": "Reusable skill notes converted from a source document section.",
+            "content": body[:9000],
+            "content_en": "English translation was not generated because the LLM planner was unavailable. Use the Chinese content as the source of truth.",
+            "key_points": _fallback_key_points(body),
+            "commands_or_api": _extract_command_like_items(body),
+            "parameters": _extract_parameter_like_items(body),
+            "mini_workflow": ["阅读本页技能内容", "提取文档明确给出的命令、参数或流程", "若用于编程，先写最小测试验证输出"],
+            "mini_workflow_en": ["Read this subskill page", "Extract documented commands, parameters, or workflow steps", "When coding, write a minimal test before using the result"],
+            "pitfalls": ["不要使用文档未说明的参数或命令", "如果信息不足，应明确说明文档未说明"],
+            "pitfalls_en": ["Do not use undocumented parameters or commands", "State explicitly when the document does not provide enough information"],
+            "validation": ["检查回答或代码是否能在本页找到依据", "检查是否包含必要参数和输入输出说明"],
+            "validation_en": ["Check whether the answer or code is grounded in this page", "Check required parameters, inputs, and outputs"],
+            "source_evidence": [f"Converted from `{path_name}` section `{title}`"],
+        })
+    return units
+
+
+def _fallback_key_points(text: str, limit: int = 8) -> List[str]:
+    points = []
+    for ln in str(text or "").splitlines():
+        s = ln.strip(" -*\t")
+        if 18 <= len(s) <= 160:
+            points.append(s)
+        if len(points) >= limit:
+            break
+    return points
+
+
+def _extract_command_like_items(text: str, limit: int = 20) -> List[str]:
+    items = []
+    for token in re.findall(r"(?:gmt\s+\w+|-[A-Za-z][A-Za-z0-9+/.-]*|[A-Za-z_][A-Za-z0-9_]+\([^)]*\))", str(text or "")):
+        if token not in items:
+            items.append(token)
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _extract_parameter_like_items(text: str, limit: int = 20) -> List[str]:
+    items = []
+    for token in re.findall(r"(?:(?:参数|选项|字段)\s*[:：]\s*[^\n]{1,80}|-[A-Za-z][A-Za-z0-9+/.-]*)", str(text or "")):
+        token = token.strip()
+        if token and token not in items:
+            items.append(token)
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _render_converted_reference(path_name: str, unit: dict) -> str:
+    return _render_llm_subskill(unit)
 
 
 def _resolve_generated_skill_target(skill_name: str, overwrite: bool = True) -> Path:
@@ -1209,11 +1635,16 @@ def _yaml_list(items: List[str], indent: str = "") -> str:
 def _render_folder_skill_md(proj_name: str, spec: dict, docs: List[dict]) -> str:
     name = _safe_skill_slug(spec.get("name") or proj_name)
     display = spec.get("display_name") or name.replace("_", " ").title()
+    display_en = str(spec.get("display_name_en") or "").strip()
     keywords = [str(k) for k in spec.get("keywords", [])][:14]
     description = str(spec.get("description", "")).replace("\n", " ").strip()
+    description_en = str(spec.get("description_en") or "").replace("\n", " ").strip()
     when = spec.get("when_to_use", [])
+    when_en = spec.get("when_to_use_en", [])
     workflow = spec.get("workflow", [])
+    workflow_en = spec.get("workflow_en", [])
     validation = spec.get("validation", [])
+    validation_en = spec.get("validation_en", [])
     examples = spec.get("example_prompts", [])
     refs = [d["path"] for d in docs[:12]]
     return f"""---
@@ -1230,22 +1661,30 @@ generated_at: {datetime.now().isoformat(timespec="seconds")}
 ---
 
 # {display}
+{f"**English:** {display_en}" if display_en else ""}
 
 ## Purpose
 
-Use this skill to turn the bundled documentation into concrete, grounded help for coding, analysis, interpretation, or workflow design. Keep answers tied to the reference files and call out uncertainty when the documents do not contain enough evidence.
+这是由 LLM 从原始文档内容整理出的层级化中文技能包。使用它回答问题或编写代码时，应优先读取 `references/outline.md`，再打开相关章节页；这些章节页已经从 PDF/文档正文转换而来，不需要再读取原 PDF。
+{f"\\nEnglish: {description_en}" if description_en else ""}
 
-## When To Use
+## When To Use / 何时使用
 
 {_yaml_list(when)}
+{("**English**" + chr(10) + chr(10) + _yaml_list(when_en)) if when_en else ""}
 
-## Workflow
+## Workflow / 工作流
 
 {_yaml_list(workflow)}
+{("**English**" + chr(10) + chr(10) + _yaml_list(workflow_en)) if workflow_en else ""}
 
-## References
+## Converted Skill References
 
-Start with `references/manifest.md`, then open only the specific reference files needed for the current request.
+1. 先打开 `references/outline.md` 判断该问题对应哪些子技能。
+2. 再打开相关 `subskills/*.md`，从其中提取概念、参数、命令、流程、注意事项和验证方法。
+3. 回答时明确区分“文档已说明”和“文档未说明”。不要编造缺失的命令、参数、实验结果或结论。
+4. 如果用户要求编程，实现代码前先根据对应章节写一个最小检查或 mini test。
+5. 可查看 `references/builder_audit.md` 了解 Skill Builder Agent 的覆盖范围和薄弱项。
 
 {_yaml_list(refs)}
 
@@ -1266,7 +1705,7 @@ def _render_agent_yaml(spec: dict) -> str:
 short_description: >-
   {desc}
 default_prompt: >-
-  Use the generated SKILL.md and only the relevant references/ files. Ground claims in the bundled documentation, produce runnable code when asked, and state missing information explicitly.
+  Use the generated SKILL.md, references/outline.md, and relevant subskills/*.md files. Ground claims in the converted skill documents, produce runnable code when asked, and state missing information explicitly.
 """
 
 

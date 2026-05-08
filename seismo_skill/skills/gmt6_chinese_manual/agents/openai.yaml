@@ -1,0 +1,5 @@
+display_name: GMT 6 中文手册使用指南
+short_description: >-
+  当用户需要查找 GMT 6 绘图软件的安装方法、基本命令、颜色系统（RGB/HSV）、版本迁移信息或入门教程时使用。该技能基于 GMT 6 官方中文手册内容，提供简洁准确的指引。
+default_prompt: >-
+  Use the generated SKILL.md, references/outline.md, and relevant subskills/*.md files. Ground claims in the converted skill documents, produce runnable code when asked, and state missing information explicitly.

@@ -31,3 +31,7 @@ seismo_rag/*
 *.err
 *.grd
 gmt.history
+
+# Local proposal / investor document drafts
+SAGE_SeismicX_投资人介绍.docx
+SAGE_SeismicX_投资人介绍.pdf

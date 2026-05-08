@@ -368,7 +368,12 @@ def knowledge_delete_project(proj_name):
         # 2. 兼容 skill docs / reference library 的目录索引 manifest。
         keys_to_del = []
         for rel, entry in list(indexer._manifest.items()):
-            if entry.get("proj_folder") == proj_name or rel.startswith(proj_name + "/") or rel.startswith(proj_name + "\\"):
+            if (
+                entry.get("proj_folder") == proj_name
+                or rel == proj_name
+                or rel.startswith(proj_name + "/")
+                or rel.startswith(proj_name + "\\")
+            ):
                 doc_id = entry.get("doc_id")
                 if doc_id and doc_id not in removed_docs:
                     try:
@@ -386,6 +391,8 @@ def knowledge_delete_project(proj_name):
 
         # 3. 删除由目录索引生成的 Skill 文件（Chat/Project 入库不会有这个条目）
         proj_entry = indexer._proj_manifest.pop(proj_name, None)
+        if not proj_entry:
+            proj_entry = indexer._proj_manifest.pop(Path(proj_name).stem, None)
         if proj_entry:
             indexer._save_proj_manifest()
             skill_name = proj_entry.get("skill_name", "")
@@ -511,8 +518,12 @@ def ref_knowledge_delete_collection(coll_name):
         removed_docs = []
         keys_to_del = []
         for rel, entry in list(indexer._manifest.items()):
-            if entry.get("proj_folder") == coll_name or \
-               rel.startswith(coll_name + "/") or rel.startswith(coll_name + "\\"):
+            if (
+                entry.get("proj_folder") == coll_name
+                or rel == coll_name
+                or rel.startswith(coll_name + "/")
+                or rel.startswith(coll_name + "\\")
+            ):
                 doc_id = entry.get("doc_id")
                 if doc_id:
                     try:
@@ -530,6 +541,7 @@ def ref_knowledge_delete_collection(coll_name):
             indexer._save_manifest()
 
         indexer._proj_manifest.pop(coll_name, None)
+        indexer._proj_manifest.pop(Path(coll_name).stem, None)
         indexer._save_proj_manifest()
 
         return jsonify({
