@@ -746,13 +746,32 @@ def evidence_geo_agent():
 
     _geo_agent_gc()
     job_id = "geo_" + _uuid.uuid4().hex[:10]
+    session_id = _clean_conversation_id(data.get("session_id") or "default_geo")
+    run_output_base = Path(data.get("output_dir") or "outputs/evidence_driven_geo_agent").expanduser()
+    effective_output_dir = run_output_base / session_id / job_id
     _geo_agent_jobs[job_id] = {
         "status":   "running",
         "progress": [],
         "result":   None,
         "error":    None,
         "ts":       _time.time(),
+        "session_id": session_id,
+        "output_dir": str(effective_output_dir),
     }
+
+    def _model_likely_supports_vision(llm_cfg: dict) -> bool:
+        provider = str(llm_cfg.get("provider", "")).lower()
+        model = str(llm_cfg.get("model", "")).lower()
+        vision_markers = (
+            "vision", "vl", "qwen-vl", "qwen2-vl", "qwen2.5-vl", "llava",
+            "bakllava", "minicpm-v", "gemma3", "gpt-4o", "gpt-4.1", "o4",
+            "claude-3", "glm-4v", "internvl", "pixtral", "molmo",
+        )
+        if any(m in model for m in vision_markers):
+            return True
+        if provider == "openai" and any(m in model for m in ("gpt-4o", "gpt-4.1", "o4")):
+            return True
+        return False
 
     def _prefetch_web_literature(data, cfg, progress_cb):
         """Search scholarly web sources and write a seed literature note into the workspace."""
@@ -767,7 +786,11 @@ def evidence_geo_agent():
             query = " ".join(query_bits)
             progress_cb({"phase": "web_search", "message": f"Searching online literature: {query[:120]}"})
             tool = WebSearchTool(cfg)
-            result = tool.scholar_search(query=query, max_results=int(data.get("web_max_results", 8)))
+            result = tool.literature_search(
+                query=query,
+                max_results=int(data.get("web_max_results", 8)),
+                sources=data.get("web_search_sources") or ["semantic_scholar"],
+            )
             if result.get("warning"):
                 progress_cb({"phase": "web_search", "message": result["warning"]})
             papers = result.get("papers", [])
@@ -776,8 +799,7 @@ def evidence_geo_agent():
                 progress_cb({"phase": "warning", "message": msg})
                 return ""
 
-            ws = Path(cfg.workspace_root).expanduser()
-            seed_dir = ws / "literature"
+            seed_dir = Path(cfg.output_dir).expanduser() / "literature"
             seed_dir.mkdir(parents=True, exist_ok=True)
             seed = seed_dir / "web_literature_seed.md"
             lines = [
@@ -826,7 +848,7 @@ def evidence_geo_agent():
             cfg = AgentConfig(
                 workspace_root=data.get("workspace_root") or ".",
                 literature_root=data.get("literature_root") or "",
-                output_dir=data.get("output_dir") or "outputs/evidence_driven_geo_agent",
+                output_dir=str(effective_output_dir),
                 authorized_roots=authorized_roots,
                 allow_python=bool(data.get("allow_python", True)),
                 allow_shell=bool(data.get("allow_shell", False)),
@@ -836,6 +858,7 @@ def evidence_geo_agent():
                 use_local_files=bool(data.get("use_local_files", True)),
                 produce_latex=bool(data.get("produce_latex", True)),
                 use_code_engine=bool(data.get("use_code_engine", True)),
+                web_search_sources=data.get("web_search_sources") or ["openalex", "semantic_scholar"],
                 max_iterations=int(data.get("max_iterations", 3)),
                 max_tool_calls_per_iter=int(data.get("max_tool_calls_per_iter", 8)),
                 rag_top_k=int(data.get("rag_top_k", 8)),
@@ -854,21 +877,62 @@ def evidence_geo_agent():
             if seed_path and not cfg.literature_root:
                 cfg.literature_root = str(Path(seed_path).parent)
 
+            llm_cfg = get_llm_config()
+            if cfg.use_multimodal and not _model_likely_supports_vision(llm_cfg):
+                _prog({
+                    "phase": "warning",
+                    "message": (
+                        "Multimodal image/table parsing was requested, but the selected model "
+                        f"({llm_cfg.get('provider','')}/{llm_cfg.get('model','')}) does not look vision-capable. "
+                        "The agent will still parse text/CSV tables and will warn if image analysis fails."
+                    ),
+                })
+
             profile = get_user_profile_context(max_chars=2500)
             question_for_agent = question
             project_context = (data.get("project_context") or "").strip()
+            geo_project_context = (data.get("geo_project_context") or "").strip()
+            project_ids = data.get("project_ids") or []
+            geo_project_ids = data.get("geo_project_ids") or []
+            if isinstance(project_ids, list) and project_ids:
+                question_for_agent += "\n\n===== Referenced Chat Project IDs =====\n" + ", ".join(str(x) for x in project_ids[:12])
             if project_context and project_context not in question_for_agent:
-                question_for_agent += "\n\n===== Project shared context =====\n" + project_context[:4000]
+                question_for_agent += "\n\n===== Project shared context =====\n" + project_context[:12000]
+            if isinstance(geo_project_ids, list) and geo_project_ids:
+                question_for_agent += "\n\n===== Referenced upstream Geo Project IDs =====\n" + ", ".join(str(x) for x in geo_project_ids[:12])
+            if geo_project_context and geo_project_context not in question_for_agent:
+                question_for_agent += (
+                    "\n\n===== Upstream interpretation projects: evidence chains to inherit and re-audit =====\n"
+                    "Use these as prior research assets, not as unquestioned truth. For each inherited claim, "
+                    "seek evidence-of-evidence, check reliability/relevance, preserve upstream_evidence links, "
+                    "and list missing verification data.\n"
+                    + geo_project_context[:18000]
+                )
+            question_for_agent += (
+                "\n\n===== Required reasoning protocol =====\n"
+                "During the investigation, iteratively test hypotheses by collecting evidence and evidence-of-evidence. "
+                "For figures and tables from papers or uploaded images, extract quantitative values when possible. "
+                "For every important evidence record, estimate relevance and reliability, identify upstream evidence, "
+                "state verification_status, and describe verification_needed. Explicitly report missing information and "
+                "rank which evidence is most relevant and most reliable only when the ranking is grounded in the "
+                "collected evidence table. Every evidence record must include a source_excerpt that can be traced "
+                "to a tool output, file, RAG chunk, web result, figure/table extraction, or upstream project record. "
+                "Do not invent evidence IDs, citations, star ratings, scores, locations, numbers, methods, or source names; "
+                "if support is missing, say evidence is insufficient and list the missing source.\n"
+            )
             if profile:
                 question_for_agent += (
                     "\n\n===== Long-term user profile (soft context; do not mention unless useful) =====\n"
                     + profile
                 )
 
-            agent  = EvidenceDrivenGeoAgent(config=cfg, llm_cfg=get_llm_config())
+            agent  = EvidenceDrivenGeoAgent(config=cfg, llm_cfg=llm_cfg)
             result = agent.run(question_for_agent, study_area, on_progress=_prog)
             _geo_agent_jobs[job_id]["status"] = "done"
             _geo_agent_jobs[job_id]["result"] = result
+            if isinstance(result, dict):
+                result.setdefault("_run_output_dir", str(effective_output_dir))
+                result.setdefault("_session_id", session_id)
         except Exception as exc:
             _geo_agent_jobs[job_id]["status"] = "error"
             _geo_agent_jobs[job_id]["error"]  = str(exc)
@@ -968,10 +1032,16 @@ def evidence_geo_agent_web_search():
         cfg  = AgentConfig(allow_web_search=True)
         tool = WebSearchTool(cfg)
 
-        if search_type == 'scholar':
-            result = tool.dispatch('scholar_search', {'query': query, 'max_results': max_results})
+        if search_type in ('literature', 'multi'):
+            result = tool.literature_search(query, max_results=max_results, sources=data.get('sources') or ['semantic_scholar'])
+        elif search_type == 'openalex':
+            result = tool.openalex_search(query, max_results=max_results)
+        elif search_type == 'arxiv':
+            result = tool.arxiv_search(query, max_results=max_results)
+        elif search_type in ('scholar', 'semantic_scholar'):
+            result = tool.scholar_search(query, max_results=max_results)
         else:
-            result = tool.dispatch('web_search', {'query': query, 'max_results': max_results})
+            result = tool.web_search(query, max_results=max_results)
 
         if 'error' in result:
             return jsonify({"ok": False, "error": result['error']})
@@ -1365,6 +1435,41 @@ def chat_rag():
 
 # ── 流式 RAG 对话 ─────────────────────────────────────────────────────────────
 
+def _chat_web_search_context(data: dict, query: str):
+    """Optional chat-side web/literature search context."""
+    if not data.get("enable_web_search"):
+        return "", []
+    try:
+        from sage_agents.evidence_driven_geo_agent import AgentConfig, WebSearchTool
+        sources = data.get("web_search_sources") or ["openalex", "semantic_scholar"]
+        tool = WebSearchTool(AgentConfig(allow_web_search=True, web_search_sources=sources))
+        result = tool.literature_search(query=query, max_results=int(data.get("web_max_results", 6)), sources=sources)
+        papers = result.get("papers", []) or []
+        if not papers:
+            return "", []
+        lines = [
+            "Use the following online literature/search records only when directly relevant. "
+            "Cite records by source/title/URL; do not invent claims beyond the abstracts/snippets."
+        ]
+        refs = []
+        for i, p in enumerate(papers[:8], 1):
+            title = p.get("title") or "Untitled"
+            authors = ", ".join(p.get("authors", []) or [])
+            year = p.get("year") or ""
+            url = p.get("url") or p.get("pdf_url") or ""
+            doi = p.get("doi") or ""
+            abstract = (p.get("abstract") or p.get("snippet") or "")[:900]
+            src = p.get("source") or "web"
+            lines.append(
+                f"[Web {i} | {src}] {title}\n"
+                f"Authors: {authors}\nYear: {year}\nDOI: {doi}\nURL: {url}\n"
+                f"Abstract/snippet: {abstract}\n"
+            )
+            refs.append(f"{src}: {title}" + (f" ({url})" if url else ""))
+        return "\n".join(lines), refs
+    except Exception as exc:
+        return f"Web search failed: {exc}", []
+
 def _build_rag_messages(data: dict):
     """
     Shared helper: build (messages, sources, llm_cfg) for both /api/chat/rag
@@ -1408,6 +1513,11 @@ def _build_rag_messages(data: dict):
     project_context = (data.get("project_context") or "").strip()
     if project_context:
         context_parts.append("===== 项目共享上下文 =====\n" + project_context[:4000])
+
+    web_ctx, web_sources = _chat_web_search_context(data, user_msg)
+    if web_ctx:
+        context_parts.append("===== Web literature/search context =====\n" + web_ctx)
+    sources.extend(web_sources)
 
     try:
         kb = get_kb_instance()
@@ -1649,12 +1759,16 @@ def _build_plain_messages(data: dict):
         if ws_ctx:
             system += '\n\n===== 本地文件系统 =====\n' + ws_ctx
 
+    web_ctx, web_sources = _chat_web_search_context(data, user_msg)
+    if web_ctx:
+        system += '\n\n===== Web literature/search context =====\n' + web_ctx
+
     messages = [{'role': 'system', 'content': system},
                 {'role': 'user',   'content': user_msg}]
     history = data.get('history', [])
     if history:
         messages = [messages[0]] + history[-6:] + [messages[-1]]
-    return messages, [], llm_cfg
+    return messages, web_sources, llm_cfg
 
 
 @bp.route('/api/chat/submit', methods=['POST'])

@@ -199,16 +199,41 @@ def update_llm_config():
 
 @bp.route('/api/llm/ollama/models', methods=['GET'])
 def get_ollama_models():
-    """Get available Ollama models"""
+    """Get available Ollama models with a single short HTTP request."""
     from config_manager import get_config_manager
     config = get_config_manager()
-    models = config.get_ollama_models()
     recommended = config.get_recommended_models().get('ollama', [])
+    ollama_cfg = config.config.get('ollama', {}) if isinstance(config.config.get('ollama', {}), dict) else {}
+    llm_cfg = config.config.get('llm', {}) if isinstance(config.config.get('llm', {}), dict) else {}
+    saved_llm_base = llm_cfg.get('api_base') if llm_cfg.get('provider') == 'ollama' else ''
+    api_base = (
+        request.args.get('api_base')
+        or ollama_cfg.get('api_base')
+        or saved_llm_base
+        or 'http://localhost:11434'
+    ).strip().rstrip('/')
+    if not api_base.startswith(('http://localhost', 'http://127.0.0.1', 'http://0.0.0.0', 'http://[::1]')):
+        api_base = 'http://localhost:11434'
+
+    models = []
+    available = False
+    error = ''
+    try:
+        req = _ur.Request(f'{api_base}/api/tags')
+        with _ur.urlopen(req, timeout=2.5) as resp:
+            available = resp.status == 200
+            if available:
+                data = json.loads(resp.read().decode('utf-8'))
+                models = _parse_model_list(data)
+    except Exception as exc:
+        error = str(exc)
 
     return jsonify({
         'installed': models,
         'recommended': recommended,
-        'ollama_available': config.check_ollama_available()
+        'ollama_available': available,
+        'api_base': api_base,
+        'error': error,
     })
 
 

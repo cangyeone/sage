@@ -179,6 +179,18 @@ body { background: #f5f7fa; min-height: 100vh; }
             </div>
           </div>
 
+          <div class="mt-2 p-2 rounded-3" style="background:#f8f9ff;border:1px solid #e4e7ff;">
+            <div class="fw-semibold mb-1" style="font-size:.78rem;color:#5865c9;" data-i18n="dir_build_mode">构建方式</div>
+            <select class="form-select form-select-sm" id="dirBuildMode" style="font-size:.82rem;">
+              <option value="rag" data-i18n="dir_mode_rag">只构建 RAG 索引</option>
+              <option value="skill" data-i18n="dir_mode_skill">只生成文件夹型 SKILL</option>
+              <option value="both" data-i18n="dir_mode_both" selected>RAG + 文件夹型 SKILL</option>
+            </select>
+            <div class="mt-1 text-muted" style="font-size:.7rem;" data-i18n="dir_mode_hint">
+              文件夹型 SKILL 会写入 seismo_skill/skills，可在技能页管理删除。
+            </div>
+          </div>
+
           <!-- build button -->
           <button class="btn btn-sm w-100 mt-2" id="buildDirBtn"
             style="background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border:none;border-radius:8px;"
@@ -361,11 +373,16 @@ const I18N = {
     no_docs: '知识库为空', no_docs_sub: '上传 PDF 后，文献将自动向量化并可用于问答',
     loading: '加载中…',
     dir_title: '技能文档目录', dir_checking: '检查中…',
-    dir_build_btn: '构建技能', dir_progress: '构建进度', dir_stop: '中断',
+    dir_build_btn: '开始构建', dir_progress: '构建进度', dir_stop: '中断',
     dir_no_projects: '暂无文档文件夹', dir_indexed: '已构建', dir_new: '待构建',
     dir_modified: '有更新', dir_failed: '失败', dir_partial: '部分完成',
     dir_files: '个文件', dir_selected: '个已选', dir_skill: 'Skill',
     dir_hint: '每个子文件夹 = 一个技能',
+    dir_build_mode: '构建方式',
+    dir_mode_rag: '只构建 RAG 索引',
+    dir_mode_skill: '只生成文件夹型 SKILL',
+    dir_mode_both: 'RAG + 文件夹型 SKILL',
+    dir_mode_hint: '文件夹型 SKILL 会写入 seismo_skill/skills，可在技能页管理删除。',
     emb_title: '嵌入模型', emb_path_label: '本地模型路径（留空则从 HuggingFace 下载）',
     emb_save: '保存', emb_hint: '支持本地路径或 ModelScope 下载路径。更改后下次构建时生效。',
     emb_role_note: '负责文献向量化与检索，不会训练或替换当前聊天 LLM。',
@@ -388,11 +405,16 @@ const I18N = {
     no_docs: 'Knowledge base is empty', no_docs_sub: 'Upload PDFs to index them for Q&A',
     loading: 'Loading…',
     dir_title: 'Skill Docs Library', dir_checking: 'Checking…',
-    dir_build_btn: 'Build Skills', dir_progress: 'Build Progress', dir_stop: 'Stop',
+    dir_build_btn: 'Build', dir_progress: 'Build Progress', dir_stop: 'Stop',
     dir_no_projects: 'No doc folders found', dir_indexed: 'Built', dir_new: 'Pending',
     dir_modified: 'Updated', dir_failed: 'Failed', dir_partial: 'Partial',
     dir_files: 'files', dir_selected: 'selected', dir_skill: 'Skill',
     dir_hint: 'Each subfolder = one skill',
+    dir_build_mode: 'Build mode',
+    dir_mode_rag: 'Build RAG index only',
+    dir_mode_skill: 'Generate folder SKILL only',
+    dir_mode_both: 'RAG + folder SKILL',
+    dir_mode_hint: 'Folder SKILLs are written to seismo_skill/skills and can be managed on the Skills page.',
     emb_title: 'Embedding Model', emb_path_label: 'Local model path (leave empty to download from HuggingFace)',
     emb_save: 'Save', emb_hint: 'Accepts a local path or ModelScope download path. Takes effect on next build.',
     emb_role_note: 'Used for document vectorization and retrieval; it does not train or replace the active chat LLM.',
@@ -878,7 +900,7 @@ function renderProjectCards(d) {
   }).join('');
 
   const hasPending = projects.some(p => p.status !== 'indexed');
-  buildBtn.disabled = !hasPending;
+  buildBtn.disabled = projects.length === 0;
 
   const pendingCount = projects.filter(p => p.status !== 'indexed').length;
   if (pendingCount > 0) {
@@ -895,6 +917,9 @@ async function buildFromDir() {
   const log      = document.getElementById('buildLog');
   const bar      = document.getElementById('buildProgressBar');
   const stopBtn  = document.getElementById('stopBuildBtn');
+  const modeSel  = document.getElementById('dirBuildMode');
+  const mode     = modeSel ? modeSel.value : 'both';
+  const modeText = modeSel ? modeSel.options[modeSel.selectedIndex].textContent : mode;
 
   btn.disabled = true;
   progWrap.style.display = 'block';
@@ -904,11 +929,15 @@ async function buildFromDir() {
   stopBtn.style.display = 'inline-block';
 
   try {
-    const r  = await fetch('/api/knowledge/build_from_dir', {method: 'POST'});
+    const r  = await fetch('/api/knowledge/build_from_dir', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({mode})
+    });
     const d  = await r.json();
     if (!d.job_id) throw new Error(d.error || 'No job_id');
     _buildJobId = d.job_id;
-    appendLog(log, '▶ 开始构建技能…');
+    appendLog(log, `▶ ${currentLang === 'zh' ? '开始构建' : 'Build started'}：${modeText}`);
     _buildPollTimer = setInterval(() => pollBuildJob(log, bar, btn, stopBtn), 1500);
   } catch(e) {
     appendLog(log, `✗ 启动失败：${e.message}`, 'err');
@@ -951,7 +980,7 @@ async function pollBuildJob(log, bar, btn, stopBtn) {
         const res = d.result || {};
         const skillList = (res.skills_generated || []).join(', ') || '—';
         appendLog(log, `✅ ${T('dir_build_btn')} — Skill: ${skillList}`);
-        showToast(currentLang === 'zh' ? '技能构建完成' : 'Skills built successfully', 'success');
+        showToast(currentLang === 'zh' ? '构建完成' : 'Build completed', 'success');
       } else if (d.status === 'stopped') {
         bar.className = 'progress-bar bg-warning';
         appendLog(log, currentLang === 'zh' ? '⏸ 已中断（进度已保存，下次继续）' : '⏸ Interrupted (progress saved)', 'warn');

@@ -69,6 +69,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import ast
 import json
 import os
 import re
@@ -81,6 +82,7 @@ import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -179,6 +181,7 @@ class AgentConfig:
     allow_python:      bool = True        # enable CodeExecutionTool.run_python
     allow_shell:       bool = False       # enable CodeExecutionTool.run_shell
     allow_web_search:  bool = False       # enable WebSearchTool (web_search / scholar_search / download_pdf)
+    web_search_sources: List[str] = field(default_factory=lambda: ["semantic_scholar"])  # semantic_scholar | openalex | arxiv | web
     use_multimodal:    bool = False       # enable ImageAnalysisTool (analyze_image / extract_table)
     use_rag:           bool = True        # enable RAGIndexTool.search_rag
     use_local_files:   bool = True        # enable LocalFileSearchTool
@@ -201,7 +204,7 @@ class AgentConfig:
     allowed_extensions: List[str] = field(default_factory=lambda: [
         ".pdf", ".md", ".txt", ".csv", ".json", ".yaml", ".yml",
         ".sac", ".mseed", ".xml", ".gmt", ".grd", ".nc", ".bib",
-        ".dat", ".inp", ".out", ".log",
+        ".dat", ".inp", ".out", ".log", ".png", ".jpg", ".jpeg", ".gif", ".tif", ".tiff",
     ])
 
     def as_dict(self) -> Dict[str, Any]:
@@ -245,6 +248,7 @@ class GeoEvidence:
     source_type:              str        # literature | local_data | model_derived | inference | speculation
     evidence_type:            str = "text"  # text | figure | table | data
     observation:              str = ""   # verbatim or close paraphrase of factual content
+    source_excerpt:           str = ""   # exact supporting span copied from the source/tool output when available
     data_type:                str = "other"  # seismicity | velocity_model | focal_mechanism | geology | ...
     spatial_scale:            str = "unspecified"   # local | regional | crustal | lithospheric
     depth_range:              str = "unspecified"
@@ -253,6 +257,13 @@ class GeoEvidence:
     alternative_interpretation: str = ""  # agent-generated alternative reading
     assumption:               str = ""   # key assumptions in source
     confidence:               str = "medium"   # high | medium | low
+    reliability:              str = "medium"   # high | medium | low; source/data quality
+    relevance:                str = "medium"   # high | medium | low; relevance to current hypothesis/question
+    quantitative_values:      Dict[str, Any] = field(default_factory=dict)  # extracted numeric values, units, ranges
+    upstream_evidence:        List[str] = field(default_factory=list)   # evidence IDs this evidence depends on
+    verification_status:      str = "unverified"  # verified | partially_verified | unverified | contradicted
+    verification_needed:      str = ""   # what would validate this evidence-of-evidence
+    provenance_note:          str = ""   # grounding/audit note; never used as scientific evidence
     uncertainty:              str = ""
     supports:                 List[str] = field(default_factory=list)   # hypothesis_ids supported
     contradicts:              List[str] = field(default_factory=list)   # hypothesis_ids contradicted
@@ -435,6 +446,33 @@ def _safe_path(path: str, *roots: str) -> Optional[Path]:
 
 def _ext_allowed(path: Path, allowed: List[str]) -> bool:
     return path.suffix.lower() in [e.lower() for e in allowed]
+
+
+def _grounding_norm(text: str) -> str:
+    """Normalize text for conservative provenance checks."""
+    return re.sub(r"\s+", "", str(text).lower())
+
+
+def _excerpt_supported(source_text: str, excerpt: str) -> bool:
+    """
+    Return True only when an evidence excerpt is visibly present in the tool output.
+    This intentionally prefers false negatives over allowing fabricated evidence.
+    """
+    excerpt = str(excerpt or "").strip()
+    if len(excerpt) < 8:
+        return False
+    return _grounding_norm(excerpt) in _grounding_norm(source_text)
+
+
+def _valid_level(value: str, default: str = "low") -> str:
+    value = str(value or "").strip().lower()
+    return value if value in {"high", "medium", "low"} else default
+
+
+def _valid_verification_status(value: str) -> str:
+    value = str(value or "").strip().lower()
+    allowed = {"verified", "partially_verified", "unverified", "contradicted"}
+    return value if value in allowed else "unverified"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2130,6 +2168,51 @@ class ImageAnalysisTool:
         result["path"] = str(p)
         return result
 
+    def analyze_pdf_visuals(self, path: str, question: str = "", max_pages: int = 6) -> Dict[str, Any]:
+        """
+        Render PDF pages to images and analyse figures/tables with the vision LLM.
+        Use this for article figures, maps, cross-sections, and scanned tables.
+        """
+        if not self._cfg.use_multimodal:
+            return {"error": "Multimodal analysis is disabled (use_multimodal=false)."}
+        p = self._resolve(path)
+        if p is None:
+            return {"error": f"Path '{path}' is outside workspace."}
+        if not p.exists():
+            return {"error": f"File not found: {p}"}
+        if p.suffix.lower() != ".pdf":
+            return {"error": "analyze_pdf_visuals only supports PDF files."}
+        try:
+            import fitz  # PyMuPDF
+        except Exception as exc:
+            return {"error": f"PyMuPDF is required for PDF visual analysis: {exc}"}
+
+        out_dir = Path(self._cfg.output_dir).expanduser() / "pdf_visuals" / p.stem[:60]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        results = []
+        try:
+            doc = fitz.open(str(p))
+            n = min(max(1, int(max_pages)), len(doc))
+            for page_idx in range(n):
+                page = doc.load_page(page_idx)
+                pix = page.get_pixmap(matrix=fitz.Matrix(1.6, 1.6), alpha=False)
+                img_path = out_dir / f"page_{page_idx + 1:03d}.png"
+                pix.save(str(img_path))
+                analysis = self.analyze_image(str(img_path), question=question)
+                analysis["pdf_path"] = str(p)
+                analysis["page"] = page_idx + 1
+                analysis["rendered_image"] = str(img_path)
+                results.append(analysis)
+            doc.close()
+            return {
+                "path": str(p),
+                "n_pages_analyzed": len(results),
+                "results": results,
+                "figures": [r.get("rendered_image") for r in results if r.get("rendered_image")],
+            }
+        except Exception as exc:
+            return {"error": str(exc), "path": str(p)}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ── Tool 9: WebSearchTool ─────────────────────────────────────────────────────
@@ -2139,8 +2222,10 @@ class WebSearchTool:
     """
     Optional web and scholar search.  Disabled by default (allow_web_search=False).
 
-    web_search:    DuckDuckGo HTML scrape (no API key required)
-    scholar_search: Semantic Scholar public API (no key required)
+    openalex_search: OpenAlex Works API (no API key required)
+    scholar_search:  Semantic Scholar public API (no key required)
+    arxiv_search:    arXiv Atom API (no API key required)
+    web_search:      DuckDuckGo HTML scrape fallback (no API key required)
     download_pdf:  Fetch and save a PDF from a URL to output_dir
     """
 
@@ -2158,6 +2243,107 @@ class WebSearchTool:
             )}
         return None
 
+    @staticmethod
+    def _abstract_from_openalex(inv: Any) -> str:
+        if not isinstance(inv, dict):
+            return ""
+        pos: List[Tuple[int, str]] = []
+        for word, idxs in inv.items():
+            if isinstance(idxs, list):
+                for i in idxs:
+                    if isinstance(i, int):
+                        pos.append((i, word))
+        return " ".join(w for _, w in sorted(pos))[:1200]
+
+    def openalex_search(self, query: str, max_results: int = 8) -> Dict[str, Any]:
+        """Search OpenAlex works. Returns normalized paper records."""
+        err = self._check_allowed()
+        if err:
+            return err
+        params = urllib.parse.urlencode({
+            "search": query,
+            "per-page": max(1, min(int(max_results), 25)),
+            "select": "id,doi,title,display_name,publication_year,authorships,abstract_inverted_index,primary_location,open_access,cited_by_count",
+            "mailto": "seismicx@example.com",
+        })
+        url = f"https://api.openalex.org/works?{params}"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "SeismicX/1.0 (mailto: seismicx@example.com)"})
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+            papers = []
+            for p in body.get("results", []) or []:
+                loc = p.get("primary_location") or {}
+                landing = (loc.get("landing_page_url") or loc.get("pdf_url") or p.get("id") or "")
+                authors = []
+                for au in (p.get("authorships") or [])[:6]:
+                    name = ((au.get("author") or {}).get("display_name") or "").strip()
+                    if name:
+                        authors.append(name)
+                papers.append({
+                    "title": p.get("display_name") or p.get("title") or "",
+                    "authors": authors,
+                    "year": p.get("publication_year"),
+                    "abstract": self._abstract_from_openalex(p.get("abstract_inverted_index")),
+                    "url": landing,
+                    "doi": (p.get("doi") or "").replace("https://doi.org/", ""),
+                    "source": "openalex",
+                    "cited_by_count": p.get("cited_by_count"),
+                    "open_access": p.get("open_access") or {},
+                })
+            return {"query": query, "papers": papers, "count": len(papers), "source": "openalex"}
+        except Exception as exc:
+            return {"query": query, "papers": [], "count": 0, "source": "openalex", "error": str(exc)}
+
+    def arxiv_search(self, query: str, max_results: int = 8) -> Dict[str, Any]:
+        """Search arXiv Atom API. Returns normalized paper records."""
+        err = self._check_allowed()
+        if err:
+            return err
+        params = urllib.parse.urlencode({
+            "search_query": f"all:{query}",
+            "start": 0,
+            "max_results": max(1, min(int(max_results), 25)),
+            "sortBy": "relevance",
+            "sortOrder": "descending",
+        })
+        url = f"https://export.arxiv.org/api/query?{params}"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "SeismicX/1.0 (research assistant)"})
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                xml = resp.read()
+            root = ET.fromstring(xml)
+            ns = {"atom": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
+            papers = []
+            for entry in root.findall("atom:entry", ns):
+                title = " ".join(entry.findtext("atom:title", default="", namespaces=ns).split())
+                summary = " ".join((entry.findtext("atom:summary", default="", namespaces=ns) or "").split())
+                authors = [
+                    (a.findtext("atom:name", default="", namespaces=ns) or "").strip()
+                    for a in entry.findall("atom:author", ns)
+                ]
+                links = entry.findall("atom:link", ns)
+                pdf_url = ""
+                page_url = entry.findtext("atom:id", default="", namespaces=ns)
+                for link in links:
+                    if link.attrib.get("title") == "pdf" or link.attrib.get("type") == "application/pdf":
+                        pdf_url = link.attrib.get("href", "")
+                        break
+                published = entry.findtext("atom:published", default="", namespaces=ns)
+                papers.append({
+                    "title": title,
+                    "authors": [a for a in authors if a][:6],
+                    "year": int(published[:4]) if published[:4].isdigit() else None,
+                    "abstract": summary[:1200],
+                    "url": page_url,
+                    "pdf_url": pdf_url,
+                    "doi": entry.findtext("arxiv:doi", default="", namespaces=ns) or "",
+                    "source": "arxiv",
+                })
+            return {"query": query, "papers": papers, "count": len(papers), "source": "arxiv"}
+        except Exception as exc:
+            return {"query": query, "papers": [], "count": 0, "source": "arxiv", "error": str(exc)}
+
     def web_search(self, query: str, max_results: int = 8) -> Dict[str, Any]:
         """Search the web via DuckDuckGo HTML (no API key required)."""
         err = self._check_allowed()
@@ -2170,7 +2356,7 @@ class WebSearchTool:
                 url,
                 headers={"User-Agent": "Mozilla/5.0 (compatible; SeismicX/1.0)"},
             )
-            with urllib.request.urlopen(req, timeout=20) as resp:
+            with urllib.request.urlopen(req, timeout=8) as resp:
                 html = resp.read().decode("utf-8", errors="replace")
 
             # Minimal HTML scrape — extract result titles and snippets
@@ -2238,7 +2424,7 @@ class WebSearchTool:
         last_error = ""
         for attempt in range(2):
             try:
-                with urllib.request.urlopen(req, timeout=20) as resp:
+                with urllib.request.urlopen(req, timeout=8) as resp:
                     body = json.loads(resp.read().decode())
 
                 papers = []
@@ -2283,6 +2469,72 @@ class WebSearchTool:
             "source": "semantic_scholar",
             "warning": "Semantic Scholar is rate-limited; no fallback results found." if "429" in last_error else "",
             "error": last_error,
+        }
+
+    def literature_search(self, query: str, max_results: int = 8, sources: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Search multiple scholarly/web sources and return a deduplicated paper list."""
+        err = self._check_allowed()
+        if err:
+            return err
+        selected = sources or self._cfg.web_search_sources or ["semantic_scholar"]
+        aliases = {
+            "semantic": "semantic_scholar",
+            "semantic_scholar": "semantic_scholar",
+            "scholar": "semantic_scholar",
+            "openalex": "openalex",
+            "arxiv": "arxiv",
+            "web": "web",
+            "duckduckgo": "web",
+        }
+        ordered = []
+        for s in selected:
+            v = aliases.get(str(s).strip().lower())
+            if v and v not in ordered:
+                ordered.append(v)
+        if not ordered:
+            ordered = ["semantic_scholar"]
+
+        results_by_source = {}
+        all_papers = []
+        per_source = max(1, min(int(max_results), 20))
+        for src in ordered:
+            if src == "openalex":
+                res = self.openalex_search(query, per_source)
+            elif src == "arxiv":
+                res = self.arxiv_search(query, per_source)
+            elif src == "web":
+                res = self.web_search(query, per_source)
+                res["papers"] = self._web_results_to_papers(res)
+                res["source"] = "web"
+            else:
+                res = self.scholar_search(query, per_source)
+            results_by_source[src] = res
+            for p in res.get("papers", []) or []:
+                all_papers.append(p)
+            if len(all_papers) >= max_results:
+                break
+
+        seen = set()
+        deduped = []
+        for p in all_papers:
+            key = (p.get("doi") or p.get("url") or p.get("title") or "").strip().lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(p)
+            if len(deduped) >= max_results:
+                break
+        warnings = [r.get("warning") for r in results_by_source.values() if r.get("warning")]
+        errors = {k: v.get("error") for k, v in results_by_source.items() if v.get("error")}
+        return {
+            "query": query,
+            "papers": deduped,
+            "count": len(deduped),
+            "source": "multi",
+            "sources": ordered,
+            "results_by_source": results_by_source,
+            "warning": " | ".join(warnings),
+            "errors": errors,
         }
 
     def download_pdf(self, url: str, filename: Optional[str] = None) -> Dict[str, Any]:
@@ -2444,15 +2696,22 @@ class ToolRegistry:
         CapabilitySpec(
             name="image_analysis",
             role="Vision-model interpretation of figures, maps, sections, and table images.",
-            methods=["analyze_image(path,question)", "extract_table(path,question)"],
+            methods=["analyze_image(path,question)", "extract_table(path,question)", "analyze_pdf_visuals(path,question,max_pages)"],
             priority=7,
             gated_by="use_multimodal",
-            use_when="PNG/JPG figures or scanned tables are present.",
+            use_when="PNG/JPG figures, article figures, PDF pages, maps, cross-sections, or scanned tables are present.",
         ),
         CapabilitySpec(
             name="web_search",
             role="Online web and scholarly literature discovery.",
-            methods=["web_search(query,max_results)", "scholar_search(query,max_results)", "download_pdf(url,filename)"],
+            methods=[
+                "literature_search(query,max_results,sources)",
+                "openalex_search(query,max_results)",
+                "scholar_search(query,max_results)",
+                "arxiv_search(query,max_results)",
+                "web_search(query,max_results)",
+                "download_pdf(url,filename)",
+            ],
             priority=8,
             gated_by="allow_web_search",
             use_when="Local/RAG evidence is insufficient or current literature is needed.",
@@ -2671,6 +2930,11 @@ ANTI-HALLUCINATION RULES:
 - Every claim MUST be directly traceable to the tool output.
 - NEVER fabricate numbers, coordinates, or geological names not in the source.
 - If the tool output contains no relevant evidence, return an empty array [].
+- Every evidence item MUST include source_excerpt: an exact short span copied from
+  the provided tool output that supports the observation. If no exact supporting
+  span exists in the tool output, do NOT create that evidence item.
+- Do not create placeholder evidence IDs, labels, citations, scores, star ratings,
+  or ranked evidence rows. Evidence IDs are assigned by the program, not by you.
 
 SEPARATION RULES:
 - observation: what the data / text DIRECTLY states (factual, verbatim or close paraphrase)
@@ -2680,11 +2944,21 @@ SEPARATION RULES:
 - Mark source_type: "literature" | "local_data" | "model_derived" | "inference" | "speculation"
   - speculation: ONLY when source explicitly hedges with "may", "possibly", "unclear", "uncertain"
 - Mark evidence_type: "text" | "figure" | "table" | "data"
+- Extract quantitative values whenever present, including units, ranges, sample counts,
+  coordinates, depths, times, rates, magnitudes, velocities, or uncertainty bounds.
+- Evidence can support other evidence. Use upstream_evidence for evidence IDs or source
+  labels that this claim depends on. If no upstream evidence is visible, use [].
+- Score reliability separately from confidence:
+  reliability = source/data quality and traceability;
+  relevance = importance to the current scientific question or hypothesis.
+- verification_status says whether this evidence has been independently checked by
+  another source/tool/result; verification_needed states what is missing for verification.
 
 Output ONLY a JSON array (empty [] is valid):
 [
   {
     "observation":               "verbatim or close paraphrase of factual content",
+    "source_excerpt":            "exact supporting span copied from the tool output",
     "interpretation":            "source's conclusion from this observation",
     "alternative_interpretation": "an alternative geological reading (agent-generated)",
     "assumption":                "key assumption (or empty string)",
@@ -2694,7 +2968,13 @@ Output ONLY a JSON array (empty [] is valid):
     "spatial_scale":  "local (<50km) | regional (50-500km) | crustal | lithospheric",
     "depth_range":    "e.g. 0-15 km or unspecified",
     "geological_structure": "primary structure named",
+    "quantitative_values": {"name": {"value": 0, "unit": "km", "uncertainty": "optional"}},
     "confidence":   "high | medium | low",
+    "reliability":  "high | medium | low",
+    "relevance":    "high | medium | low",
+    "upstream_evidence": ["evidence_id_or_source_label"],
+    "verification_status": "verified | partially_verified | unverified | contradicted",
+    "verification_needed": "specific missing check, data, or source",
     "uncertainty":  "main uncertainty or empty string",
     "citation":     "short citation if available (Author Year, or filename)"
   }
@@ -2707,6 +2987,8 @@ You are a geoscience hypothesis generator. Generate COMPETING testable hypothese
 from the evidence table. Rules:
 - Do not converge to one hypothesis prematurely.
 - Each hypothesis must cite specific evidence IDs.
+- Use ONLY evidence IDs that appear in the supplied evidence table.
+- If there is not enough grounded evidence, return [] rather than inventing a hypothesis.
 - Prefer hypotheses testable with available seismic/geological data.
 - Flag confidence based on weight of evidence.
 Output JSON array:
@@ -2724,6 +3006,9 @@ Output JSON array:
 
 _REASONER_SYSTEM = """\
 You are a geological reasoning expert. Evaluate each hypothesis rigorously.
+Use ONLY the supplied hypothesis IDs and evidence IDs. Do not invent evidence IDs,
+source names, rankings, star ratings, or missing citations. If evidence is weak,
+say insufficient_data.
 Output JSON:
 {
   "evaluations": [
@@ -2735,7 +3020,16 @@ Output JSON:
   ],
   "preferred_hypothesis": "H1",
   "preferred_rationale": "reason citing evidence IDs",
-  "missing_information": ["list of critically missing data"]
+  "missing_information": ["list of critically missing data"],
+  "evidence_audit": [
+    {
+      "evidence_id": "ev_id",
+      "reliability": "high | medium | low",
+      "relevance": "high | medium | low",
+      "verification_status": "verified | partially_verified | unverified | contradicted",
+      "verification_needed": "what evidence-of-evidence should be collected next"
+    }
+  ]
 }
 """
 
@@ -2753,10 +3047,20 @@ _REPORT_SYSTEM = """\
 Write a structured geoscience interpretation report in Markdown.
 Rules:
 - Every geological claim must cite an evidence ID in brackets, e.g. [ev_abc123].
+- Use ONLY the evidence IDs supplied in the prompt. Do not invent IDs such as
+  ev_seis_01, ev_chem_01, or any source/citation not present in the prompt.
+- Do not invent star ratings, numeric scores, ranks, tables, measurements, locations,
+  dates, or methods. If relevance/reliability are uncertain, say "unverified" or
+  "insufficient evidence".
+- If the supplied evidence list is empty or weak, the main conclusion must be
+  "current evidence is insufficient" and the report should focus on missing data.
 - Clearly separate observation from interpretation.
+- Include an Evidence Chain / Evidence-of-Evidence section that identifies which evidence
+  depends on upstream literature, figures, tables, code results, or previous projects.
+- Rank key evidence by relevance and reliability; do not treat all evidence equally.
 - Flag uncertainty and missing data explicitly.
 - Use hedging language where appropriate (consistent with, suggests, may indicate).
-- Structure: ## Problem Definition | ## Evidence Summary | ## Competing Hypotheses | ## Preferred Interpretation | ## Uncertainty & Limitations | ## Recommended Analyses | ## References
+- Structure: ## Problem Definition | ## Evidence Summary | ## Evidence Chain and Reliability | ## Competing Hypotheses | ## Preferred Interpretation | ## Missing Information | ## Uncertainty & Limitations | ## Recommended Analyses | ## References
 - Keep under 1400 words.
 """
 
@@ -2822,19 +3126,36 @@ class GeoEvidenceTableBuilder:
     def to_markdown(self) -> str:
         if not self._table:
             return "_No evidence collected._"
-        hdr = ("| ID | Source | Type | Structure | Observation | "
-               "Interpretation | Confidence | Source Type |\n"
-               "|---|---|---|---|---|---|---|---|\n")
+        hdr = ("| ID | Source | Type | Structure | Observation | Source Excerpt | "
+               "Interpretation | Reliability | Relevance | Verification |\n"
+               "|---|---|---|---|---|---|---|---|---|---|\n")
         rows = []
         for ev in self._table:
             obs = ev.observation[:70].replace("|", "∣")
+            excerpt = ev.source_excerpt[:90].replace("|", "∣")
             interp = ev.interpretation[:50].replace("|", "∣")
             rows.append(
                 f"| {ev.evidence_id} | {ev.source[:30]} | {ev.data_type} | "
-                f"{ev.geological_structure[:25]} | {obs} | {interp} | "
-                f"{ev.confidence} | {ev.source_type} |"
+                f"{ev.geological_structure[:25]} | {obs} | {excerpt} | {interp} | "
+                f"{ev.reliability} | {ev.relevance} | {ev.verification_status} |"
             )
         return hdr + "\n".join(rows)
+
+    def sources_markdown(self) -> str:
+        if not self._table:
+            return "_No sources cited._"
+        rows = [
+            "| Evidence ID | Source | Source Type | Tool Call | Supporting Excerpt |",
+            "|---|---|---|---|---|",
+        ]
+        for ev in self._table:
+            source = str(ev.source).replace("|", "∣")
+            excerpt = (ev.source_excerpt or ev.observation)[:140].replace("|", "∣")
+            rows.append(
+                f"| {ev.evidence_id} | {source} | {ev.source_type} | "
+                f"{ev.tool_call_id} | {excerpt} |"
+            )
+        return "\n".join(rows)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3098,8 +3419,8 @@ class LoopController:
         iteration: int,
         calls_this_iter: int,
         recent_results: List[str],
-    ) -> Optional[Dict[str, Any]]:
-        """Ask the LLM which tool to call next. Returns parsed JSON or None."""
+    ) -> Dict[str, Any]:
+        """Ask the LLM which tool to call next, repairing raw text when JSON is malformed."""
         ev_summary = f"{len(self._ev.table)} evidence records collected so far."
         ev_types = list({e.data_type for e in self._ev.table[-10:]})
         recent_txt = "\n".join(f"  - {r}" for r in recent_results[-3:])
@@ -3110,7 +3431,8 @@ class LoopController:
             f"Iteration {iteration}, tool call {calls_this_iter + 1} of {self._cfg.max_tool_calls_per_iter}.\n"
             f"Evidence so far: {ev_summary}  Types: {ev_types}\n\n"
             f"Recent tool results:\n{recent_txt or '(none yet)'}\n\n"
-            "Select the next tool call as JSON. If local data files are present, prefer concrete "
+            "Select the next tool call. Prefer valid JSON, but if you cannot produce JSON, write "
+            "plain text with Tool, Method, Args, Purpose, Reason, Done fields. If local data files are present, prefer concrete "
             "data-reading/plotting/code calls before broad interpretive statements. If evidence is "
             "thin and web search is enabled, search scholarly literature and extract evidence from abstracts."
         )
@@ -3118,14 +3440,217 @@ class LoopController:
             {"role": "system", "content": self._reg.tool_selector_system()},
             {"role": "user",   "content": prompt},
         ]
+        raw = ""
         try:
             raw = _llm_call(messages, self._llm, max_tokens=400, temperature=0.3)
-            m = re.search(r'\{.*\}', raw, re.DOTALL)
-            if m:
-                return json.loads(m.group(0))
         except Exception:
-            pass
+            raw = ""
+
+        parsed = self._parse_tool_selection(raw)
+        if parsed and self._valid_tool_selection(parsed):
+            return parsed
+
+        repaired = self._repair_tool_selection(raw, question, calls_this_iter)
+        if repaired and self._valid_tool_selection(repaired):
+            repaired["_selector_repaired"] = True
+            repaired["_selector_raw"] = raw[:800]
+            return repaired
+
+        fallback = self._fallback_tool_selection(question, study_area, calls_this_iter, recent_results)
+        fallback["_selector_fallback"] = True
+        fallback["_selector_raw"] = raw[:800]
+        return fallback
+
+    @staticmethod
+    def _balanced_json_objects(text: str) -> List[str]:
+        """Extract balanced JSON-like object substrings from arbitrary LLM text."""
+        objs: List[str] = []
+        start = -1
+        depth = 0
+        in_str = False
+        escape = False
+        for i, ch in enumerate(text or ""):
+            if in_str:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif ch == "}":
+                if depth:
+                    depth -= 1
+                    if depth == 0 and start >= 0:
+                        objs.append(text[start:i + 1])
+        return objs
+
+    def _parse_tool_selection(self, raw: str) -> Optional[Dict[str, Any]]:
+        """Parse strict/fenced/loose JSON or Python-literal dict from selector output."""
+        if not raw:
+            return None
+        candidates: List[str] = []
+        for m in re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL | re.I):
+            candidates.append(m.group(1))
+        candidates.extend(self._balanced_json_objects(raw))
+        candidates.append(raw.strip())
+        for cand in candidates:
+            cand = cand.strip()
+            if not cand:
+                continue
+            for loader in (json.loads, ast.literal_eval):
+                try:
+                    obj = loader(cand)
+                    if isinstance(obj, dict):
+                        if "purpose" in obj and "reason" not in obj:
+                            obj["reason"] = obj.get("purpose", "")
+                        obj.setdefault("args", {})
+                        return obj
+                except Exception:
+                    continue
         return None
+
+    def _repair_tool_selection(self, raw: str, question: str, calls_this_iter: int) -> Optional[Dict[str, Any]]:
+        """Recover a selector decision from raw prose or key-value text."""
+        txt = raw or ""
+        low = txt.lower()
+        if re.search(r"\bdone\b|足够|完成|enough evidence|stop", low):
+            return {"done": True, "reason": txt.strip()[:240] or "Selector indicated completion."}
+
+        tool_aliases = {
+            "skill": "skill_manager",
+            "skill_manager": "skill_manager",
+            "rag": "rag_index",
+            "rag_index": "rag_index",
+            "knowledge": "rag_index",
+            "literature": "literature_library",
+            "paper": "literature_library",
+            "pdf": "document_analysis",
+            "document": "document_analysis",
+            "image": "image_analysis",
+            "figure": "image_analysis",
+            "table": "image_analysis",
+            "web": "web_search",
+            "scholar": "web_search",
+            "openalex": "web_search",
+            "arxiv": "web_search",
+            "file": "local_file_search",
+            "local": "local_file_search",
+            "code": "code_engine",
+            "python": "code_engine",
+            "seismo": "seismo_data",
+            "catalog": "seismo_data",
+            "waveform": "seismo_data",
+        }
+        method_defaults = {
+            "skill_manager": ("build_context", {"query": question, "max_skill_chars": 6000, "max_rag_chars": 5000}),
+            "rag_index": ("search_rag", {"query": question, "top_k": self._cfg.rag_top_k}),
+            "literature_library": ("search_papers", {"query": question}),
+            "document_analysis": ("analyze_document", {"path": ".", "question": question, "max_chars": 8000}),
+            "image_analysis": ("analyze_pdf_visuals", {"path": ".", "question": question, "max_pages": 4}),
+            "web_search": ("literature_search", {"query": question, "max_results": 5, "sources": self._cfg.web_search_sources}),
+            "local_file_search": ("search_files", {"query": question, "root": "."}),
+            "code_engine": ("run_task", {"prompt": question, "data_hint": ""}),
+            "seismo_data": ("read_catalog", {"path": "."}),
+        }
+
+        explicit_tool = ""
+        m = re.search(r"(?im)^\s*(?:tool|工具)\s*[:：]\s*([A-Za-z0-9_ -]+)", txt)
+        if m:
+            explicit_tool = m.group(1).strip().lower().replace("-", "_").replace(" ", "_")
+        tool = tool_aliases.get(explicit_tool, "")
+        if not tool:
+            for key, value in tool_aliases.items():
+                if key in low:
+                    tool = value
+                    break
+        if not tool:
+            return None
+
+        method, args = method_defaults[tool]
+        m = re.search(r"(?im)^\s*(?:method|方法)\s*[:：]\s*([A-Za-z0-9_]+)", txt)
+        if m:
+            method = m.group(1).strip()
+        args_match = re.search(r"(?im)^\s*(?:args|参数)\s*[:：]\s*(\{.*\})\s*$", txt)
+        if args_match:
+            parsed_args = self._parse_tool_selection(args_match.group(1))
+            if isinstance(parsed_args, dict):
+                args = parsed_args
+
+        return {
+            "tool": tool,
+            "method": method,
+            "args": args,
+            "purpose": "Recovered from non-JSON selector output.",
+            "reason": (txt.strip()[:240] or "Recovered from raw tool selector text."),
+            "done": False,
+        }
+
+    def _valid_tool_selection(self, obj: Dict[str, Any]) -> bool:
+        if obj.get("done") is True:
+            return True
+        tool = obj.get("tool", "")
+        method = obj.get("method", "")
+        if not isinstance(obj.get("args", {}), dict):
+            return False
+        instance = getattr(self._reg, "_tools", {}).get(tool)
+        return bool(instance and method and callable(getattr(instance, method, None)))
+
+    def _fallback_tool_selection(
+        self,
+        question: str,
+        study_area: str,
+        calls_this_iter: int,
+        recent_results: List[str],
+    ) -> Dict[str, Any]:
+        """Deterministic fallback when the LLM selector cannot be parsed."""
+        recent = "\n".join(recent_results).lower()
+        if calls_this_iter == 0 and "skill_manager" not in recent:
+            return {
+                "tool": "skill_manager",
+                "method": "build_context",
+                "args": {"query": question, "max_skill_chars": 6000, "max_rag_chars": 5000},
+                "purpose": "Load relevant skills and local knowledge before interpretation.",
+                "reason": "Rule fallback after malformed selector output: start with SKILL/RAG context.",
+                "done": False,
+            }
+        if self._cfg.use_rag and "rag_index.search_rag" not in recent and "rag:" not in recent:
+            return {
+                "tool": "rag_index",
+                "method": "search_rag",
+                "args": {"query": question, "top_k": self._cfg.rag_top_k},
+                "purpose": "Retrieve grounded passages from the local knowledge base.",
+                "reason": "Rule fallback after malformed selector output: collect local RAG evidence.",
+                "done": False,
+            }
+        if self._cfg.use_local_files and "local_file_search" not in recent:
+            return {
+                "tool": "local_file_search",
+                "method": "search_files",
+                "args": {"query": question or study_area or ".", "root": "."},
+                "purpose": "Discover local files that can ground the interpretation.",
+                "reason": "Rule fallback after malformed selector output: inspect workspace files.",
+                "done": False,
+            }
+        if self._cfg.allow_web_search and "web_search" not in recent:
+            return {
+                "tool": "web_search",
+                "method": "literature_search",
+                "args": {"query": question, "max_results": 5, "sources": self._cfg.web_search_sources},
+                "purpose": "Search external scholarly sources because local selection failed.",
+                "reason": "Rule fallback after malformed selector output and insufficient local evidence.",
+                "done": False,
+            }
+        return {
+            "done": True,
+            "reason": "Selector output could not be parsed and deterministic fallback sources have already been tried.",
+        }
 
     def _extract_evidence(
         self,
@@ -3156,6 +3681,9 @@ class LoopController:
                     obs = item.get("observation", "").strip()
                     if not obs:
                         continue
+                    source_excerpt = str(item.get("source_excerpt") or obs).strip()
+                    if not _excerpt_supported(text_repr, source_excerpt):
+                        continue
                     eid = hashlib.md5(f"{call_id}:{obs[:60]}".encode()).hexdigest()[:10]
                     records.append(GeoEvidence(
                         evidence_id=eid,
@@ -3163,8 +3691,16 @@ class LoopController:
                         source_type="local_data",
                         evidence_type="table",
                         observation=obs,
+                        source_excerpt=source_excerpt,
                         data_type=item.get("data_type", "other"),
-                        confidence=item.get("confidence", "medium"),
+                        confidence=_valid_level(item.get("confidence", "low"), "low"),
+                        reliability=_valid_level(item.get("reliability", item.get("confidence", "low")), "low"),
+                        relevance=_valid_level(item.get("relevance", "low"), "low"),
+                        quantitative_values=item.get("quantitative_values", {}) if isinstance(item.get("quantitative_values", {}), dict) else {},
+                        upstream_evidence=item.get("upstream_evidence", []) if isinstance(item.get("upstream_evidence", []), list) else [],
+                        verification_status=_valid_verification_status(item.get("verification_status", "unverified")),
+                        verification_needed=item.get("verification_needed", ""),
+                        provenance_note="accepted because source_excerpt appears in the tool output",
                         iteration=iteration,
                         tool_call_id=call_id,
                     ))
@@ -3245,6 +3781,9 @@ class LoopController:
             obs = item.get("observation", "").strip()
             if not obs or len(obs) < 20:
                 continue
+            source_excerpt = str(item.get("source_excerpt", "")).strip()
+            if not _excerpt_supported(text_repr, source_excerpt):
+                continue
             eid = hashlib.md5(f"{call_id}:{obs[:60]}".encode()).hexdigest()[:10]
             records.append(GeoEvidence(
                 evidence_id=eid,
@@ -3252,6 +3791,7 @@ class LoopController:
                 source_type=item.get("source_type", src_hint),
                 evidence_type=item.get("evidence_type", ev_type_hint),
                 observation=obs,
+                source_excerpt=source_excerpt,
                 data_type=item.get("data_type", "other"),
                 spatial_scale=item.get("spatial_scale", "unspecified"),
                 depth_range=item.get("depth_range", "unspecified"),
@@ -3259,7 +3799,14 @@ class LoopController:
                 interpretation=item.get("interpretation", ""),
                 alternative_interpretation=item.get("alternative_interpretation", ""),
                 assumption=item.get("assumption", ""),
-                confidence=item.get("confidence", "medium"),
+                confidence=_valid_level(item.get("confidence", "low"), "low"),
+                reliability=_valid_level(item.get("reliability", item.get("confidence", "low")), "low"),
+                relevance=_valid_level(item.get("relevance", "low"), "low"),
+                quantitative_values=item.get("quantitative_values", {}) if isinstance(item.get("quantitative_values", {}), dict) else {},
+                upstream_evidence=item.get("upstream_evidence", []) if isinstance(item.get("upstream_evidence", []), list) else [],
+                verification_status=_valid_verification_status(item.get("verification_status", "unverified")),
+                verification_needed=item.get("verification_needed", ""),
+                provenance_note="accepted because source_excerpt appears in the tool output",
                 uncertainty=item.get("uncertainty", ""),
                 citation=item.get("citation", ""),
                 iteration=iteration,
@@ -3307,12 +3854,17 @@ class LoopController:
             return existing
 
         result = []
+        valid_ids = {e.evidence_id for e in evidence}
         for i, h in enumerate(items):
+            supporting = [x for x in h.get("supporting_evidence", []) if x in valid_ids]
+            contradicting = [x for x in h.get("contradicting_evidence", []) if x in valid_ids]
+            if not supporting and not contradicting:
+                continue
             result.append(GeoHypothesis(
                 hypothesis_id=f"H{i + 1}",
                 statement=h.get("statement", ""),
-                supporting_evidence=h.get("supporting_evidence", []),
-                contradicting_evidence=h.get("contradicting_evidence", []),
+                supporting_evidence=supporting,
+                contradicting_evidence=contradicting,
                 data_types_needed=h.get("data_types_needed", []),
                 confidence=h.get("confidence", "medium"),
             ))
@@ -3328,7 +3880,10 @@ class LoopController:
             return [], [], "", ""
 
         ev_txt = "\n".join(
-            f"[{e.evidence_id}] {e.geological_structure}: {e.observation[:80]}"
+            f"[{e.evidence_id}] rel={e.relevance} reliability={e.reliability} "
+            f"verify={e.verification_status} upstream={','.join(e.upstream_evidence[:4])}: "
+            f"{e.geological_structure}: {e.observation[:100]} "
+            f"quant={json.dumps(e.quantitative_values, ensure_ascii=False)[:160]}"
             for e in self._ev.table[-20:]
         )
         hyp_txt = "\n".join(
@@ -3358,6 +3913,20 @@ class LoopController:
             ev = evals.get(h.hypothesis_id, {})
             if ev.get("assessment") == "contradicted":
                 h.status = "rejected"
+
+        audit = d.get("evidence_audit", [])
+        if isinstance(audit, list):
+            by_id = {e.evidence_id: e for e in self._ev.table}
+            for item in audit:
+                if not isinstance(item, dict):
+                    continue
+                ev = by_id.get(str(item.get("evidence_id", "")))
+                if not ev:
+                    continue
+                ev.reliability = item.get("reliability", ev.reliability)
+                ev.relevance = item.get("relevance", ev.relevance)
+                ev.verification_status = item.get("verification_status", ev.verification_status)
+                ev.verification_needed = item.get("verification_needed", ev.verification_needed)
 
         missing  = d.get("missing_information", [])
         pref_id  = d.get("preferred_hypothesis", "")
@@ -3506,11 +4075,16 @@ class LoopController:
         preferred_rat: str,
         iteration: int,
     ) -> str:
+        valid_ids = {e.evidence_id for e in self._ev.table}
         ev_txt = "\n".join(
             f"[{e.evidence_id}] {e.source_type}|{e.data_type}|{e.source}: "
-            f"{e.observation[:100]} — {e.interpretation[:60]}"
+            f"rel={e.relevance} reliability={e.reliability} verify={e.verification_status} "
+            f"upstream={','.join(e.upstream_evidence[:4])} "
+            f"excerpt={e.source_excerpt[:120]} "
+            f"observation={e.observation[:100]} — interpretation={e.interpretation[:60]}"
             for e in self._ev.table
         )
+        source_txt = self._ev.sources_markdown()
         hyp_txt = "\n".join(
             f"[{h.hypothesis_id}] ({h.confidence}) {h.statement} [{h.status}]"
             for h in hypotheses
@@ -3519,6 +4093,8 @@ class LoopController:
             f"## Scientific question\n{question}\n\n"
             f"## Study area\n{study_area}\n\n"
             f"## Evidence table (iteration {iteration})\n{ev_txt}\n\n"
+            f"## Allowed evidence IDs\n{', '.join(sorted(valid_ids)) or '(none)'}\n\n"
+            f"## Citation sources / provenance\n{source_txt}\n\n"
             f"## Hypotheses\n{hyp_txt}\n\n"
             f"## Preferred: {preferred_id} — {preferred_rat}\n\n"
             f"## Missing\n" + "\n".join(f"- {m}" for m in missing[:8]) + "\n\n"
@@ -3537,7 +4113,37 @@ class LoopController:
                 f"*Report generation failed: {exc}*\n\n"
                 f"## Evidence\n{self._ev.to_markdown()}"
             )
+        self._report = self._audit_report_grounding(self._report, valid_ids, iteration)
         return self._report
+
+    def _audit_report_grounding(self, report: str, valid_ids: set, iteration: int) -> str:
+        """Prevent unsupported report text from being presented as a grounded result."""
+        cited_ids = set(re.findall(r"\[([A-Za-z0-9_:-]+)\]", report or ""))
+        unknown = sorted(i for i in cited_ids if i not in valid_ids and not i.startswith("H"))
+        star_rating = bool(re.search(r"[★☆]{2,}|星级|star rating", report or "", re.I))
+        if not unknown and not star_rating:
+            return report
+
+        issues = []
+        if unknown:
+            issues.append("报告引用了不存在的证据 ID: " + ", ".join(unknown[:12]))
+        if star_rating:
+            issues.append("报告包含未由数据结构支持的星级/评分式可靠性表达")
+        evidence_md = self._ev.to_markdown()
+        source_md = self._ev.sources_markdown()
+        return (
+            f"# Grounding Audit Report (iteration {iteration})\n\n"
+            "自动审计发现模型生成了未被证据表支撑的内容，因此已阻止原报告作为可信结论展示。\n\n"
+            "## 审计问题\n"
+            + "\n".join(f"- {x}" for x in issues)
+            + "\n\n## 已验证证据表\n\n"
+            + evidence_md
+            + "\n\n## 引用源 / Provenance Sources\n\n"
+            + source_md
+            + "\n\n## 下一步\n"
+            "- 重新检索或读取原始文件，补充可逐字反查的 source_excerpt。\n"
+            "- 只有进入证据表的 ID 才允许被报告引用。\n"
+        )
 
     # ── Main loop ──────────────────────────────────────────────────────────
 
@@ -3571,9 +4177,10 @@ class LoopController:
                 selection = self._select_tool(
                     question, study_area, iteration, call_num, recent_summaries
                 )
-                if selection is None:
-                    _emit("warning", "Tool selector returned no valid JSON; stopping tool calls.")
-                    break
+                if selection.get("_selector_repaired"):
+                    _emit("warning", "Tool selector returned non-JSON text; recovered a tool call from raw text.")
+                elif selection.get("_selector_fallback"):
+                    _emit("warning", "Tool selector returned invalid text; using deterministic fallback tool call.")
                 if selection.get("done", False):
                     _emit("tool_done", f"Agent signals done: {selection.get('reason','')[:80]}")
                     break
@@ -3669,6 +4276,8 @@ class LoopController:
             self._report
             + "\n\n---\n\n## Evidence Table\n\n"
             + self._ev.to_markdown()
+            + "\n\n---\n\n## Citation Sources / Provenance\n\n"
+            + self._ev.sources_markdown()
             + "\n\n---\n\n## Intermediate Research Artifacts\n\n"
             + self._artifact_markdown()
         )

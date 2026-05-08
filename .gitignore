@@ -13,3 +13,4 @@ seismo_skill/docs/GMT_docs-6.5
 *.mseed
 seismo_rag/*
 !seismo_rag/.gitkeep
+/deliverables

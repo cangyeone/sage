@@ -208,11 +208,13 @@ body { background: #f5f7fa; min-height: 100vh; }
         <!-- Ollama 已安装模型 -->
         <div id="ollamaSection">
           <label class="form-label fw-bold" data-i18n="label_installed_models">选择 Ollama 模型</label>
-          <div id="ollamaModelsLoading" class="text-center py-3">
+          <div id="ollamaModelsLoading" class="text-center py-3" style="display:none">
             <div class="spinner-border spinner-border-sm text-primary"></div>
             <span class="ms-2 text-muted" data-i18n="models_loading">正在读取已安装模型…</span>
           </div>
-          <div id="ollamaModelsList" class="model-list mb-3" style="display:none"></div>
+          <div id="ollamaModelsList" class="model-list mb-3">
+            <div class="text-muted" data-i18n="manual_model_hint">可从列表选择，或直接在下方手动输入模型名称。</div>
+          </div>
           <input type="text" class="form-control" id="ollamaCustomModel"
                  data-i18n-placeholder="custom_model_placeholder"
                  placeholder="或手动输入模型名称，如 qwen3:30b">
@@ -419,6 +421,7 @@ const I18N = {
     custom_sub: 'SiliconFlow / 月之暗面 / 本地 vLLM 等',
     label_installed_models: '选择 Ollama 模型',
     models_loading: '正在读取已安装模型…',
+    manual_model_hint: '可从列表选择，或直接在下方手动输入模型名称。',
     custom_model_placeholder: '或手动输入模型名称，如 qwen3:30b',
     label_download: '下载新模型',
     download_hint: '选择推荐模型或手动输入名称后点击下载',
@@ -489,6 +492,7 @@ const I18N = {
     custom_sub: 'SiliconFlow / Moonshot / local vLLM, etc.',
     label_installed_models: 'Select Ollama Model',
     models_loading: 'Loading installed models…',
+    manual_model_hint: 'Choose from the list, or manually enter a model name below.',
     custom_model_placeholder: 'Or type a model name, e.g. qwen3:30b',
     label_download: 'Download New Model',
     download_hint: 'Pick a recommended model or type a name, then click Download',
@@ -571,8 +575,17 @@ function toggleLang() {
 // ── State ─────────────────────────────────────────────────────────────────────
 let currentConfig = null;
 let _pullTimer    = null;
+let _ollamaLoadSeq = 0;
+let _ollamaLoadController = null;
+let _ollamaLastResult = null;
 
 document.addEventListener('DOMContentLoaded', () => { applyLang(); loadConfig(); });
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && document.getElementById('provider').value === 'ollama') {
+    if (_ollamaLastResult) renderOllamaModels(_ollamaLastResult);
+    else loadOllamaModels({quiet: true});
+  }
+});
 
 // ── Provider presets ──────────────────────────────────────────────────────────
 const PRESETS = {
@@ -610,6 +623,12 @@ function selectProvider(el) {
 
   document.getElementById('ollamaSection').style.display  = isOllama   ? 'block' : 'none';
   document.getElementById('onlineSection').style.display  = isOnline   ? 'block' : 'none';
+
+  if (isOllama) {
+    if (_ollamaLastResult) renderOllamaModels(_ollamaLastResult);
+    loadOllamaModels();
+    return;
+  }
 
   if (isOnline) {
     document.getElementById('deepseekSection').style.display    = isDeepseek ? 'block' : 'none';
@@ -684,60 +703,112 @@ function updateCurrentBadge() {
 }
 
 // ── Load Ollama installed models ──────────────────────────────────────────────
-async function loadOllamaModels() {
+function renderOllamaModels(d) {
   const loadingEl = document.getElementById('ollamaModelsLoading');
   const listEl    = document.getElementById('ollamaModelsList');
-  loadingEl.innerHTML = `<div class="spinner-border spinner-border-sm text-primary"></div>
-    <span class="ms-2 text-muted" data-i18n="models_loading">${T('models_loading')}</span>`;
-  loadingEl.style.display = 'block';
-  listEl.style.display    = 'none';
+  if (!loadingEl || !listEl) return;
+  loadingEl.style.display = 'none';
+  loadingEl.innerHTML = '';
+  listEl.style.display = 'block';
 
-  // Abort after 7 s — Ollama backend now uses HTTP (≤ 5 s), so 7 s is generous
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 7000);
-
-  try {
-    const r = await fetch('/api/llm/ollama/models', { signal: controller.signal });
-    clearTimeout(timer);
-    const d = await r.json();
-
-    loadingEl.style.display = 'none';
-    listEl.style.display = 'block';
-
-    if (!d.ollama_available) {
-      listEl.innerHTML = `<div class="alert alert-warning py-2">
-        <i class="bi bi-exclamation-triangle"></i> ${T('ollama_not_running')}
-      </div>`;
-      return;
-    }
-
-    if (!d.installed || d.installed.length === 0) {
-      listEl.innerHTML = `<div class="text-muted">${T('no_models')}</div>`;
-      return;
-    }
-
+  const installed = Array.isArray(d.installed) ? d.installed : [];
+  if (installed.length > 0) {
     const savedModel = currentConfig?.model || '';
     listEl.innerHTML = `<div class="fw-semibold mb-2" style="font-size:.85rem">${T('installed_models_header')}</div>` +
-      d.installed.map(m => `
+      installed.map(m => `
         <div class="form-check mb-1">
           <input class="form-check-input" type="radio" name="ollamaModel"
-                 id="m_${m}" value="${m}" ${m === savedModel ? 'checked' : ''}
+                 id="m_${cssSafeId(m)}" value="${escAttr(m)}" ${m === savedModel ? 'checked' : ''}
                  onchange="document.getElementById('ollamaCustomModel').value=''">
-          <label class="form-check-label" for="m_${m}">${m}</label>
+          <label class="form-check-label" for="m_${cssSafeId(m)}">${escHtml(m)}</label>
         </div>`).join('');
+    return;
+  }
 
+  if (!d.ollama_available) {
+    listEl.innerHTML = `<div class="alert alert-warning py-2">
+      <i class="bi bi-exclamation-triangle"></i> ${T('ollama_not_running')}
+      ${d.error ? `<div class="small mt-1 text-muted">${d.error}</div>` : ''}
+    </div>`;
+    return;
+  }
+
+  listEl.innerHTML = `<div class="text-muted">${T('no_models')}</div>`;
+}
+
+function cssSafeId(s) {
+  return String(s).replace(/[^A-Za-z0-9_-]/g, '_');
+}
+
+function escHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function escAttr(s) {
+  return escHtml(s);
+}
+
+async function loadOllamaModels(opts = {}) {
+  const loadingEl = document.getElementById('ollamaModelsLoading');
+  const listEl    = document.getElementById('ollamaModelsList');
+  if (!loadingEl || !listEl) return;
+  const seq = ++_ollamaLoadSeq;
+  if (_ollamaLoadController) _ollamaLoadController.abort();
+  let uiSettled = false;
+
+  if (!opts.quiet) {
+    loadingEl.innerHTML = `<div class="spinner-border spinner-border-sm text-primary"></div>
+      <span class="ms-2 text-muted" data-i18n="models_loading">${T('models_loading')}</span>`;
+    loadingEl.style.display = 'block';
+    listEl.style.display    = 'none';
+  }
+
+  const controller = new AbortController();
+  _ollamaLoadController = controller;
+  const timeoutResult = {
+    installed: [],
+    ollama_available: false,
+    error: T('ollama_timeout'),
+  };
+  const timer = setTimeout(() => {
+    if (seq !== _ollamaLoadSeq || uiSettled) return;
+    uiSettled = true;
+    _ollamaLastResult = timeoutResult;
+    renderOllamaModels(timeoutResult);
+    try { controller.abort(); } catch (_) {}
+  }, 5000);
+  const selectedProvider = document.getElementById('provider').value;
+  const apiBase = selectedProvider === 'ollama' && currentConfig?.provider === 'ollama'
+    ? (currentConfig.api_base || 'http://localhost:11434')
+    : 'http://localhost:11434';
+
+  try {
+    const r = await fetch('/api/llm/ollama/models?api_base=' + encodeURIComponent(apiBase), {
+      signal: controller.signal,
+      cache: 'no-store',
+    });
+    const d = await r.json();
+    if (seq !== _ollamaLoadSeq || uiSettled) return;
+    uiSettled = true;
+    _ollamaLastResult = d;
+    renderOllamaModels(d);
   } catch(e) {
+    if (seq !== _ollamaLoadSeq || uiSettled) return;
+    uiSettled = true;
+    const d = {
+      installed: [],
+      ollama_available: false,
+      error: e.name === 'AbortError' ? T('ollama_timeout') : e.message,
+    };
+    _ollamaLastResult = d;
+    renderOllamaModels(d);
+  } finally {
     clearTimeout(timer);
-    loadingEl.style.display = 'none';
-    listEl.style.display    = 'block';
-    if (e.name === 'AbortError') {
-      listEl.innerHTML = `<div class="alert alert-warning py-2">
-        <i class="bi bi-clock"></i> ${T('ollama_timeout')}
-      </div>`;
-    } else {
-      listEl.innerHTML = `<div class="alert alert-danger py-2">
-        <i class="bi bi-x-circle"></i> ${T('model_fail')}: ${e.message}
-      </div>`;
+    if (_ollamaLoadController === controller) _ollamaLoadController = null;
+    if (seq === _ollamaLoadSeq) {
+      loadingEl.style.display = 'none';
+      loadingEl.innerHTML = '';
+      listEl.style.display = 'block';
     }
   }
 }
