@@ -47,6 +47,34 @@ def _mask_api_key(config):
     return config
 
 
+def _mask_key(value):
+    if not value:
+        return ''
+    value = str(value)
+    return '****' + value[-4:] if len(value) > 4 else '****'
+
+
+def _public_search_config(raw_search):
+    from config_manager import SEARCH_PROVIDER_DEFAULTS
+    raw_search = raw_search or {}
+    providers = raw_search.get('providers') or {}
+    out = {}
+    for key, meta in SEARCH_PROVIDER_DEFAULTS.items():
+        cfg = providers.get(key) or {}
+        out[key] = {
+            'display': meta.get('display', key),
+            'description': meta.get('description', ''),
+            'requires_key': bool(meta.get('requires_key')),
+            'enabled': bool(cfg.get('enabled', meta.get('enabled', False))),
+            'api_key_masked': _mask_key(cfg.get('api_key', '')),
+            'api_base': cfg.get('api_base', ''),
+        }
+    return {
+        'providers': out,
+        'default_sources': raw_search.get('default_sources') or ['openalex', 'semantic_scholar'],
+    }
+
+
 def _parse_model_list(data):
     models = []
     if isinstance(data, dict) and isinstance(data.get('data'), list):
@@ -123,6 +151,8 @@ def llm_config_get():
 
     return jsonify({
         'config': _mask_api_key(llm_config),
+        'search': _public_search_config(cfg_mgr.get_search_config()),
+        'app_paths': cfg_mgr.get_app_paths(),
         'online_providers': _public_online_providers(),
         'first_run': cfg_mgr.is_first_run(),
         'ollama_available': cfg_mgr.check_ollama_available()
@@ -195,6 +225,71 @@ def update_llm_config():
         return jsonify({'message': 'Configuration updated successfully', 'config': _mask_api_key(llm)})
     except Exception as e:
         return jsonify({'error': str(e)}), 400
+
+
+@bp.route('/api/config/search', methods=['GET', 'POST'])
+def search_config():
+    """Get/update web/literature search provider configuration."""
+    from config_manager import get_config_manager, SEARCH_PROVIDER_DEFAULTS
+    mgr = get_config_manager()
+    project_cfg = mgr.get_project_config()
+    search = project_cfg.setdefault('search', {})
+    providers = search.setdefault('providers', {})
+    for key, meta in SEARCH_PROVIDER_DEFAULTS.items():
+        providers.setdefault(key, {'enabled': meta['enabled'], 'api_key': '', 'api_base': ''})
+
+    if request.method == 'GET':
+        return jsonify({'ok': True, 'search': _public_search_config(search)})
+
+    data = request.get_json(silent=True) or {}
+    incoming = data.get('providers') or {}
+    for key, item in incoming.items():
+        if key not in SEARCH_PROVIDER_DEFAULTS or not isinstance(item, dict):
+            continue
+        cur = providers.setdefault(key, {'enabled': False, 'api_key': '', 'api_base': ''})
+        if 'enabled' in item:
+            cur['enabled'] = bool(item.get('enabled'))
+        if item.get('api_key'):
+            cur['api_key'] = str(item.get('api_key')).strip()
+        if 'api_base' in item:
+            cur['api_base'] = str(item.get('api_base') or '').strip().rstrip('/')
+    if isinstance(data.get('default_sources'), list):
+        search['default_sources'] = [
+            s for s in data['default_sources']
+            if s in SEARCH_PROVIDER_DEFAULTS
+        ] or ['openalex', 'semantic_scholar']
+    mgr.save_project_config(project_cfg)
+    return jsonify({'ok': True, 'search': _public_search_config(search)})
+
+
+@bp.route('/api/config/app_paths', methods=['GET', 'POST'])
+def app_paths_config():
+    """Get/update shared Chat and Geo Agent path defaults."""
+    from config_manager import get_config_manager
+    mgr = get_config_manager()
+    project_cfg = mgr.get_project_config()
+    paths = project_cfg.setdefault('app_paths', mgr.get_app_paths())
+
+    if request.method == 'GET':
+        return jsonify({'ok': True, 'app_paths': paths})
+
+    data = request.get_json(silent=True) or {}
+    if 'chat_workspace_enabled' in data:
+        paths['chat_workspace_enabled'] = bool(data.get('chat_workspace_enabled'))
+    if 'chat_workspace_paths' in data:
+        raw = data.get('chat_workspace_paths')
+        if isinstance(raw, str):
+            vals = [x.strip() for x in raw.replace(';', '\n').replace(',', '\n').splitlines() if x.strip()]
+        elif isinstance(raw, list):
+            vals = [str(x).strip() for x in raw if str(x).strip()]
+        else:
+            vals = []
+        paths['chat_workspace_paths'] = vals
+    for key in ('geo_workspace_root', 'geo_literature_root', 'geo_output_dir'):
+        if key in data:
+            paths[key] = str(data.get(key) or '').strip()
+    mgr.save_project_config(project_cfg)
+    return jsonify({'ok': True, 'app_paths': paths})
 
 
 @bp.route('/api/llm/ollama/models', methods=['GET'])

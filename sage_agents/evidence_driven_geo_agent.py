@@ -160,6 +160,17 @@ def _get_kb():
         return None
 
 
+def _get_search_config() -> Dict[str, Any]:
+    try:
+        _root = str(Path(__file__).parent.parent)
+        if _root not in sys.path:
+            sys.path.insert(0, _root)
+        from config_manager import LLMConfigManager
+        return LLMConfigManager().get_search_config()
+    except Exception:
+        return {}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # ── Configuration ─────────────────────────────────────────────────────────────
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2233,6 +2244,28 @@ class WebSearchTool:
 
     def __init__(self, config: AgentConfig) -> None:
         self._cfg = config
+        self._search_cfg = _get_search_config()
+
+    def _provider_cfg(self, name: str) -> Dict[str, Any]:
+        return ((self._search_cfg.get("providers") or {}).get(name) or {})
+
+    def _provider_key(self, name: str) -> str:
+        return str(self._provider_cfg(name).get("api_key") or "").strip()
+
+    def _provider_enabled(self, name: str) -> bool:
+        cfg = self._provider_cfg(name)
+        if "enabled" in cfg:
+            return bool(cfg.get("enabled"))
+        return name in {"openalex", "semantic_scholar", "arxiv"}
+
+    def _missing_key(self, name: str) -> Dict[str, Any]:
+        return {
+            "query": "",
+            "papers": [],
+            "count": 0,
+            "source": name,
+            "warning": f"{name} is configured as a paid/keyed search source but no API key is saved in project config.",
+        }
 
     def _check_allowed(self) -> Optional[Dict]:
         if not self._cfg.allow_web_search:
@@ -2419,6 +2452,7 @@ class WebSearchTool:
             headers={
                 "User-Agent": "SeismicX/1.0 (research assistant; local app)",
                 "Accept":     "application/json",
+                **({"x-api-key": self._provider_key("semantic_scholar")} if self._provider_key("semantic_scholar") else {}),
             },
         )
         last_error = ""
@@ -2471,6 +2505,110 @@ class WebSearchTool:
             "error": last_error,
         }
 
+    def tavily_search(self, query: str, max_results: int = 8) -> Dict[str, Any]:
+        """Search via Tavily Search API (paid/keyed source)."""
+        err = self._check_allowed()
+        if err:
+            return err
+        key = self._provider_key("tavily")
+        if not key:
+            out = self._missing_key("tavily")
+            out["query"] = query
+            return out
+        api_base = self._provider_cfg("tavily").get("api_base") or "https://api.tavily.com"
+        payload = json.dumps({
+            "query": query,
+            "max_results": max(1, min(int(max_results), 20)),
+            "search_depth": "basic",
+            "include_answer": False,
+            "include_raw_content": False,
+        }).encode()
+        try:
+            req = urllib.request.Request(
+                api_base.rstrip("/") + "/search",
+                data=payload,
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+            papers = [{
+                "title": r.get("title", ""),
+                "authors": [],
+                "year": None,
+                "abstract": r.get("content", "")[:1200],
+                "url": r.get("url", ""),
+                "doi": "",
+                "source": "tavily",
+                "score": r.get("score"),
+            } for r in body.get("results", []) or []]
+            return {"query": query, "papers": papers, "count": len(papers), "source": "tavily"}
+        except Exception as exc:
+            return {"query": query, "papers": [], "count": 0, "source": "tavily", "error": str(exc)}
+
+    def brave_search(self, query: str, max_results: int = 8) -> Dict[str, Any]:
+        """Search via Brave Search API (paid/keyed source)."""
+        err = self._check_allowed()
+        if err:
+            return err
+        key = self._provider_key("brave")
+        if not key:
+            out = self._missing_key("brave")
+            out["query"] = query
+            return out
+        api_base = self._provider_cfg("brave").get("api_base") or "https://api.search.brave.com/res/v1"
+        params = urllib.parse.urlencode({"q": query, "count": max(1, min(int(max_results), 20))})
+        try:
+            req = urllib.request.Request(
+                f"{api_base.rstrip('/')}/web/search?{params}",
+                headers={"Accept": "application/json", "X-Subscription-Token": key},
+            )
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+            results = ((body.get("web") or {}).get("results") or [])[:max_results]
+            papers = [{
+                "title": r.get("title", ""),
+                "authors": [],
+                "year": None,
+                "abstract": (r.get("description") or "")[:1200],
+                "url": r.get("url", ""),
+                "doi": "",
+                "source": "brave",
+            } for r in results]
+            return {"query": query, "papers": papers, "count": len(papers), "source": "brave"}
+        except Exception as exc:
+            return {"query": query, "papers": [], "count": 0, "source": "brave", "error": str(exc)}
+
+    def serpapi_search(self, query: str, max_results: int = 8) -> Dict[str, Any]:
+        """Search via SerpAPI Google Search API (paid/keyed source)."""
+        err = self._check_allowed()
+        if err:
+            return err
+        key = self._provider_key("serpapi")
+        if not key:
+            out = self._missing_key("serpapi")
+            out["query"] = query
+            return out
+        api_base = self._provider_cfg("serpapi").get("api_base") or "https://serpapi.com"
+        params = urllib.parse.urlencode({"engine": "google", "q": query, "api_key": key, "num": max(1, min(int(max_results), 20))})
+        try:
+            req = urllib.request.Request(f"{api_base.rstrip('/')}/search.json?{params}", headers={"Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+            results = body.get("organic_results", [])[:max_results]
+            papers = [{
+                "title": r.get("title", ""),
+                "authors": [],
+                "year": None,
+                "abstract": (r.get("snippet") or "")[:1200],
+                "url": r.get("link", ""),
+                "doi": "",
+                "source": "serpapi",
+            } for r in results]
+            return {"query": query, "papers": papers, "count": len(papers), "source": "serpapi"}
+        except Exception as exc:
+            return {"query": query, "papers": [], "count": 0, "source": "serpapi", "error": str(exc)}
+
     def literature_search(self, query: str, max_results: int = 8, sources: Optional[List[str]] = None) -> Dict[str, Any]:
         """Search multiple scholarly/web sources and return a deduplicated paper list."""
         err = self._check_allowed()
@@ -2485,6 +2623,10 @@ class WebSearchTool:
             "arxiv": "arxiv",
             "web": "web",
             "duckduckgo": "web",
+            "tavily": "tavily",
+            "brave": "brave",
+            "brave_search": "brave",
+            "serpapi": "serpapi",
         }
         ordered = []
         for s in selected:
@@ -2492,12 +2634,23 @@ class WebSearchTool:
             if v and v not in ordered:
                 ordered.append(v)
         if not ordered:
-            ordered = ["semantic_scholar"]
+            configured_defaults = self._search_cfg.get("default_sources") or []
+            ordered = [aliases.get(str(s).strip().lower()) for s in configured_defaults]
+            ordered = [s for s in ordered if s] or ["semantic_scholar"]
 
         results_by_source = {}
         all_papers = []
         per_source = max(1, min(int(max_results), 20))
         for src in ordered:
+            if not self._provider_enabled(src):
+                results_by_source[src] = {
+                    "query": query,
+                    "papers": [],
+                    "count": 0,
+                    "source": src,
+                    "warning": f"{src} is disabled in project search config.",
+                }
+                continue
             if src == "openalex":
                 res = self.openalex_search(query, per_source)
             elif src == "arxiv":
@@ -2506,6 +2659,12 @@ class WebSearchTool:
                 res = self.web_search(query, per_source)
                 res["papers"] = self._web_results_to_papers(res)
                 res["source"] = "web"
+            elif src == "tavily":
+                res = self.tavily_search(query, per_source)
+            elif src == "brave":
+                res = self.brave_search(query, per_source)
+            elif src == "serpapi":
+                res = self.serpapi_search(query, per_source)
             else:
                 res = self.scholar_search(query, per_source)
             results_by_source[src] = res
@@ -3009,6 +3168,13 @@ You are a geological reasoning expert. Evaluate each hypothesis rigorously.
 Use ONLY the supplied hypothesis IDs and evidence IDs. Do not invent evidence IDs,
 source names, rankings, star ratings, or missing citations. If evidence is weak,
 say insufficient_data.
+Require cross-verification:
+- A hypothesis can be "supported" only when it has at least two mutually consistent
+  evidence records from independent sources/tools OR one high-reliability direct
+  local-data/model-derived record plus an explicitly stated missing-verification note.
+- If support comes from a single source or one unverified abstract/snippet, mark
+  weakly_supported or insufficient_data.
+- Treat conflicts as first-class evidence. Do not hide contradictory records.
 Output JSON:
 {
   "evaluations": [
@@ -3057,6 +3223,11 @@ Rules:
 - Clearly separate observation from interpretation.
 - Include an Evidence Chain / Evidence-of-Evidence section that identifies which evidence
   depends on upstream literature, figures, tables, code results, or previous projects.
+- Include a Cross-Verification section: for each main claim, state whether it is
+  verified by independent evidence, partially verified, contradicted, or unverified.
+- Do not state a preferred mechanism as established unless it is independently
+  verified by at least two non-identical sources/tools. Otherwise use "possible",
+  "consistent with", or "insufficient evidence".
 - Rank key evidence by relevance and reliability; do not treat all evidence equally.
 - Flag uncertainty and missing data explicitly.
 - Use hedging language where appropriate (consistent with, suggests, may indicate).
@@ -3200,6 +3371,7 @@ class LoopController:
         self._latex_paper = ""
         self._latex_path = ""
         self._paper_html = ""
+        self._verification_notes: List[str] = []
 
     def _add_artifact(
         self,
@@ -3814,6 +3986,94 @@ class LoopController:
             ))
         return records
 
+    def _evidence_similarity(self, a: GeoEvidence, b: GeoEvidence) -> float:
+        """Lexical/metadata similarity for lightweight cross-verification."""
+        if a.evidence_id == b.evidence_id:
+            return 0.0
+        fields_a = " ".join([
+            a.geological_structure, a.data_type, a.depth_range,
+            a.observation[:240], a.interpretation[:160],
+        ]).lower()
+        fields_b = " ".join([
+            b.geological_structure, b.data_type, b.depth_range,
+            b.observation[:240], b.interpretation[:160],
+        ]).lower()
+        toks_a = {t for t in re.findall(r"[a-zA-Z\u4e00-\u9fff0-9]{2,}", fields_a) if len(t) > 1}
+        toks_b = {t for t in re.findall(r"[a-zA-Z\u4e00-\u9fff0-9]{2,}", fields_b) if len(t) > 1}
+        if not toks_a or not toks_b:
+            return 0.0
+        jacc = len(toks_a & toks_b) / max(1, len(toks_a | toks_b))
+        bonus = 0.0
+        if a.geological_structure != "unspecified" and a.geological_structure.lower() == b.geological_structure.lower():
+            bonus += 0.18
+        if a.data_type == b.data_type and a.data_type != "other":
+            bonus += 0.12
+        return min(1.0, jacc + bonus)
+
+    @staticmethod
+    def _independent_sources(a: GeoEvidence, b: GeoEvidence) -> bool:
+        return (
+            a.source != b.source
+            or a.tool_call_id != b.tool_call_id
+            or a.source_type != b.source_type
+        )
+
+    def _cross_verify_evidence(self, added: List[GeoEvidence], iteration: int) -> None:
+        """Update verification flags using independent supporting/conflicting evidence."""
+        if not added:
+            return
+        table = self._ev.table
+        notes: List[str] = []
+        for ev in added:
+            supporters: List[GeoEvidence] = []
+            conflicts: List[GeoEvidence] = []
+            for other in table:
+                if other.evidence_id == ev.evidence_id or not self._independent_sources(ev, other):
+                    continue
+                sim = self._evidence_similarity(ev, other)
+                if other.evidence_id in ev.conflict_with or ev.evidence_id in other.conflict_with:
+                    conflicts.append(other)
+                elif sim >= 0.28:
+                    supporters.append(other)
+
+            if conflicts:
+                ev.verification_status = "contradicted"
+                ev.verification_needed = (
+                    "Resolve contradiction with independent evidence: "
+                    + ", ".join(c.evidence_id for c in conflicts[:4])
+                )
+                for c in conflicts:
+                    if ev.evidence_id not in c.conflict_with:
+                        c.conflict_with.append(ev.evidence_id)
+                notes.append(f"- {ev.evidence_id}: contradicted by {', '.join(c.evidence_id for c in conflicts[:4])}")
+                continue
+
+            if len(supporters) >= 2:
+                ev.verification_status = "verified"
+                ev.upstream_evidence = list(dict.fromkeys(ev.upstream_evidence + [s.evidence_id for s in supporters[:5]]))
+                ev.provenance_note = (ev.provenance_note + "; " if ev.provenance_note else "") + "cross-verified by independent evidence"
+                notes.append(f"- {ev.evidence_id}: verified by {', '.join(s.evidence_id for s in supporters[:5])}")
+            elif len(supporters) == 1:
+                ev.verification_status = "partially_verified"
+                ev.upstream_evidence = list(dict.fromkeys(ev.upstream_evidence + [supporters[0].evidence_id]))
+                ev.verification_needed = ev.verification_needed or "Find a second independent source/tool result for full verification."
+                notes.append(f"- {ev.evidence_id}: partially verified by {supporters[0].evidence_id}")
+            elif ev.verification_status == "verified":
+                ev.verification_status = "partially_verified"
+                ev.verification_needed = ev.verification_needed or "Program audit found no independent corroborating evidence."
+            elif ev.verification_status == "unverified":
+                ev.verification_needed = ev.verification_needed or "Needs independent corroboration from another dataset, paper, figure, table, or code result."
+                notes.append(f"- {ev.evidence_id}: unverified; independent corroboration missing")
+
+        if notes:
+            header = f"Iteration {iteration} cross-verification audit:"
+            self._verification_notes.append(header + "\n" + "\n".join(notes))
+
+    def _verification_markdown(self) -> str:
+        if not self._verification_notes:
+            return "_No cross-verification audit has been performed yet._"
+        return "\n\n".join(self._verification_notes[-6:])
+
     def _generate_hypotheses(
         self,
         question: str,
@@ -4095,6 +4355,7 @@ class LoopController:
             f"## Evidence table (iteration {iteration})\n{ev_txt}\n\n"
             f"## Allowed evidence IDs\n{', '.join(sorted(valid_ids)) or '(none)'}\n\n"
             f"## Citation sources / provenance\n{source_txt}\n\n"
+            f"## Programmatic cross-verification audit\n{self._verification_markdown()}\n\n"
             f"## Hypotheses\n{hyp_txt}\n\n"
             f"## Preferred: {preferred_id} — {preferred_rat}\n\n"
             f"## Missing\n" + "\n".join(f"- {m}" for m in missing[:8]) + "\n\n"
@@ -4121,7 +4382,8 @@ class LoopController:
         cited_ids = set(re.findall(r"\[([A-Za-z0-9_:-]+)\]", report or ""))
         unknown = sorted(i for i in cited_ids if i not in valid_ids and not i.startswith("H"))
         star_rating = bool(re.search(r"[★☆]{2,}|星级|star rating", report or "", re.I))
-        if not unknown and not star_rating:
+        unsupported = self._find_unsupported_claim_sentences(report, valid_ids)
+        if not unknown and not star_rating and not unsupported:
             return report
 
         issues = []
@@ -4129,6 +4391,8 @@ class LoopController:
             issues.append("报告引用了不存在的证据 ID: " + ", ".join(unknown[:12]))
         if star_rating:
             issues.append("报告包含未由数据结构支持的星级/评分式可靠性表达")
+        if unsupported:
+            issues.append("报告包含未标注证据 ID 的机制性/结论性句子")
         evidence_md = self._ev.to_markdown()
         source_md = self._ev.sources_markdown()
         return (
@@ -4136,14 +4400,38 @@ class LoopController:
             "自动审计发现模型生成了未被证据表支撑的内容，因此已阻止原报告作为可信结论展示。\n\n"
             "## 审计问题\n"
             + "\n".join(f"- {x}" for x in issues)
+            + ("\n\n## 未充分引用的句子\n" + "\n".join(f"- {s}" for s in unsupported[:8]) if unsupported else "")
             + "\n\n## 已验证证据表\n\n"
             + evidence_md
             + "\n\n## 引用源 / Provenance Sources\n\n"
             + source_md
+            + "\n\n## 交叉求证记录\n\n"
+            + self._verification_markdown()
             + "\n\n## 下一步\n"
             "- 重新检索或读取原始文件，补充可逐字反查的 source_excerpt。\n"
             "- 只有进入证据表的 ID 才允许被报告引用。\n"
+            "- 对每个主要机制结论至少寻找两个独立来源/工具结果；无法满足时标记为 unverified 或 insufficient evidence。\n"
         )
+
+    def _find_unsupported_claim_sentences(self, report: str, valid_ids: set) -> List[str]:
+        """Find conclusion/mechanism sentences without a valid evidence citation."""
+        if not report or not valid_ids:
+            return []
+        claim_re = re.compile(
+            r"(表明|说明|指示|控制|导致|诱发|证明|支持|反映|suggests?|indicates?|shows?|controls?|causes?|supports?|demonstrates?)",
+            re.I,
+        )
+        lines: List[str] = []
+        for raw in re.split(r"(?<=[。.!?])\s+|\n+", report):
+            s = raw.strip()
+            if not s or s.startswith("#") or s.startswith("|") or len(s) < 18:
+                continue
+            if not claim_re.search(s):
+                continue
+            ids = set(re.findall(r"\[([A-Za-z0-9_:-]+)\]", s))
+            if not (ids & valid_ids):
+                lines.append(s[:220])
+        return lines[:12]
 
     # ── Main loop ──────────────────────────────────────────────────────────
 
@@ -4223,6 +4511,7 @@ class LoopController:
                 )
                 added = self._ev.add(new_evidence)
                 added_this_iter += len(added)
+                self._cross_verify_evidence(added, iteration)
 
                 # Tag evidence IDs in the call record (mutate in place)
                 call.evidence_added = [e.evidence_id for e in added]
@@ -4278,6 +4567,8 @@ class LoopController:
             + self._ev.to_markdown()
             + "\n\n---\n\n## Citation Sources / Provenance\n\n"
             + self._ev.sources_markdown()
+            + "\n\n---\n\n## Cross-Verification Audit\n\n"
+            + self._verification_markdown()
             + "\n\n---\n\n## Intermediate Research Artifacts\n\n"
             + self._artifact_markdown()
         )

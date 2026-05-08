@@ -296,7 +296,12 @@ import re as _re
 def get_workspace_config() -> dict:
     try:
         from config_manager import LLMConfigManager
-        ws = LLMConfigManager().config.get('workspace', {'enabled': False, 'path': '', 'paths': []})
+        paths_cfg = LLMConfigManager().get_app_paths()
+        ws = {
+            'enabled': bool(paths_cfg.get('chat_workspace_enabled', False)),
+            'paths': paths_cfg.get('chat_workspace_paths') or [],
+            'path': '',
+        }
         path = ws.get('path', '')
         paths = ws.get('paths') or []
         if isinstance(paths, str):
@@ -331,12 +336,11 @@ def save_workspace_config(enabled: bool, path: str = '', paths=None):
     all_paths = _normalise_workspace_paths(paths if paths is not None else path)
     if path and path not in all_paths:
         all_paths.insert(0, path)
-    cfg.config['workspace'] = {
-        'enabled': enabled,
-        'path': all_paths[0] if all_paths else '',
-        'paths': all_paths,
-    }
-    cfg.save_config()
+    project_cfg = cfg.get_project_config()
+    app_paths = project_cfg.setdefault('app_paths', cfg.get_app_paths())
+    app_paths['chat_workspace_enabled'] = enabled
+    app_paths['chat_workspace_paths'] = all_paths
+    cfg.save_project_config(project_cfg)
 
 
 def inject_workspace_context(message: str, workspace_path: str) -> str:

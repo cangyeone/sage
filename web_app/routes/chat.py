@@ -789,7 +789,7 @@ def evidence_geo_agent():
             result = tool.literature_search(
                 query=query,
                 max_results=int(data.get("web_max_results", 8)),
-                sources=data.get("web_search_sources") or ["semantic_scholar"],
+                sources=data.get("web_search_sources") or _default_search_sources(),
             )
             if result.get("warning"):
                 progress_cb({"phase": "web_search", "message": result["warning"]})
@@ -838,6 +838,11 @@ def evidence_geo_agent():
                 _sys.path.insert(0, _root)
             from sage_agents import EvidenceDrivenGeoAgent, AgentConfig
             ws_cfg = get_workspace_config()
+            try:
+                from config_manager import LLMConfigManager
+                app_paths = LLMConfigManager().get_app_paths()
+            except Exception:
+                app_paths = {}
             authorized_roots = []
             if ws_cfg.get("enabled"):
                 authorized_roots.extend(ws_cfg.get("paths") or [])
@@ -846,8 +851,8 @@ def evidence_geo_agent():
 
             # Build config from request
             cfg = AgentConfig(
-                workspace_root=data.get("workspace_root") or ".",
-                literature_root=data.get("literature_root") or "",
+                workspace_root=data.get("workspace_root") or app_paths.get("geo_workspace_root") or ".",
+                literature_root=data.get("literature_root") or app_paths.get("geo_literature_root") or "",
                 output_dir=str(effective_output_dir),
                 authorized_roots=authorized_roots,
                 allow_python=bool(data.get("allow_python", True)),
@@ -858,7 +863,7 @@ def evidence_geo_agent():
                 use_local_files=bool(data.get("use_local_files", True)),
                 produce_latex=bool(data.get("produce_latex", True)),
                 use_code_engine=bool(data.get("use_code_engine", True)),
-                web_search_sources=data.get("web_search_sources") or ["openalex", "semantic_scholar"],
+                web_search_sources=data.get("web_search_sources") or _default_search_sources(),
                 max_iterations=int(data.get("max_iterations", 3)),
                 max_tool_calls_per_iter=int(data.get("max_tool_calls_per_iter", 8)),
                 rag_top_k=int(data.get("rag_top_k", 8)),
@@ -1033,7 +1038,7 @@ def evidence_geo_agent_web_search():
         tool = WebSearchTool(cfg)
 
         if search_type in ('literature', 'multi'):
-            result = tool.literature_search(query, max_results=max_results, sources=data.get('sources') or ['semantic_scholar'])
+            result = tool.literature_search(query, max_results=max_results, sources=data.get('sources') or _default_search_sources())
         elif search_type == 'openalex':
             result = tool.openalex_search(query, max_results=max_results)
         elif search_type == 'arxiv':
@@ -1401,6 +1406,7 @@ def chat_rag():
                 "Be concise and accurate.\n"
             )
 
+    system += _scientific_grounding_policy(bool(data.get("enable_web_search")))
     if context_parts:
         system += "\n\n===== Reference passages =====\n" + "\n\n".join(context_parts)
 
@@ -1441,15 +1447,16 @@ def _chat_web_search_context(data: dict, query: str):
         return "", []
     try:
         from sage_agents.evidence_driven_geo_agent import AgentConfig, WebSearchTool
-        sources = data.get("web_search_sources") or ["openalex", "semantic_scholar"]
+        sources = data.get("web_search_sources") or _default_search_sources()
         tool = WebSearchTool(AgentConfig(allow_web_search=True, web_search_sources=sources))
         result = tool.literature_search(query=query, max_results=int(data.get("web_max_results", 6)), sources=sources)
         papers = result.get("papers", []) or []
         if not papers:
             return "", []
         lines = [
-            "Use the following online literature/search records only when directly relevant. "
-            "Cite records by source/title/URL; do not invent claims beyond the abstracts/snippets."
+            "ONLINE SEARCH WAS PERFORMED. The searched records are listed below. "
+            "Use them only when directly relevant. Cite records by [Web N], source, title, and URL. "
+            "Do not invent claims beyond the abstracts/snippets. If these records are insufficient, say so."
         ]
         refs = []
         for i, p in enumerate(papers[:8], 1):
@@ -1465,10 +1472,53 @@ def _chat_web_search_context(data: dict, query: str):
                 f"Authors: {authors}\nYear: {year}\nDOI: {doi}\nURL: {url}\n"
                 f"Abstract/snippet: {abstract}\n"
             )
-            refs.append(f"{src}: {title}" + (f" ({url})" if url else ""))
+            label = f"[Web {i}] {src}: {title}"
+            if year:
+                label += f" ({year})"
+            if url:
+                label += f" — {url}"
+            elif doi:
+                label += f" — DOI: {doi}"
+            refs.append(label)
         return "\n".join(lines), refs
     except Exception as exc:
         return f"Web search failed: {exc}", []
+
+
+def _default_search_sources() -> list:
+    try:
+        from config_manager import LLMConfigManager
+        cfg = LLMConfigManager().get_search_config()
+        sources = cfg.get("default_sources") or ["openalex", "semantic_scholar"]
+        providers = cfg.get("providers") or {}
+        enabled = [
+            s for s in sources
+            if (providers.get(s, {}).get("enabled", True) or s in {"openalex", "semantic_scholar", "arxiv"})
+        ]
+        return enabled or ["openalex", "semantic_scholar"]
+    except Exception:
+        return ["openalex", "semantic_scholar"]
+
+
+def _scientific_grounding_policy(web_enabled: bool = False) -> str:
+    if web_enabled:
+        source_rule = (
+            "If online search records are present, include a short '检索来源' section that lists the Web IDs you used "
+            "and cite claims with those IDs. "
+        )
+    else:
+        source_rule = (
+            "If the user asks for current literature, latest models, or literature-backed claims and no online search "
+            "context is provided, explicitly say the answer may be incomplete/outdated instead of fabricating citations. "
+        )
+    return (
+        "\n\nScientific grounding policy:\n"
+        "- Do not invent papers, authors, years, URLs, DOIs, model names, benchmark numbers, parameters, or conclusions.\n"
+        "- Separate source-backed facts from general background knowledge and from your own inference.\n"
+        "- When evidence is missing or weak, say '目前没有足够来源支持' / 'insufficient evidence' and explain what would need to be checked.\n"
+        "- Never present uncited guesses as literature facts.\n"
+        f"- {source_rule}"
+    )
 
 def _build_rag_messages(data: dict):
     """
@@ -1582,6 +1632,7 @@ def _build_rag_messages(data: dict):
                 "Be concise and accurate.\n"
             )
 
+    system += _scientific_grounding_policy(bool(data.get("enable_web_search")))
     system = append_user_profile_to_system(system)
 
     # Think-mode must be model-neutral. OpenAI-compatible reasoning streams are
@@ -1746,6 +1797,7 @@ def _build_plain_messages(data: dict):
         'seismology, geophysics and data processing.\n'
         'Answer the user\'s question using your own knowledge. Be concise and accurate.\n'
     )
+    system += _scientific_grounding_policy(bool(data.get("enable_web_search")))
     system = append_user_profile_to_system(system)
     if enable_think:
         system += (

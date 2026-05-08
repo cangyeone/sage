@@ -101,12 +101,18 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
 .bubble .katex-display { margin:.5rem 0; overflow-x:auto; }
 .bubble .katex { font-size:1.05em; }
 
-/* Source chips (inline references footer) */
+/* Source/evidence footer */
 .src-chips { display:flex; flex-wrap:wrap; gap:.3rem; margin-top:.6rem; padding-top:.5rem;
   border-top:1px solid #eee; }
+.src-source-box { display:block; background:#fafbff; border:1px solid #e1e6ff; border-radius:8px;
+  padding:.5rem .6rem; }
+.src-title { font-size:.76rem; font-weight:700; color:#4f5fc4; margin-bottom:.25rem; }
 .src-chip { display:inline-flex; align-items:center; gap:.25rem; font-size:.72rem;
   background:#f0f2ff; color:#3949ab; border-radius:8px; padding:.1rem .5rem;
   white-space:nowrap; max-width:220px; overflow:hidden; text-overflow:ellipsis; }
+.src-chip-line { display:flex; max-width:none; white-space:normal; overflow:visible; text-overflow:clip;
+  margin:.18rem 0; line-height:1.35; }
+.src-chip a { color:#2750b8; text-decoration:underline; overflow-wrap:anywhere; }
 .src-chip .src-num { font-weight:700; flex-shrink:0; }
 
 /* Think block */
@@ -223,7 +229,7 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
         <li class="nav-item"><a class="nav-link" href="/evidence-geo-agent"><i class="bi bi-geo-alt-fill"></i> <span data-i18n="nav_geo">地学解译</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/knowledge"><i class="bi bi-journal-bookmark-fill"></i> <span data-i18n="nav_knowledge">知识库</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/skills"><i class="bi bi-lightning-charge"></i> <span data-i18n="nav_skills">技能</span></a></li>
-        <li class="nav-item"><a class="nav-link" href="/llm-settings"><i class="bi bi-cpu"></i> LLM</a></li>
+        <li class="nav-item"><a class="nav-link" href="/llm-settings"><i class="bi bi-sliders"></i> Config</a></li>
         <li class="nav-item">
           <button id="langToggle" onclick="toggleLang()"
             style="border:1.5px solid #dde;background:#f8f9ff;color:#555;border-radius:16px;
@@ -1629,17 +1635,28 @@ function formatText(text) {
   return html;
 }
 
-// ── Source chips renderer ─────────────────────────────────────────────────────
-// Returns an HTML string: small coloured pills for each source, NO separate heading.
-function _renderSourceChips(sources) {
-  if (!sources || !sources.length) return '';
-  const chips = sources.map((s, i) =>
-    `<span class="src-chip"><span class="src-num">[${i+1}]</span>${_esc(s)}</span>`
-  ).join('');
-  return `<div class="src-chips">${chips}</div>`;
-}
 function _esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function _linkifyEscaped(s) {
+  return _esc(s).replace(/(https?:\/\/[^\s)）]+)/g, url =>
+    `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`
+  );
+}
+
+// ── Source renderer ───────────────────────────────────────────────────────────
+// Explicitly shows retrieved/search sources; web URLs are clickable.
+function _renderSourceChips(sources) {
+  if (!sources || !sources.length) return '';
+  const webLike = sources.some(s => /^(\[Web\s+\d+\]|openalex|semantic|arxiv|web:)/i.test(String(s || '')));
+  const title = currentLang === 'zh'
+    ? (webLike ? '检索来源' : '参考来源')
+    : (webLike ? 'Search Sources' : 'Sources');
+  const chips = sources.map((s, i) =>
+    `<div class="src-chip src-chip-line"><span class="src-num">[${i+1}]</span><span>${_linkifyEscaped(s)}</span></div>`
+  ).join('');
+  return `<div class="src-chips src-source-box"><div class="src-title">${title}</div>${chips}</div>`;
 }
 
 function copyCode(btn) {
@@ -2133,6 +2150,26 @@ function selectedChatWebSources() {
   return vals.length ? vals : ['openalex', 'semantic_scholar'];
 }
 
+async function loadChatSearchConfig() {
+  try {
+    const r = await fetch('/api/config/search');
+    const d = await r.json();
+    const search = d.search || {};
+    const providers = search.providers || {};
+    const defaults = search.default_sources || ['openalex','semantic_scholar'];
+    const panel = document.getElementById('chatWebSearchOptions');
+    if (!panel) return;
+    const labels = Object.entries(providers).map(([key, p]) => {
+      const enabled = !!p.enabled;
+      const checked = defaults.includes(key) && enabled;
+      const disabled = enabled ? '' : 'disabled';
+      const title = p.requires_key && !p.api_key_masked ? ' title="API Key not configured"' : '';
+      return `<label class="me-2"${title}><input class="form-check-input chat-web-src" type="checkbox" value="${_esc(key)}" ${checked ? 'checked' : ''} ${disabled}> ${_esc(p.display || key)}</label>`;
+    }).join('');
+    panel.innerHTML = `<span data-i18n="web_sources">${T('web_sources')}</span>：${labels}`;
+  } catch(e) {}
+}
+
 function toggleChatWebSearch() {
   chatWebSearchEnabled = !chatWebSearchEnabled;
   localStorage.setItem('sage_chat_web_search', chatWebSearchEnabled ? '1' : '0');
@@ -2158,6 +2195,7 @@ function chatWebSearchPayload() {
 }
 
 document.addEventListener('DOMContentLoaded', _applyChatWebSearchPill);
+document.addEventListener('DOMContentLoaded', loadChatSearchConfig);
 
 // ── Think parser (state machine for <think>…</think> tags) ────────────────
 class ThinkParser {

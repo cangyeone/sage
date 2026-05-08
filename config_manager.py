@@ -44,6 +44,51 @@ ONLINE_PROVIDER_DEFAULTS = {
     },
 }
 
+SEARCH_PROVIDER_DEFAULTS = {
+    "openalex": {
+        "display": "OpenAlex",
+        "requires_key": False,
+        "enabled": True,
+        "description": "Open scholarly works metadata API",
+    },
+    "semantic_scholar": {
+        "display": "Semantic Scholar",
+        "requires_key": False,
+        "enabled": True,
+        "description": "Scholar literature search; API key optional for higher limits",
+    },
+    "arxiv": {
+        "display": "arXiv",
+        "requires_key": False,
+        "enabled": True,
+        "description": "arXiv Atom API",
+    },
+    "tavily": {
+        "display": "Tavily",
+        "requires_key": True,
+        "enabled": False,
+        "description": "Paid/general web search API",
+    },
+    "brave": {
+        "display": "Brave Search",
+        "requires_key": True,
+        "enabled": False,
+        "description": "Paid Brave Search API",
+    },
+    "serpapi": {
+        "display": "SerpAPI",
+        "requires_key": True,
+        "enabled": False,
+        "description": "Paid Google/Scholar-style search API",
+    },
+    "web": {
+        "display": "DuckDuckGo Web",
+        "requires_key": False,
+        "enabled": False,
+        "description": "Free HTML fallback; less stable",
+    },
+}
+
 
 class LLMConfigManager:
     """Manages LLM configuration for SeismicX"""
@@ -78,6 +123,11 @@ class LLMConfigManager:
 
     def save_config(self):
         """Save configuration to file"""
+        # Project-scoped runtime settings live in seismo_rag/project_config.json,
+        # not in ~/.seismicx/config.json. Keep the user config limited to LLM
+        # credentials/model choices so project cleanup stays simple.
+        for project_key in ('search', 'app_paths', 'workspace'):
+            self.config.pop(project_key, None)
         with open(self.config_file, 'w', encoding='utf-8') as f:
             json.dump(self.config, f, indent=2, ensure_ascii=False)
 
@@ -93,6 +143,51 @@ class LLMConfigManager:
             'api_base': 'http://localhost:11434',
             'api_key': '',
         })
+
+    def get_search_config(self) -> Dict:
+        project_cfg = self.get_project_config()
+        search = project_cfg.setdefault('search', {})
+        providers = search.setdefault('providers', {})
+        for key, meta in SEARCH_PROVIDER_DEFAULTS.items():
+            providers.setdefault(key, {
+                'enabled': meta['enabled'],
+                'api_key': '',
+                'api_base': '',
+            })
+        search.setdefault('default_sources', ['openalex', 'semantic_scholar'])
+        return search
+
+    def get_app_paths(self) -> Dict:
+        project_cfg = self.get_project_config()
+        paths = project_cfg.setdefault('app_paths', {})
+        paths.setdefault('chat_workspace_enabled', False)
+        paths.setdefault('chat_workspace_paths', [])
+        paths.setdefault('geo_workspace_root', './examples/evidence_geo_agent')
+        paths.setdefault('geo_literature_root', './papers')
+        paths.setdefault('geo_output_dir', 'outputs/evidence_geo_agent')
+        return paths
+
+    @property
+    def project_config_file(self) -> Path:
+        return Path(__file__).parent / 'seismo_rag' / 'project_config.json'
+
+    def get_project_config(self) -> Dict:
+        path = self.project_config_file
+        if path.exists():
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                pass
+        return {}
+
+    def save_project_config(self, project_config: Dict):
+        path = self.project_config_file
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(project_config, f, indent=2, ensure_ascii=False)
 
     def set_llm_provider(self, provider: str):
         """Set LLM provider"""

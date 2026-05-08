@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>LLM 设置 — SeismicX</title>
+<title>Config 设置 — SeismicX</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
 <style>
@@ -77,7 +77,7 @@ body { background: #f5f7fa; min-height: 100vh; }
         <li class="nav-item"><a class="nav-link" href="/evidence-geo-agent"><i class="bi bi-geo-alt-fill"></i> <span data-i18n="nav_geo">地学解译</span> <span class="badge text-bg-warning fw-normal" style="font-size:.62rem;vertical-align:middle;">alpha</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/knowledge"><i class="bi bi-journal-bookmark-fill"></i> <span data-i18n="nav_knowledge">知识库</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/skills"><i class="bi bi-lightning-charge"></i> <span data-i18n="nav_skills">技能</span></a></li>
-        <li class="nav-item"><a class="nav-link active fw-bold" href="/llm-settings"><i class="bi bi-cpu"></i> LLM</a></li>
+        <li class="nav-item"><a class="nav-link active fw-bold" href="/config"><i class="bi bi-sliders"></i> Config</a></li>
         <li class="nav-item">
           <button id="langToggle" onclick="toggleLang()"
             style="border:1.5px solid #dde;background:#f8f9ff;color:#555;border-radius:16px;
@@ -94,8 +94,8 @@ body { background: #f5f7fa; min-height: 100vh; }
 <!-- Header -->
 <div class="page-header">
   <div class="container">
-    <h4 class="mb-1"><i class="bi bi-cpu me-2"></i><span data-i18n="page_title">LLM 模型设置</span></h4>
-    <p class="mb-0 opacity-75" style="font-size:.9rem" data-i18n="page_sub">配置回答生成模型；知识库检索模型在知识库页单独设置</p>
+    <h4 class="mb-1"><i class="bi bi-sliders me-2"></i><span data-i18n="page_title">Config 设置</span></h4>
+    <p class="mb-0 opacity-75" style="font-size:.9rem" data-i18n="page_sub">统一配置模型、搜索源和 Chat / Geo Agent 默认路径</p>
   </div>
 </div>
 
@@ -116,7 +116,53 @@ body { background: #f5f7fa; min-height: 100vh; }
 
   <div class="model-scope-note mb-3">
     <i class="bi bi-info-circle me-1 text-primary"></i>
-    <span data-i18n="model_scope_note">此页控制最终回答使用的 LLM。知识库向量化/检索使用知识库页的嵌入模型；使用在线 LLM 时，系统会把检索到的相关片段随问题发送给 API。</span>
+    <span data-i18n="model_scope_note">此页统一控制回答模型、Web Search API Key 和常用路径。知识库向量化/检索模型仍在知识库页单独设置。</span>
+  </div>
+
+  <!-- Search source settings -->
+  <div class="card border-0 shadow-sm mb-3">
+    <div class="card-body p-4">
+      <div class="d-flex align-items-center justify-content-between mb-2">
+        <h6 class="fw-bold mb-0"><i class="bi bi-search me-1"></i><span data-i18n="search_title">Web Search 源配置</span></h6>
+        <button class="btn btn-sm btn-outline-secondary" onclick="loadSearchConfig()" type="button">
+          <i class="bi bi-arrow-clockwise"></i>
+        </button>
+      </div>
+      <div class="text-muted mb-3" style="font-size:.84rem" data-i18n="search_sub">
+        API Key 写入项目目录 seismo_rag/project_config.json，Chat 和 Geo Agent 可选择启用哪些搜索源。
+      </div>
+      <div id="searchProviderList"></div>
+      <div class="mt-3">
+        <label class="form-label fw-bold" data-i18n="search_defaults">默认搜索源</label>
+        <input type="text" class="form-control" id="searchDefaultSources" placeholder="openalex,semantic_scholar,arxiv">
+        <div class="form-text" data-i18n="search_defaults_hint">逗号分隔；Chat/Geo Agent 未显式选择时使用这些源。</div>
+      </div>
+      <button class="btn btn-save mt-3" type="button" onclick="saveSearchConfig()">
+        <i class="bi bi-check-circle me-1"></i><span data-i18n="search_save">保存搜索配置</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Shared path settings -->
+  <div class="card border-0 shadow-sm mb-3">
+    <div class="card-body p-4">
+      <h6 class="fw-bold mb-2"><i class="bi bi-folder2-open me-1"></i><span data-i18n="paths_title">Chat / Geo Agent 路径</span></h6>
+      <div class="form-check form-switch mb-2">
+        <input class="form-check-input" type="checkbox" id="cfgChatWsEnabled">
+        <label class="form-check-label" for="cfgChatWsEnabled" data-i18n="paths_chat_enable">Chat 默认授权本地工作目录</label>
+      </div>
+      <label class="form-label fw-bold" data-i18n="paths_chat_roots">Chat 授权目录</label>
+      <textarea class="form-control mb-3" id="cfgChatWsPaths" rows="3" placeholder="/data/seismic&#10;/Users/you/project"></textarea>
+      <label class="form-label fw-bold" data-i18n="paths_geo_workspace">Geo Agent Workspace Root</label>
+      <input class="form-control mb-2" id="cfgGeoWorkspace" placeholder="./examples/evidence_geo_agent">
+      <label class="form-label fw-bold" data-i18n="paths_geo_lit">Geo Agent Literature Root</label>
+      <input class="form-control mb-2" id="cfgGeoLiterature" placeholder="./papers">
+      <label class="form-label fw-bold" data-i18n="paths_geo_output">Geo Agent Output Dir</label>
+      <input class="form-control mb-3" id="cfgGeoOutput" placeholder="outputs/evidence_geo_agent">
+      <button class="btn btn-save" type="button" onclick="saveAppPathsConfig()">
+        <i class="bi bi-check-circle me-1"></i><span data-i18n="paths_save">保存路径配置</span>
+      </button>
+    </div>
   </div>
 
   <!-- 设置表单 -->
@@ -397,9 +443,21 @@ body { background: #f5f7fa; min-height: 100vh; }
 const I18N = {
   zh: {
     nav_chat: '对话', nav_geo: '地学解译', nav_knowledge: '知识库', nav_skills: '技能',
-    page_title: 'LLM 模型设置',
-    page_sub: '配置回答生成模型；知识库检索模型在知识库页单独设置',
-    model_scope_note: '此页控制最终回答使用的 LLM。知识库向量化/检索使用知识库页的嵌入模型；使用在线 LLM 时，系统会把检索到的相关片段随问题发送给 API。',
+    page_title: 'Config 设置',
+    page_sub: '统一配置模型、搜索源和 Chat / Geo Agent 默认路径',
+    model_scope_note: '此页统一控制回答模型、Web Search API Key 和常用路径。知识库向量化/检索模型仍在知识库页单独设置。',
+    search_title: 'Web Search 源配置',
+    search_sub: 'API Key 写入项目目录 seismo_rag/project_config.json，Chat 和 Geo Agent 可选择启用哪些搜索源。',
+    search_defaults: '默认搜索源',
+    search_defaults_hint: '逗号分隔；Chat/Geo Agent 未显式选择时使用这些源。',
+    search_save: '保存搜索配置',
+    paths_title: 'Chat / Geo Agent 路径',
+    paths_chat_enable: 'Chat 默认授权本地工作目录',
+    paths_chat_roots: 'Chat 授权目录',
+    paths_geo_workspace: 'Geo Agent Workspace Root',
+    paths_geo_lit: 'Geo Agent Literature Root',
+    paths_geo_output: 'Geo Agent Output Dir',
+    paths_save: '保存路径配置',
     current_model: '当前模型：',
     loading: '读取中…',
     btn_test: '测试连接',
@@ -468,9 +526,21 @@ const I18N = {
   },
   en: {
     nav_chat: 'Chat', nav_geo: 'Geo Agent', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
-    page_title: 'LLM Model Settings',
-    page_sub: 'Configure the answer-generation model; retrieval embeddings are set on the Knowledge page',
-    model_scope_note: 'This page controls the LLM that writes final answers. Knowledge indexing/retrieval uses the embedding model on the Knowledge page. When an online LLM is active, retrieved relevant snippets are sent to the API with the question.',
+    page_title: 'Config',
+    page_sub: 'Configure models, search providers, and Chat / Geo Agent default paths',
+    model_scope_note: 'This page controls the answer model, Web Search API keys, and common paths. Knowledge embeddings remain configured on the Knowledge page.',
+    search_title: 'Web Search Providers',
+    search_sub: 'API keys are stored in the project at seismo_rag/project_config.json. Chat and Geo Agent can choose which sources to use.',
+    search_defaults: 'Default search sources',
+    search_defaults_hint: 'Comma-separated; used when Chat/Geo Agent does not explicitly choose sources.',
+    search_save: 'Save Search Config',
+    paths_title: 'Chat / Geo Agent Paths',
+    paths_chat_enable: 'Authorize Chat local workspace by default',
+    paths_chat_roots: 'Chat authorized roots',
+    paths_geo_workspace: 'Geo Agent Workspace Root',
+    paths_geo_lit: 'Geo Agent Literature Root',
+    paths_geo_output: 'Geo Agent Output Dir',
+    paths_save: 'Save Path Config',
     current_model: 'Active model:',
     loading: 'Loading…',
     btn_test: 'Test Connection',
@@ -587,6 +657,114 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
+function renderSearchConfig(search) {
+  const list = document.getElementById('searchProviderList');
+  if (!list) return;
+  const providers = search?.providers || {};
+  document.getElementById('searchDefaultSources').value = (search?.default_sources || ['openalex','semantic_scholar']).join(',');
+  list.innerHTML = Object.entries(providers).map(([key, p]) => `
+    <div class="border rounded-3 p-2 mb-2">
+      <div class="d-flex align-items-center gap-2">
+        <input class="form-check-input search-enabled" type="checkbox" data-key="${escAttr(key)}" ${p.enabled ? 'checked' : ''}>
+        <div style="flex:1">
+          <div class="fw-bold">${escHtml(p.display || key)} ${p.requires_key ? '<span class="badge bg-warning text-dark">Key</span>' : '<span class="badge bg-success">Free</span>'}</div>
+          <div class="text-muted" style="font-size:.78rem">${escHtml(p.description || '')}</div>
+        </div>
+      </div>
+      <div class="row g-2 mt-1">
+        <div class="col-md-7">
+          <input class="form-control form-control-sm search-key" data-key="${escAttr(key)}" type="password"
+                 placeholder="${p.api_key_masked || (p.requires_key ? 'API Key' : 'Optional API Key')}">
+        </div>
+        <div class="col-md-5">
+          <input class="form-control form-control-sm search-base" data-key="${escAttr(key)}"
+                 value="${escAttr(p.api_base || '')}" placeholder="API Base (optional)">
+        </div>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function loadSearchConfig() {
+  try {
+    const r = await fetch('/api/config/search');
+    const d = await r.json();
+    renderSearchConfig(d.search || {});
+  } catch(e) {}
+}
+
+async function saveSearchConfig() {
+  const providers = {};
+  document.querySelectorAll('.search-enabled').forEach(el => {
+    const key = el.dataset.key;
+    providers[key] = providers[key] || {};
+    providers[key].enabled = el.checked;
+  });
+  document.querySelectorAll('.search-key').forEach(el => {
+    const key = el.dataset.key;
+    const val = el.value.trim();
+    providers[key] = providers[key] || {};
+    if (val) providers[key].api_key = val;
+  });
+  document.querySelectorAll('.search-base').forEach(el => {
+    const key = el.dataset.key;
+    providers[key] = providers[key] || {};
+    providers[key].api_base = el.value.trim();
+  });
+  const default_sources = document.getElementById('searchDefaultSources').value
+    .split(/[,;\s]+/).map(s => s.trim()).filter(Boolean);
+  try {
+    const r = await fetch('/api/config/search', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({providers, default_sources})
+    });
+    const d = await r.json();
+    if (d.ok) {
+      renderSearchConfig(d.search);
+      showToast(currentLang === 'zh' ? '搜索配置已保存到项目目录' : 'Search config saved to project', 'success');
+    } else showToast(d.error || 'Save failed', 'danger');
+  } catch(e) { showToast(e.message, 'danger'); }
+}
+
+function renderAppPaths(paths) {
+  document.getElementById('cfgChatWsEnabled').checked = !!paths.chat_workspace_enabled;
+  document.getElementById('cfgChatWsPaths').value = (paths.chat_workspace_paths || []).join('\n');
+  document.getElementById('cfgGeoWorkspace').value = paths.geo_workspace_root || './examples/evidence_geo_agent';
+  document.getElementById('cfgGeoLiterature').value = paths.geo_literature_root || './papers';
+  document.getElementById('cfgGeoOutput').value = paths.geo_output_dir || 'outputs/evidence_geo_agent';
+}
+
+async function loadAppPathsConfig() {
+  try {
+    const r = await fetch('/api/config/app_paths');
+    const d = await r.json();
+    renderAppPaths(d.app_paths || {});
+  } catch(e) {}
+}
+
+async function saveAppPathsConfig() {
+  const chat_workspace_paths = document.getElementById('cfgChatWsPaths').value
+    .split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
+  const payload = {
+    chat_workspace_enabled: document.getElementById('cfgChatWsEnabled').checked,
+    chat_workspace_paths,
+    geo_workspace_root: document.getElementById('cfgGeoWorkspace').value.trim(),
+    geo_literature_root: document.getElementById('cfgGeoLiterature').value.trim(),
+    geo_output_dir: document.getElementById('cfgGeoOutput').value.trim(),
+  };
+  try {
+    const r = await fetch('/api/config/app_paths', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const d = await r.json();
+    if (d.ok) {
+      renderAppPaths(d.app_paths);
+      showToast(currentLang === 'zh' ? '路径配置已保存到项目目录' : 'Path config saved to project', 'success');
+    } else showToast(d.error || 'Save failed', 'danger');
+  } catch(e) { showToast(e.message, 'danger'); }
+}
+
 // ── Provider presets ──────────────────────────────────────────────────────────
 const PRESETS = {
   openai:      { label: 'OpenAI', base: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
@@ -684,6 +862,8 @@ async function loadConfig() {
 
     updateOllamaStatus(d.ollama_available);
     updateCurrentBadge();
+    renderSearchConfig(d.search || {});
+    renderAppPaths(d.app_paths || {});
   } catch(e) {
     showToast(T('load_fail') + e.message, 'danger');
   }
