@@ -14,3 +14,20 @@ seismo_skill/docs/GMT_docs-6.5
 seismo_rag/*
 !seismo_rag/.gitkeep
 /deliverables
+
+# User test / runtime artifacts
+/web_app/results/
+/seismo_skill/skills/pnsn_phase_detection/pnsn/
+
+# Large model files generated or downloaded during local tests
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.jit
+
+# Local run logs and transient GMT grids
+*.log
+*.err
+*.grd
+gmt.history

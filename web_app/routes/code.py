@@ -281,6 +281,18 @@ def chat_route():
 
     msg_stripped = message.strip()
 
+    msg_lower = msg_stripped.lower()
+
+    def _has_any(words):
+        return any(word in msg_lower for word in words)
+
+    mentions_paper = _has_any(['论文', '文献', '文章', '这篇', '该文', 'paper', 'article', 'pdf'])
+    asks_to_read = _has_any(['解析', '解读', '分析一下', '读一下', '阅读', '总结', '概括', '讲解', '解释', '看一下', '梳理', '提炼', 'summarize', 'summarise', 'explain', 'review', 'interpret'])
+    asks_to_code = _has_any(['写代码', '代码实现', '编程', 'python', '复现', '运行', '执行', '绘制', '画图', '生成图', '计算', '处理数据', '检测', '拾取', '导出', '保存', 'script', 'code', 'plot', 'run', 'execute', 'implement'])
+    paper_read_request = (kb_has_docs or mentions_paper) and mentions_paper and asks_to_read and not asks_to_code
+    if paper_read_request:
+        return jsonify({'ok': True, 'intent': 'qa', 'rule': 'paper_read_guard'})
+
     # ── 唯一快速路径：含绝对路径且无问号 → 必然是 code，无需问 LLM ─────────
     has_path = bool(_re.search(r'(?:^|[\s\u4e00-\u9fff，。：、])[/~][\w./\-]{4,}', message))
     ends_q   = bool(_re.search(r'[?？]\s*$', msg_stripped))
@@ -291,7 +303,8 @@ def chat_route():
     # sent to the coding engine just because they contain technical terms.
     explanation_re = _re.compile(
         r'(详细讲|讲一下|讲讲|解释|介绍|原理|机制|怎么回事|是什么|什么是|为什么|为何'
-        r'|区别|优缺点|适用|局限|how does|how .*work|what is|why |explain|tell me about)',
+        r'|区别|优缺点|适用|局限|解析|解读|读一下|阅读|总结|概括|看一下|梳理'
+        r'|how does|how .*work|what is|why |explain|tell me about|summari[sz]e|review)',
         _re.I,
     )
     concrete_code_re = _re.compile(
@@ -343,6 +356,7 @@ Classify by intent, not by specific tool names.
 
 If the message asks the system to do something concrete now, such as create, generate, write, draw, plot, calculate, read, convert, process, analyze, download, run, save, export, or modify something → code.
 If the message mainly asks what, why, how, whether, or asks for an explanation/reason/method without requiring immediate execution → qa.
+If the message asks to read, explain, summarize, interpret, or analyze a paper/literature/PDF/article → qa, unless it explicitly asks to write or run code.
 Otherwise → chat.
 
 Examples:
@@ -352,7 +366,9 @@ Examples:
 "Read this waveform file" → code
 "Write a script to process SAC files" → code
 "Convert this catalog to CSV" → code
-"Analyze the uploaded data and summarize the result" → code
+"Analyze the uploaded waveform/catalog data and summarize the result" → code
+"Analyze this paper for me" → qa
+"Summarize this uploaded PDF" → qa
 "How should I draw a topographic map?" → qa
 "What is the b-value?" → qa
 "Why does the waveform need filtering?" → qa
@@ -366,8 +382,7 @@ Intent:"""
 
     # ── 强操作信号 re（LLM 结果兜底用）────────────────────────────────────
     ACTION_SIGNAL_RE = _re.compile(
-        r'(帮我|请帮|帮忙'
-        r'|使用[^\s]{0,16}(?:绘|画|生成|计算|滤|读|处理|下载|运行|检测|识别|拾取|触发)'
+        r'(使用[^\s]{0,16}(?:绘|画|生成|计算|滤|读|处理|下载|运行|检测|识别|拾取|触发)'
         r'|用[^\s]{0,16}(?:绘|画|生成|计算|滤|读|处理|下载|检测|识别|拾取|触发)'
         r'|^(?:绘制|画[^报面版刊]|生成|计算|读取|处理|分析|滤波|下载|检测|识别|拾取))',
         _re.I | _re.MULTILINE
@@ -399,8 +414,10 @@ Intent:"""
 
     except Exception:
         # LLM 不可用 → 规则兜底
+        if paper_read_request:
+            return jsonify({'ok': True, 'intent': 'qa', 'rule': 'paper_read_guard', 'fallback': True})
         FALLBACK_RE = _re.compile(
-            r'(绘制|画图|画[^报面版刊]|帮我|请帮|使用|执行|运行|下载|读取|处理|滤波|计算|生成图'
+            r'(绘制|画图|画[^报面版刊]|使用|执行|运行|下载|读取|处理|滤波|计算|生成图'
             r'|检测|识别|拾取|触发|plot|filter|spectrum|detect|pick|trigger|\.sac|\.mseed|\.csv)',
             _re.I
         )
