@@ -39,6 +39,9 @@ SAGE_SeismicX_投资人介绍.pdf
 # Auto-generated skills from seismo_skill/docs or Knowledge Builder
 /seismo_skill/skills/_gen_*/
 /seismo_skill/skills/_gen_*.md
+
+# Project-local user/imported skills
+/seismo_skill/user_skills/
 seismo_skill/skills/gmt6/references/manifest.md
 /seismo_skill/skills/gmt6
 /seismo_skill/skills/gmt6_chinese_manual

@@ -47,6 +47,11 @@ SKILL_SOURCE_EXTS = SUPPORTED_EXTS | {
     ".gmt", ".cpt", ".dat", ".csv", ".tsv",
 }
 
+CODE_EXAMPLE_EXTS = {
+    ".sh", ".bash", ".zsh", ".csh", ".py", ".m", ".jl", ".r",
+    ".gmt", ".cpt", ".dat", ".csv", ".tsv",
+}
+
 # 跳过格式（二进制、脚本、图片等不适合 RAG 的文件）
 SKIP_EXTS = {
     ".sh", ".py", ".js", ".css", ".yml", ".yaml", ".json", ".xml",
@@ -66,10 +71,12 @@ _MANIFEST_FILE = _KB_DIR / "dir_manifest.json"
 # 项目级 manifest 存储（folder → skill 映射）
 _PROJ_MANIFEST_FILE = _KB_DIR / "proj_manifest.json"
 
-# 自动生成的 Skill 存储目录
-_USER_SKILL_DIR = Path.home() / ".seismicx" / "skills"
+# 项目内用户 Skill 存储目录。不要写入 ~/.seismicx/skills，便于项目清理和隔离。
+_USER_SKILL_DIR = Path(__file__).parent / "user_skills"
 _BUILTIN_SKILL_DIR = Path(__file__).parent / "skills"
 _DOC_SKILL_GENERATOR = "seismo_skill_docs_builder"
+_SKILL_BUILDER_CACHE_DIR = _KB_DIR / "skill_builder_cache"
+_MARKDOWN_NORMALIZER_VERSION = "v2"
 
 # 每个项目最多索引多少文件（优先高价值格式，避免处理海量叶子页）
 MAX_FILES_PER_PROJECT = 120
@@ -117,31 +124,98 @@ def _select_key_files(files: List[Path], max_count: int = MAX_FILES_PER_PROJECT)
     - 深度较浅（章节级）的文件优先于叶子页
     - 若文件数 <= max_count，全部保留
     """
-    if len(files) <= max_count:
-        return files
-
-    sorted_files = sorted(files, key=_file_priority)
-    return sorted_files[:max_count]
+    return _select_link_aware_files(files, max_count=max_count)
 
 
 def _select_skill_builder_files(files: List[Path], max_count: int = MAX_FILES_PER_PROJECT) -> List[Path]:
     """Select a balanced directory digest for LLM skill synthesis."""
-    if len(files) <= max_count:
-        return sorted(files, key=_file_priority)
+    return _select_link_aware_files(files, max_count=max_count)
+
+
+def _select_link_aware_files(files: List[Path], max_count: int = MAX_FILES_PER_PROJECT) -> List[Path]:
+    """
+    Select files for RAG/Skill Builder while preserving documentation links.
+
+    Entry pages such as index.rst/readme.md are kept, and their linked documents
+    are pulled in before the balanced per-directory sampling step. This prevents
+    a docs tree from degenerating into only index pages.
+    """
+    sorted_files = sorted(files, key=_file_priority)
+    if len(sorted_files) <= max_count:
+        return sorted_files
+
+    try:
+        source_root = Path(os.path.commonpath([str(p.parent) for p in sorted_files])).resolve()
+    except Exception:
+        source_root = sorted_files[0].parent.resolve()
 
     selected: List[Path] = []
     seen: set[str] = set()
+    file_set = {p.resolve() for p in sorted_files}
+    entry_names = {"readme.md", "readme.rst", "readme.txt", "index.md", "index.rst", "readme"}
+    entry_budget = max(8, max_count // 4)
+    entry_added = 0
 
     def add(path: Path):
+        nonlocal entry_added
+        try:
+            path = path.resolve()
+        except Exception:
+            pass
+        if path.name.lower() in entry_names and entry_added >= entry_budget:
+            return
         key = str(path)
         if key not in seen and len(selected) < max_count:
             selected.append(path)
             seen.add(key)
+            if path.name.lower() in entry_names:
+                entry_added += 1
 
-    sorted_files = sorted(files, key=_file_priority)
-    for path in sorted_files:
-        if path.name.lower() in ("readme.md", "readme.rst", "readme.txt", "index.md", "index.rst", "readme"):
-            add(path)
+    entry_files = [
+        path for path in sorted_files
+        if path.name.lower() in entry_names
+    ]
+    queue: List[Path] = []
+    visited_links: set[str] = set()
+
+    def drain_queue(max_steps: int):
+        steps = 0
+        while queue and len(selected) < max_count and steps < max_steps:
+            steps += 1
+            cur = queue.pop(0)
+            cur_key = str(cur.resolve())
+            if cur_key in visited_links:
+                continue
+            visited_links.add(cur_key)
+            text = _read_source_text(cur, max_chars=50000)
+            for ref in _extract_referenced_source_paths(cur, source_root, text):
+                if ref.resolve() not in file_set:
+                    continue
+                before = len(selected)
+                add(ref)
+                if len(selected) > before and ref.suffix.lower() in {".md", ".rst", ".txt", ".html", ".htm"}:
+                    queue.append(ref)
+                if len(selected) >= max_count:
+                    break
+
+    for entry in entry_files:
+        add(entry)
+        if len(selected) >= max_count:
+            break
+        text = _read_source_text(entry, max_chars=50000)
+        direct_refs = _extract_referenced_source_paths(entry, source_root, text)
+        for ref in direct_refs:
+            if ref.resolve() not in file_set:
+                continue
+            before = len(selected)
+            add(ref)
+            if len(selected) > before and ref.suffix.lower() in {".md", ".rst", ".txt", ".html", ".htm"}:
+                queue.append(ref)
+            if len(selected) >= max_count:
+                break
+        drain_queue(max_steps=8)
+
+    drain_queue(max_steps=max_count)
 
     # Keep representative pages from every documentation sub-area instead of
     # letting one large directory consume the whole context budget.
@@ -753,7 +827,14 @@ class KnowledgeIndexer:
 
             docs = []
             max_docs = 1 if is_single_file else min(len(files), MAX_FILES_PER_PROJECT)
-            for path in files[:max_docs]:
+            _log(f"   📚 收集目录证据：{max_docs} 个候选文件")
+            for doc_i, path in enumerate(files[:max_docs], 1):
+                if stop_event and stop_event.is_set():
+                    result.interrupted = True
+                    _log("⚠  已中断（文件夹型 Skill 构建停止）。")
+                    break
+                if doc_i == 1 or doc_i % 20 == 0 or doc_i == max_docs:
+                    _log(f"   · 读取证据 {doc_i}/{max_docs}: {_safe_relpath(path, source_root)}")
                 # Skill generation should digest the source documents, not just
                 # keep a pointer to the original PDFs. Single-file skills get a
                 # larger text budget so a whole paper/manual can be converted
@@ -770,12 +851,23 @@ class KnowledgeIndexer:
                     continue
                 if not text.strip():
                     continue
+                if use_llm:
+                    rel_for_log = _safe_relpath(path, source_root)
+                    cache_hit = _markdown_cache_file(path, text).exists()
+                    _log(
+                        f"   🤖 Markdown 标准化 {doc_i}/{max_docs}: {rel_for_log}"
+                        + ("（缓存）" if cache_hit else "")
+                    )
+                    text = _llm_convert_to_markdown(path, text, max_chars=text_budget) or text
                 docs.append({
-                    "path": str(path.relative_to(source_root)),
+                    "path": str(_safe_relpath(path, source_root)),
                     "abs_path": str(path),
                     "text": text,
                     "headings": _extract_headings(text),
                 })
+
+            if result.interrupted:
+                break
 
             if not docs:
                 result.skipped.append(proj_name)
@@ -840,7 +932,7 @@ class KnowledgeIndexer:
             "## 已转换文件",
         ]
         for path in files:
-            rel = path.relative_to(proj_path)
+            rel = _safe_relpath(path, proj_path)
             ref_lines.append(f"- `{rel}`")
         (target / "references" / "manifest.md").write_text("\n".join(ref_lines) + "\n", encoding="utf-8")
 
@@ -1225,6 +1317,16 @@ def _strip_html(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _safe_relpath(path: Path, root: Path) -> Path:
+    try:
+        return path.resolve().relative_to(root.resolve())
+    except Exception:
+        try:
+            return path.relative_to(root)
+        except Exception:
+            return Path(path.name)
+
+
 def _read_source_text(path: Path, max_chars: int = 8000) -> str:
     """Best-effort text extraction for docs-to-skill generation."""
     ext = path.suffix.lower()
@@ -1250,7 +1352,7 @@ def _read_source_text(path: Path, max_chars: int = 8000) -> str:
 
 
 def _append_referenced_code(path: Path, source_root: Path, text: str, max_chars: int = 26000) -> str:
-    refs = _extract_referenced_source_paths(path, source_root, text)
+    refs = [p for p in _extract_referenced_source_paths(path, source_root, text) if p.suffix.lower() in CODE_EXAMPLE_EXTS]
     if not refs:
         return text[:max_chars]
     parts = [text]
@@ -1268,7 +1370,7 @@ def _append_referenced_code(path: Path, source_root: Path, text: str, max_chars:
         excerpt = code[: max(0, remaining - 120)]
         if not excerpt:
             break
-        rel = ref.relative_to(source_root) if ref.is_relative_to(source_root) else ref
+        rel = _safe_relpath(ref, source_root)
         block = f"\n\n[Referenced example code: {rel}]\n```{_code_fence_lang(ref)}\n{excerpt}\n```"
         parts.append(block)
         used += len(block)
@@ -1279,28 +1381,72 @@ def _extract_referenced_source_paths(path: Path, source_root: Path, text: str) -
     refs: List[Path] = []
     patterns = [
         r"\.\.\s+(?:literalinclude|include|gmtplot)::\s+([^\s]+)",
+        r"\.\.\s+toctree::\s*\n(?P<items>(?:\s+[^:\n][^\n]*\n?)+)",
+        r":doc:`[^`<]*<?([^`<>]+)>?`",
         r":download:`[^`<]*<?([^`<>]+)>?`",
         r":file:`([^`]+)`",
-        r"\(([^)]+\.(?:sh|py|gmt|cpt|dat|csv|tsv|md|rst))\)",
-        r"`([^`]+?\.(?:sh|py|gmt|cpt|dat|csv|tsv|md|rst))`",
+        r"\(([^)]+\.(?:pdf|docx|html|htm|txt|md|rst|sh|py|gmt|cpt|dat|csv|tsv))\)",
+        r"`([^`]+?\.(?:pdf|docx|html|htm|txt|md|rst|sh|py|gmt|cpt|dat|csv|tsv))`",
     ]
     for pat in patterns:
-        for raw in re.findall(pat, text):
-            name = str(raw).strip().strip("<>").strip()
-            if not name or name.startswith(("http://", "https://", "@")):
-                continue
-            candidates = [
-                (path.parent / name).resolve(),
-                (source_root / name.lstrip("/")).resolve(),
-            ]
-            for cand in candidates:
-                try:
-                    cand.relative_to(source_root.resolve())
-                except Exception:
-                    continue
-                if cand.exists() and cand.is_file() and cand.suffix.lower() in SKILL_SOURCE_EXTS and cand not in refs:
-                    refs.append(cand)
+        if "?P<items>" in pat:
+            matches = [m.group("items") for m in re.finditer(pat, text, flags=re.MULTILINE)]
+        else:
+            matches = re.findall(pat, text)
+        for raw in matches:
+            names = _reference_names_from_raw(raw)
+            for name in names:
+                candidates = _reference_candidates(path, source_root, name)
+                for cand in candidates:
+                    try:
+                        cand.relative_to(source_root.resolve())
+                    except Exception:
+                        continue
+                    if cand.exists() and cand.is_file() and cand.suffix.lower() in SKILL_SOURCE_EXTS and cand not in refs:
+                        refs.append(cand)
     return refs
+
+
+def _reference_names_from_raw(raw) -> List[str]:
+    names: List[str] = []
+    raw_text = str(raw or "")
+    for line in raw_text.splitlines() or [raw_text]:
+        name = line.strip().strip("<>").strip()
+        if not name or name.startswith(("http://", "https://", "@", ":")):
+            continue
+        if name.startswith(".. ") or name.startswith("#"):
+            continue
+        if " <" in name and name.endswith(">"):
+            name = name.rsplit("<", 1)[-1].rstrip(">").strip()
+        if name:
+            names.append(name)
+    return names
+
+
+def _reference_candidates(path: Path, source_root: Path, name: str) -> List[Path]:
+    raw = str(name).strip()
+    if not raw:
+        return []
+    raw = raw.split("#", 1)[0].split("?", 1)[0].strip()
+    raw = raw.lstrip("/")
+    bases = [(path.parent / raw), (source_root / raw)]
+    candidates: List[Path] = []
+    for base in bases:
+        candidates.append(base.resolve())
+        if base.suffix:
+            continue
+        for ext in (".rst", ".md", ".txt", ".html", ".htm", ".pdf", ".docx"):
+            candidates.append(base.with_suffix(ext).resolve())
+        for index_name in ("index.rst", "index.md", "README.md", "readme.md"):
+            candidates.append((base / index_name).resolve())
+    deduped: List[Path] = []
+    seen: set[str] = set()
+    for cand in candidates:
+        key = str(cand)
+        if key not in seen:
+            deduped.append(cand)
+            seen.add(key)
+    return deduped
 
 
 def _code_fence_lang(path: Path) -> str:
@@ -1543,10 +1689,10 @@ def _normalize_folder_skill_spec(spec: dict, proj_name: str, docs: List[dict]) -
     return out
 
 
-def _doc_digest_for_llm(docs: List[dict], max_chars: int = 78000) -> str:
+def _doc_digest_for_llm(docs: List[dict], max_chars: int = 42000) -> str:
     parts = []
     used = 0
-    for doc in docs[:28]:
+    for doc in _rank_docs_for_skill_digest(docs)[:18]:
         text = str(doc.get("text") or "").strip()
         if not text:
             continue
@@ -1572,6 +1718,80 @@ def _doc_digest_for_llm(docs: List[dict], max_chars: int = 78000) -> str:
         used += len(excerpt)
         parts.append(preface_text + excerpt)
     return "\n\n---\n\n".join(parts)
+
+
+def _rank_docs_for_skill_digest(docs: List[dict]) -> List[dict]:
+    def score(doc: dict) -> Tuple[int, int]:
+        path = str(doc.get("path") or "").lower()
+        text = str(doc.get("text") or "").lower()
+        s = 0
+        if "index" in Path(path).name:
+            s += 8
+        if any(key in path for key in ("tutorial", "examples", "dataset", "cpt", "module", "proj")):
+            s += 6
+        if any(key in path for key in ("coast", "grdview", "grdimage", "makecpt", "colorbar", "basemap", "plot", "text", "legend")):
+            s += 8
+        s += min(len(_extract_command_like_items(text, limit=20)), 8)
+        return (-s, len(path))
+    return sorted(docs, key=score)
+
+
+def _embedding_merge_hints(docs: List[dict], max_docs: int = 36, top_pairs: int = 18) -> str:
+    ranked = _rank_docs_for_skill_digest(docs)[:max_docs]
+    if len(ranked) < 2:
+        return ""
+    texts = []
+    labels = []
+    for doc in ranked:
+        text = str(doc.get("text") or "")
+        summary = "\n".join([
+            str(doc.get("path") or ""),
+            " ".join(doc.get("headings") or []),
+            " ".join(_extract_command_like_items(text, limit=12)),
+            " ".join(_extract_parameter_like_items(text, limit=12)),
+            text[:900],
+        ])
+        texts.append(summary)
+        labels.append(str(doc.get("path") or ""))
+
+    pairs: List[Tuple[float, str, str]] = []
+    try:
+        _web = Path(__file__).parent.parent / "web_app"
+        if str(_web) not in sys.path:
+            sys.path.insert(0, str(_web))
+        from rag_backends import EmbeddingModel  # type: ignore
+        vecs = EmbeddingModel.get().encode(texts, batch_size=16)
+        sims = vecs @ vecs.T
+        for i in range(len(labels)):
+            for j in range(i + 1, len(labels)):
+                score = float(sims[i, j])
+                if score >= 0.58:
+                    pairs.append((score, labels[i], labels[j]))
+    except Exception:
+        pairs = _lexical_merge_hints(texts, labels)
+
+    if not pairs:
+        return ""
+    lines = []
+    for score, a, b in sorted(pairs, reverse=True)[:top_pairs]:
+        lines.append(f"- {score:.2f}: `{a}` ↔ `{b}`")
+    return "\n".join(lines)
+
+
+def _lexical_merge_hints(texts: List[str], labels: List[str]) -> List[Tuple[float, str, str]]:
+    def toks(s: str) -> set:
+        return set(re.findall(r"[A-Za-z0-9_\-]+|[\u4e00-\u9fff]{2,}", s.lower()))
+    token_sets = [toks(t) for t in texts]
+    pairs = []
+    for i in range(len(labels)):
+        for j in range(i + 1, len(labels)):
+            a, b = token_sets[i], token_sets[j]
+            if not a or not b:
+                continue
+            score = len(a & b) / max(1, len(a | b))
+            if score >= 0.12:
+                pairs.append((score, labels[i], labels[j]))
+    return pairs
 
 
 def _condense_rst_for_skill_builder(text: str) -> str:
@@ -1613,11 +1833,78 @@ def _condense_rst_for_skill_builder(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _llm_convert_to_markdown(path: Path, text: str, max_chars: int = 18000) -> str:
+    """Use LLM to normalize mixed RST/HTML/extracted text into clean Markdown."""
+    source = str(text or "").strip()
+    if not source:
+        return ""
+    cache_file = _markdown_cache_file(path, source)
+    if cache_file.exists():
+        try:
+            cached = cache_file.read_text(encoding="utf-8")
+            if cached.strip():
+                return cached[:max_chars]
+        except Exception:
+            pass
+    # Already-clean Markdown/code files can skip the extra call unless they
+    # contain Sphinx directives that confuse downstream skill synthesis.
+    if path.suffix.lower() in {".md", ".txt"} and not re.search(r"```\\{|\.\.\s+\w+::|:\w+:`", source):
+        return source[:max_chars]
+
+    excerpt = source[: min(len(source), 12000)]
+    prompt = f"""请把下面的文档片段转换为干净、可读、可被二次处理的 Markdown。
+
+只做格式标准化，不要总结，不要扩写，不要添加原文没有的信息。
+
+要求：
+1. 保留标题、说明、参数、命令、代码块、示例、输入输出。
+2. 把 RST/Sphinx 语法转换成普通 Markdown：toctree 变成“相关主题列表”，:doc:/:file: 变成普通文本或代码样式。
+3. 把 .. gmtplot::、.. literalinclude::、```{{eval-rst}} 中的真实命令提取为 fenced code block。
+4. 删除纯布局指令，例如 :width:、:align:、.. only::、.. hlist::。
+5. 如果文本明显是乱码或正文不足，输出空字符串。
+6. 只输出 Markdown 正文，不要解释。
+
+文件名：{path.name}
+
+原文：
+{excerpt}
+"""
+    try:
+        _web = Path(__file__).parent.parent / "web_app"
+        if str(_web) not in sys.path:
+            sys.path.insert(0, str(_web))
+        from helpers import get_llm_config, llm_call  # type: ignore
+        md = llm_call(
+            [{"role": "user", "content": prompt}],
+            get_llm_config(),
+            max_tokens=5000,
+        ).strip()
+        md = re.sub(r"^```(?:markdown|md)?\s*", "", md.strip(), flags=re.I)
+        md = re.sub(r"\s*```$", "", md.strip())
+        if len(md) < 40 and len(source) > 300:
+            return source[:max_chars]
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(md[:max_chars], encoding="utf-8")
+        return md[:max_chars]
+    except Exception:
+        return source[:max_chars]
+
+
+def _markdown_cache_file(path: Path, text: str) -> Path:
+    h = hashlib.sha256()
+    h.update(_MARKDOWN_NORMALIZER_VERSION.encode())
+    h.update(str(path).encode(errors="ignore"))
+    h.update(str(len(text)).encode())
+    h.update(text[:2000].encode(errors="ignore"))
+    return _SKILL_BUILDER_CACHE_DIR / "markdown" / f"{h.hexdigest()[:24]}.md"
+
+
 def _llm_hierarchical_skill_plan(proj_name: str, docs: List[dict]) -> dict:
     """Skill Builder Agent: plan, design, generate, and self-check a hierarchical skill package."""
     digest = _doc_digest_for_llm(docs)
     if not digest:
         return {}
+    merge_hints = _embedding_merge_hints(docs)
 
     prompt = f"""你是 Skill Builder Agent，负责把一个混乱的文档目录二次整理成可复用的 seismo_skill 文件夹型 SKILL。
 
@@ -1640,54 +1927,44 @@ def _llm_hierarchical_skill_plan(proj_name: str, docs: List[dict]) -> dict:
 9. 遇到代码块或引用脚本时，要提取其中真实命令和参数，整理成“示例代码”和“如何验证”，不要只说“参考某脚本”。
 10. 必须合并同类功能：如果多个文件/片段都是同一个命令、同一个参数族或同一个任务（例如 `gmt coast -EAU` 和 `gmt coast -E=OC` 都是 `coast -E` 边界绘制），只能生成一个子技能，在其中列出多个场景和示例。
 11. 一个子技能应该聚合“概念说明 + 参数解释 + 示例代码 + 常见错误 + 验证方法”，不要把两个相邻示例拆成两个技能。
-12. 输出必须是 JSON，不要写 markdown 代码围栏。
+12. 参考“相似片段候选”决定哪些内容应合并，但最终合并/拆分由你根据功能语义判断。
+13. 优先输出下面的 RAW TEXT 协议；不要强行输出 JSON。小模型也可以稳定遵循这个协议。
 
-JSON 结构：
-{{
-  "display_name": "中文技能名",
-  "display_name_en": "English skill name",
-  "description": "中文：何时使用该技能",
-  "description_en": "English description",
-  "keywords": ["关键词"],
-  "when_to_use": ["触发场景"],
-  "when_to_use_en": ["English trigger situations"],
-  "workflow": ["使用步骤"],
-  "workflow_en": ["English workflow steps"],
-  "validation": ["检查项"],
-  "validation_en": ["English validation checks"],
-  "example_prompts": ["用户可能怎么问"],
-  "subskills": [
-    {{
-      "slug": "line_color_control",
-      "title_zh": "具体功能子技能标题，例如：线条颜色控制",
-      "title_en": "Line color control",
-      "purpose": "中文：这个子技能解决什么问题",
-      "purpose_en": "English purpose",
-      "when_to_use": ["何时使用"],
-      "when_to_use_en": ["When to use"],
-      "content": "整理后的中文正文，尽量包含细节、步骤、参数、公式或命令；不要说去看PDF",
-      "content_en": "English version of the organized content",
-      "key_points": ["要点"],
-      "key_points_en": ["English key points"],
-      "commands_or_api": ["文档中明确出现的命令/API/函数；没有则空数组"],
-      "parameters": ["文档中明确出现的重要参数、选项或字段；没有则空数组"],
-      "mini_workflow": ["使用这个子技能的步骤"],
-      "mini_workflow_en": ["English mini workflow"],
-      "pitfalls": ["注意事项或常见错误"],
-      "pitfalls_en": ["English pitfalls"],
-      "validation": ["如何验证这一页内容被正确使用"],
-      "validation_en": ["English validation"],
-      "source_evidence": ["来自原文的短证据或章节线索"]
-    }}
-  ],
-  "coverage_audit": {{
-    "covered_capabilities": ["已覆盖能力"],
-    "missing_or_weak": ["文档不足或需要人工复核的内容"],
-    "suggested_tests": ["建议用来验证该 SKILL 的测试问题或小任务"]
-  }}
-}}
+RAW TEXT 协议：
+SKILL_NAME: 中文技能包名称
+SKILL_NAME_EN: English skill name
+DESCRIPTION: 一句话说明这个技能包何时使用
+KEYWORDS: GMT, 地图, CPT, 投影, ...
+
+=== SUBSKILL ===
+SLUG: line_color_control
+TITLE_ZH: 线条颜色、宽度与样式控制
+TITLE_EN: Line color width and style control
+PURPOSE: 这个子技能解决什么问题
+WHEN_TO_USE:
+- 何时使用
+CONTENT:
+这里写整理后的中文正文，必须是可直接使用的步骤、参数、代码示例和说明。
+COMMANDS:
+- gmt plot
+- -W
+PARAMETERS:
+- -W<pen>: 控制线条宽度、颜色和样式
+WORKFLOW:
+- 第一步
+- 第二步
+VALIDATION:
+- 如何检查结果正确
+SOURCE_EVIDENCE:
+- 文件或章节线索
+=== END_SUBSKILL ===
+
+可以重复多个 SUBSKILL。不要输出 index、section、纯数字标题这类子技能。
 
 文档项目名：{proj_name}
+
+相似片段候选（BGE/embedding 召回，供你判断合并/拆分）：
+{merge_hints or "无；请直接根据文档内容判断。"}
 
 文档内容：
 {digest}
@@ -1702,26 +1979,244 @@ JSON 结构：
             get_llm_config(),
             max_tokens=9000,
         )
-        plan = _json_from_text(raw)
+        plan = _plan_from_llm_text(raw)
         if not isinstance(plan, dict):
-            return {"_error": "LLM 输出不是可解析的 JSON 对象", "_raw_preview": str(raw)[:800]}
-        units = plan.get("subskills") or plan.get("references")
+            return {"_error": "LLM 输出无法解析为 SKILL 计划", "_raw_preview": str(raw)[:800]}
+        units = _extract_subskill_units(plan)
         if not isinstance(units, list) or not units:
-            return {"_error": "LLM JSON 中缺少有效 subskills 数组", "_raw_preview": str(raw)[:800]}
-        cleaned_refs = []
-        for ref in units[:80]:
-            if not isinstance(ref, dict):
-                continue
-            title = str(ref.get("title_zh") or ref.get("title") or ref.get("title_en") or "").strip()
-            content = str(ref.get("content") or "").strip()
-            if title and content:
-                cleaned_refs.append(ref)
+            sub_plan = _llm_subskills_only_plan(proj_name, docs, plan)
+            if sub_plan.get("_error"):
+                sub_plan.setdefault("_raw_preview", str(raw)[:800])
+                return sub_plan
+            plan.update({k: v for k, v in sub_plan.items() if not k.startswith("_")})
+            units = _extract_subskill_units(plan)
+        cleaned_refs = _normalize_llm_units(units)
         if not cleaned_refs:
             return {"_error": "LLM 返回的 subskills 缺少 title_zh/title 或 content", "_raw_preview": str(raw)[:800]}
         plan["subskills"] = cleaned_refs
         return plan
     except Exception as exc:
         return {"_error": str(exc)}
+
+
+def _extract_subskill_units(plan: dict) -> List[dict]:
+    if not isinstance(plan, dict):
+        return []
+    for key in ("subskills", "sub_skills", "skills", "skill_items", "references", "children", "技能", "子技能"):
+        value = plan.get(key)
+        if isinstance(value, list) and value:
+            return [v for v in value if isinstance(v, dict)]
+    # Some models nest the useful list under a skill_tree/capabilities object.
+    for key in ("skill_tree", "capabilities", "能力树", "功能树"):
+        value = plan.get(key)
+        if isinstance(value, dict):
+            nested = _extract_subskill_units(value)
+            if nested:
+                return nested
+        if isinstance(value, list) and value:
+            return [v for v in value if isinstance(v, dict)]
+    return []
+
+
+def _plan_from_llm_text(raw: str) -> dict:
+    """Parse either JSON or the relaxed RAW TEXT protocol from small models."""
+    plan = _json_from_text(raw)
+    if isinstance(plan, dict) and plan:
+        return plan
+    return _raw_skill_plan_from_text(raw)
+
+
+def _raw_skill_plan_from_text(raw: str) -> dict:
+    text = str(raw or "").strip()
+    if not text:
+        return {}
+    plan: dict = {}
+    header = text.split("=== SUBSKILL ===", 1)[0]
+    header_map = {
+        "SKILL_NAME": "display_name",
+        "SKILL_NAME_EN": "display_name_en",
+        "DESCRIPTION": "description",
+        "DESCRIPTION_EN": "description_en",
+    }
+    for key, out_key in header_map.items():
+        m = re.search(rf"(?im)^\s*{key}\s*[:：]\s*(.+)$", header)
+        if m:
+            plan[out_key] = m.group(1).strip()
+    m = re.search(r"(?im)^\s*KEYWORDS\s*[:：]\s*(.+)$", header)
+    if m:
+        plan["keywords"] = [x.strip() for x in re.split(r"[,，;；]", m.group(1)) if x.strip()]
+
+    blocks = re.split(r"(?im)^===\s*SUBSKILL\s*===\s*$", text)
+    subskills = []
+    for block in blocks[1:]:
+        block = re.split(r"(?im)^===\s*END_SUBSKILL\s*===\s*$", block)[0].strip()
+        unit = _parse_raw_subskill_block(block)
+        if unit:
+            subskills.append(unit)
+    if subskills:
+        plan["subskills"] = subskills
+    return plan
+
+
+def _parse_raw_subskill_block(block: str) -> dict:
+    fields = {
+        "SLUG": "slug",
+        "TITLE_ZH": "title_zh",
+        "TITLE_EN": "title_en",
+        "PURPOSE": "purpose",
+        "PURPOSE_EN": "purpose_en",
+        "CONTENT": "content",
+        "CONTENT_EN": "content_en",
+        "WHEN_TO_USE": "when_to_use",
+        "WHEN_TO_USE_EN": "when_to_use_en",
+        "KEY_POINTS": "key_points",
+        "KEY_POINTS_EN": "key_points_en",
+        "COMMANDS": "commands_or_api",
+        "COMMANDS_OR_API": "commands_or_api",
+        "PARAMETERS": "parameters",
+        "WORKFLOW": "mini_workflow",
+        "MINI_WORKFLOW": "mini_workflow",
+        "PITFALLS": "pitfalls",
+        "VALIDATION": "validation",
+        "SOURCE_EVIDENCE": "source_evidence",
+    }
+    matches = list(re.finditer(r"(?im)^\s*([A-Z_]+)\s*[:：]\s*(.*)$", block))
+    if not matches:
+        return {}
+    unit: dict = {}
+    for i, match in enumerate(matches):
+        raw_key = match.group(1).strip().upper()
+        out_key = fields.get(raw_key)
+        if not out_key:
+            continue
+        start = match.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(block)
+        inline = match.group(2).strip()
+        tail = block[start:end].strip()
+        value = (inline + ("\n" + tail if tail else "")).strip()
+        if out_key in {
+            "when_to_use", "when_to_use_en", "key_points", "key_points_en",
+            "commands_or_api", "parameters", "mini_workflow", "pitfalls",
+            "validation", "source_evidence",
+        }:
+            unit[out_key] = _parse_raw_list(value)
+        else:
+            unit[out_key] = value
+    if not unit.get("title_zh") and unit.get("title_en"):
+        unit["title_zh"] = unit["title_en"]
+    if not unit.get("slug"):
+        unit["slug"] = _fallback_english_slug(unit.get("title_en") or unit.get("title_zh") or "", fallback="subskill")
+    return unit if (unit.get("title_zh") and unit.get("content")) else {}
+
+
+def _parse_raw_list(value: str) -> List[str]:
+    lines = []
+    for line in str(value or "").splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        s = re.sub(r"^[-*•]\s*", "", s).strip()
+        if s:
+            lines.append(s)
+    if len(lines) <= 1 and ("," in str(value) or "，" in str(value)):
+        lines = [x.strip() for x in re.split(r"[,，;；]", str(value)) if x.strip()]
+    return lines
+
+
+def _normalize_llm_units(units: List[dict]) -> List[dict]:
+    cleaned_refs = []
+    for ref in units[:80]:
+        if not isinstance(ref, dict):
+            continue
+        ref = dict(ref)
+        title = str(
+            ref.get("title_zh")
+            or ref.get("title")
+            or ref.get("title_en")
+            or ref.get("name")
+            or ref.get("功能")
+            or ""
+        ).strip()
+        content = str(
+            ref.get("content")
+            or ref.get("skill_content")
+            or ref.get("body")
+            or ref.get("description")
+            or ref.get("说明")
+            or ""
+        ).strip()
+        if title and content:
+            ref.setdefault("title_zh", title)
+            ref.setdefault("content", content)
+            cleaned_refs.append(ref)
+    return cleaned_refs
+
+
+def _llm_subskills_only_plan(proj_name: str, docs: List[dict], base_plan: dict) -> dict:
+    digest = _doc_digest_for_llm(docs, max_chars=36000)
+    capability_hint = ", ".join(_as_list(base_plan.get("keywords"), 20))
+    prompt = f"""你已经给出了 {proj_name} 的总体技能包说明，但缺少子技能列表。
+
+现在请按 RAW TEXT 协议输出，不要 JSON，不要解释。可以被小模型稳定生成。
+
+目标：按功能能力合并整理 8-16 个可直接使用的子技能。不要按文件、章节、index、数字拆分。
+每个子技能必须包含：
+- SLUG: 英文小写下划线文件名
+- TITLE_ZH / TITLE_EN
+- PURPOSE
+- CONTENT: 中文正文，包含可执行步骤、关键参数、命令或代码示例。严禁保留 toctree、gmtplot、literalinclude、:doc: 等文档构建语法。
+- COMMANDS
+- PARAMETERS
+- WORKFLOW
+- VALIDATION
+- SOURCE_EVIDENCE
+
+格式：
+=== SUBSKILL ===
+SLUG: gmt_coast_boundary_plotting
+TITLE_ZH: GMT coast 国家与区域边界绘制
+TITLE_EN: GMT coast country and region boundary plotting
+PURPOSE: 使用 GMT coast 的 -E 选项绘制国家、地区或大洲边界。
+CONTENT:
+这里写可直接使用的中文技能内容。
+COMMANDS:
+- gmt coast
+PARAMETERS:
+- -E<code>+p<pen>: 绘制并设置边界线
+WORKFLOW:
+- ...
+VALIDATION:
+- ...
+SOURCE_EVIDENCE:
+- ...
+=== END_SUBSKILL ===
+
+如果多个片段属于同一功能，必须合并。例如 coast -EAU 和 coast -E=OC 都属于“GMT coast 国家与区域边界绘制”。
+
+总体关键词：{capability_hint or "GMT 绘图、地图、CPT、投影、数据集、示例脚本"}
+
+文档证据：
+{digest}
+"""
+    try:
+        _web = Path(__file__).parent.parent / "web_app"
+        if str(_web) not in sys.path:
+            sys.path.insert(0, str(_web))
+        from helpers import get_llm_config, llm_call  # type: ignore
+        raw = llm_call(
+            [{"role": "user", "content": prompt}],
+            get_llm_config(),
+            max_tokens=9000,
+        )
+        plan = _plan_from_llm_text(raw)
+        if not isinstance(plan, dict):
+            return {"_error": "第二轮 subskills 输出无法解析", "_raw_preview": str(raw)[:800]}
+        units = _normalize_llm_units(_extract_subskill_units(plan))
+        if not units:
+            return {"_error": "第二轮仍未返回有效 subskills", "_raw_preview": str(raw)[:800]}
+        return {"subskills": units}
+    except Exception as exc:
+        return {"_error": f"第二轮 subskills 生成失败：{exc}"}
 
 
 def _as_list(value, limit: int = 12) -> List[str]:
