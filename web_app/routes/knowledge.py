@@ -350,6 +350,12 @@ def knowledge_delete_project(proj_name):
 
         indexer = KnowledgeIndexer()
         kb = get_kb_instance()
+        proj_path = Path(proj_name)
+        proj_candidates = {
+            proj_name,
+            proj_path.name,
+            proj_path.stem,
+        }
 
         # 1. 先从 RAG 元数据删除该 proj_folder 下的文档。
         # Chat/Project 入库的整体资料只存在 RAG metadata 中，不一定存在
@@ -367,10 +373,14 @@ def knowledge_delete_project(proj_name):
 
         # 2. 兼容 skill docs / reference library 的目录索引 manifest。
         keys_to_del = []
+        skill_names_to_del = set()
         for rel, entry in list(indexer._manifest.items()):
+            rel_path = Path(rel)
             if (
-                entry.get("proj_folder") == proj_name
+                entry.get("proj_folder") in proj_candidates
                 or rel == proj_name
+                or rel_path.name == proj_name
+                or rel_path.stem == proj_name
                 or rel.startswith(proj_name + "/")
                 or rel.startswith(proj_name + "\\")
             ):
@@ -382,6 +392,8 @@ def knowledge_delete_project(proj_name):
                                 removed_docs.append(doc_id)
                     except Exception:
                         pass
+                if entry.get("skill_name"):
+                    skill_names_to_del.add(entry.get("skill_name"))
                 keys_to_del.append(rel)
 
         for k in keys_to_del:
@@ -390,29 +402,38 @@ def knowledge_delete_project(proj_name):
             indexer._save_manifest()
 
         # 3. 删除由目录索引生成的 Skill 文件（Chat/Project 入库不会有这个条目）
-        proj_entry = indexer._proj_manifest.pop(proj_name, None)
-        if not proj_entry:
-            proj_entry = indexer._proj_manifest.pop(Path(proj_name).stem, None)
-        if proj_entry:
+        proj_entries = []
+        for key in list(indexer._proj_manifest.keys()):
+            entry = indexer._proj_manifest.get(key) or {}
+            source_name = Path(str(entry.get("source_path", ""))).name
+            source_stem = Path(str(entry.get("source_path", ""))).stem
+            if key in proj_candidates or source_name in proj_candidates or source_stem in proj_candidates:
+                proj_entries.append(indexer._proj_manifest.pop(key))
+        if proj_entries:
             indexer._save_proj_manifest()
+        for proj_entry in proj_entries:
             skill_name = proj_entry.get("skill_name", "")
             if skill_name:
-                skill_file = _USER_SKILL_DIR / f"{skill_name}.md"
-                skill_file.unlink(missing_ok=True)
-                delete_generated_builtin_skill(skill_name)
-                # Invalidate skill cache
-                try:
-                    from seismo_skill import skill_loader as _sl
-                    _sl.invalidate_cache()
-                except Exception:
-                    pass
+                skill_names_to_del.add(skill_name)
+
+        for skill_name in skill_names_to_del:
+            skill_file = _USER_SKILL_DIR / f"{skill_name}.md"
+            skill_file.unlink(missing_ok=True)
+            delete_generated_builtin_skill(skill_name)
+        if skill_names_to_del:
+            # Invalidate skill cache
+            try:
+                from seismo_skill import skill_loader as _sl
+                _sl.invalidate_cache()
+            except Exception:
+                pass
 
         return jsonify({
             "ok": True,
             "proj_name": proj_name,
             "removed_files": len(keys_to_del),
             "removed_docs": len(removed_docs),
-            "skill_deleted": bool(proj_entry and proj_entry.get("skill_name")),
+            "skill_deleted": bool(skill_names_to_del),
         })
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -515,12 +536,21 @@ def ref_knowledge_delete_collection(coll_name):
     """删除一个参考文献集合的 RAG 索引（不删除原始文件）。"""
     try:
         indexer = get_ref_indexer()
+        coll_path = Path(coll_name)
+        coll_candidates = {
+            coll_name,
+            coll_path.name,
+            coll_path.stem,
+        }
         removed_docs = []
         keys_to_del = []
         for rel, entry in list(indexer._manifest.items()):
+            rel_path = Path(rel)
             if (
-                entry.get("proj_folder") == coll_name
+                entry.get("proj_folder") in coll_candidates
                 or rel == coll_name
+                or rel_path.name == coll_name
+                or rel_path.stem == coll_name
                 or rel.startswith(coll_name + "/")
                 or rel.startswith(coll_name + "\\")
             ):

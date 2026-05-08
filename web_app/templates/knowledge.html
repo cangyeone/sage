@@ -875,8 +875,8 @@ function renderProjectCards(d) {
     const skill = p.skill_name
       ? `<div class="proj-skill"><i class="bi bi-lightning-charge-fill me-1"></i>Skill: ${p.skill_name}</div>`
       : '';
-    // Show delete button only for indexed/partial projects (have RAG data to remove)
-    const canDelete = p.status === 'indexed' || p.status === 'partial' || p.status === 'modified';
+    // Show delete when there is either RAG state or a generated Skill to remove.
+    const canDelete = !!p.skill_name || p.status === 'indexed' || p.status === 'partial' || p.status === 'modified';
     const delBtn = canDelete
       ? `<button class="btn btn-sm btn-outline-danger ms-1" style="font-size:.72rem;padding:.1rem .45rem;border-radius:6px;"
            onclick="event.stopPropagation();deleteProject('${p.name.replace(/'/g,"\\'")}',${p.is_folder})"
