@@ -27,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -59,6 +60,8 @@ _PROJ_MANIFEST_FILE = _KB_DIR / "proj_manifest.json"
 
 # 自动生成的 Skill 存储目录
 _USER_SKILL_DIR = Path.home() / ".seismicx" / "skills"
+_BUILTIN_SKILL_DIR = Path(__file__).parent / "skills"
+_DOC_SKILL_GENERATOR = "seismo_skill_docs_builder"
 
 # 每个项目最多索引多少文件（优先高价值格式，避免处理海量叶子页）
 MAX_FILES_PER_PROJECT = 120
@@ -612,6 +615,158 @@ class KnowledgeIndexer:
         log(f"   📝 已生成 Skill：{skill_name}")
         return skill_name
 
+    # ── 文件夹型 Skill 生成 ──────────────────────────────────────────────────
+
+    def build_folder_skills(
+        self,
+        progress_cb: Optional[Callable[[str], None]] = None,
+        stop_event=None,
+        use_llm: bool = True,
+        overwrite: bool = True,
+    ) -> BuildResult:
+        """
+        将 seismo_skill/docs/ 下的每个顶级子文件夹转换为一个文件夹型 Skill。
+
+        目标格式：
+            seismo_skill/skills/<skill_name>/SKILL.md
+            seismo_skill/skills/<skill_name>/references/*.md
+            seismo_skill/skills/<skill_name>/agents/openai.yaml
+
+        这个路径不依赖 RAG 索引，适合把文档固化为可被其它 Skill 系统复用的
+        通用技能包。若同名技能已经存在且不是本构建器生成的，会自动追加后缀，
+        避免覆盖手写内置技能。
+        """
+        def _log(msg: str):
+            if progress_cb:
+                progress_cb(msg)
+
+        result = BuildResult()
+        _BUILTIN_SKILL_DIR.mkdir(parents=True, exist_ok=True)
+
+        try:
+            projects = [
+                p for p in sorted(self.knowledge_dir.iterdir())
+                if p.is_dir() and not p.name.startswith(".")
+            ]
+        except Exception as exc:
+            result.failed.append(str(exc))
+            _log(f"❌ 无法扫描文档目录：{exc}")
+            return result
+
+        if not projects:
+            _log("ℹ️  seismo_skill/docs 下暂无子文件夹，未生成文件夹型 Skill。")
+            return result
+
+        _log(f"📦 将 {len(projects)} 个文档文件夹转换为文件夹型 Skill…")
+        for idx, proj_path in enumerate(projects, 1):
+            if stop_event and stop_event.is_set():
+                result.interrupted = True
+                _log("⚠  已中断（文件夹型 Skill 构建停止）。")
+                break
+
+            proj_name = proj_path.name
+            _log(f"\n[{idx}/{len(projects)}] {proj_name}")
+            files = _select_key_files(self._iter_supported_files(proj_path))
+            if not files:
+                result.skipped.append(proj_name)
+                _log("   ⚠ 未发现支持的文档文件，跳过。")
+                continue
+
+            docs = []
+            for path in files[:40]:
+                text = _read_source_text(path, max_chars=7000)
+                if not text.strip():
+                    continue
+                docs.append({
+                    "path": str(path.relative_to(proj_path)),
+                    "abs_path": str(path),
+                    "text": text,
+                    "headings": _extract_headings(text),
+                })
+
+            if not docs:
+                result.skipped.append(proj_name)
+                _log("   ⚠ 文档无法抽取文本，跳过。")
+                continue
+
+            try:
+                spec = _llm_folder_skill_spec(proj_name, docs) if use_llm else {}
+                if not spec:
+                    spec = _fallback_folder_skill_spec(proj_name, docs)
+                skill_name = _safe_skill_slug(spec.get("name") or proj_name)
+                target = _resolve_generated_skill_target(skill_name, overwrite=overwrite)
+                final_name = target.name
+                spec["name"] = final_name
+                self._write_folder_skill(target, proj_name, proj_path, files, docs, spec, _log)
+                self._proj_manifest[proj_name] = {
+                    "proj_name": proj_name,
+                    "skill_name": final_name,
+                    "skill_path": str(target),
+                    "skill_kind": "folder",
+                    "skill_location": "builtin",
+                    "generated_by": _DOC_SKILL_GENERATOR,
+                    "generated_at": datetime.now().isoformat(timespec="seconds"),
+                }
+                self._save_proj_manifest()
+                result.skills_generated.append(final_name)
+                _log(f"   ✅ 文件夹型 Skill 已生成：{final_name}")
+            except Exception as exc:
+                result.failed.append(proj_name)
+                _log(f"   ❌ 生成失败：{exc}")
+
+        _invalidate_skill_cache()
+        _log(f"\n✅ 完成：{result.summary()}")
+        return result
+
+    def _write_folder_skill(
+        self,
+        target: Path,
+        proj_name: str,
+        proj_path: Path,
+        files: List[Path],
+        docs: List[dict],
+        spec: dict,
+        log: Callable[[str], None],
+    ) -> None:
+        if target.exists():
+            shutil.rmtree(target)
+        (target / "references").mkdir(parents=True, exist_ok=True)
+        (target / "agents").mkdir(parents=True, exist_ok=True)
+
+        ref_lines = [
+            f"# Source Manifest: {proj_name}",
+            "",
+            f"- Generated by: `{_DOC_SKILL_GENERATOR}`",
+            f"- Source folder: `{proj_path}`",
+            f"- Generated at: `{datetime.now().isoformat(timespec='seconds')}`",
+            f"- Selected files: {len(files)}",
+            "",
+            "## Files",
+        ]
+        for path in files:
+            rel = path.relative_to(proj_path)
+            ref_lines.append(f"- `{rel}`")
+        (target / "references" / "manifest.md").write_text("\n".join(ref_lines) + "\n", encoding="utf-8")
+
+        for i, doc in enumerate(docs[:30], 1):
+            ref_name = f"{i:02d}_{_safe_filename(Path(doc['path']).stem)}.md"
+            body = [
+                f"# {doc['path']}",
+                "",
+                f"Source: `{doc['abs_path']}`",
+                "",
+                "## Extracted Notes",
+                "",
+                doc["text"][:12000].strip(),
+                "",
+            ]
+            (target / "references" / ref_name).write_text("\n".join(body), encoding="utf-8")
+
+        skill_md = _render_folder_skill_md(proj_name, spec, docs)
+        (target / "SKILL.md").write_text(skill_md, encoding="utf-8")
+        (target / "agents" / "openai.yaml").write_text(_render_agent_yaml(spec), encoding="utf-8")
+        log(f"   📁 写入：{target}")
+
     # ── 清理已删除文件 ────────────────────────────────────────────────────────
 
     def _cleanup_deleted(self, deleted_rels: List[str]):
@@ -850,6 +1005,290 @@ def _llm_name_project(
 
     except Exception:
         return fallback_name, fallback_title, fallback_desc
+
+
+# ── 文件夹型 Skill 辅助函数 ───────────────────────────────────────────────────
+
+def _safe_skill_slug(name: str) -> str:
+    slug = re.sub(r"[^\w\-]+", "_", (name or "").strip().lower()).strip("_-")
+    if not slug:
+        slug = "document_skill"
+    if slug[0].isdigit():
+        slug = f"skill_{slug}"
+    return slug[:64].rstrip("_-") or "document_skill"
+
+
+def _safe_filename(name: str) -> str:
+    return re.sub(r"[^\w\-]+", "_", (name or "reference").strip().lower()).strip("_-")[:80] or "reference"
+
+
+def _strip_html(text: str) -> str:
+    text = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", text)
+    text = re.sub(r"(?s)<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _read_source_text(path: Path, max_chars: int = 8000) -> str:
+    """Best-effort text extraction for docs-to-skill generation."""
+    ext = path.suffix.lower()
+    try:
+        if ext in {".md", ".txt", ".rst"}:
+            return path.read_text(encoding="utf-8", errors="ignore")[:max_chars]
+        if ext in {".html", ".htm"}:
+            return _strip_html(path.read_text(encoding="utf-8", errors="ignore"))[:max_chars]
+        if ext == ".pdf":
+            try:
+                import fitz  # type: ignore
+                doc = fitz.open(str(path))
+                pages = []
+                for page in doc[: min(8, len(doc))]:
+                    pages.append(page.get_text("text"))
+                return "\n".join(pages)[:max_chars]
+            except Exception:
+                return ""
+        if ext == ".docx":
+            try:
+                from docx import Document  # type: ignore
+                document = Document(str(path))
+                return "\n".join(p.text for p in document.paragraphs)[:max_chars]
+            except Exception:
+                return ""
+    except Exception:
+        return ""
+    return ""
+
+
+def _extract_headings(text: str, limit: int = 12) -> List[str]:
+    headings: List[str] = []
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("#"):
+            h = s.lstrip("#").strip()
+        elif len(s) < 90 and re.match(r"^[A-Z][A-Za-z0-9 .:_/-]{4,}$", s):
+            h = s
+        else:
+            continue
+        if h and h not in headings:
+            headings.append(h)
+        if len(headings) >= limit:
+            break
+    return headings
+
+
+def _json_from_text(raw: str) -> dict:
+    text = (raw or "").strip()
+    if not text:
+        return {}
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if fenced:
+        text = fenced.group(1)
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        text = text[start:end + 1]
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _llm_folder_skill_spec(proj_name: str, docs: List[dict]) -> dict:
+    snippets = []
+    for doc in docs[:10]:
+        headings = ", ".join(doc.get("headings") or [])
+        snippets.append(
+            f"FILE: {doc['path']}\nHEADINGS: {headings}\nTEXT:\n{doc['text'][:1600]}"
+        )
+    prompt = f"""You convert a documentation folder into a portable Codex-style Skill.
+
+Folder name: {proj_name}
+
+Return ONLY compact JSON with these keys:
+name: lowercase machine-safe skill name.
+display_name: human readable name.
+description: trigger description. Say when this skill should be used.
+keywords: array of 6-14 technical keywords.
+when_to_use: array of concrete situations.
+workflow: array of 4-8 concise steps.
+validation: array of checks/tests the agent should run.
+example_prompts: array of realistic prompts.
+
+Make the skill generic and reusable by other systems. Do not mention RAG as a requirement.
+
+Documentation excerpts:
+{chr(10).join(snippets)[:16000]}
+"""
+    try:
+        _web = Path(__file__).parent.parent / "web_app"
+        if str(_web) not in sys.path:
+            sys.path.insert(0, str(_web))
+        from helpers import get_llm_config, llm_call  # type: ignore
+        raw = llm_call(
+            [{"role": "user", "content": prompt}],
+            get_llm_config(),
+            max_tokens=1200,
+        )
+        return _normalize_folder_skill_spec(_json_from_text(raw), proj_name, docs)
+    except Exception:
+        return {}
+
+
+def _fallback_folder_skill_spec(proj_name: str, docs: List[dict]) -> dict:
+    keywords = _extract_keywords(proj_name, [d["text"][:1200] for d in docs[:5]])
+    title = proj_name.replace("_", " ").replace("-", " ").strip() or proj_name
+    return {
+        "name": _safe_skill_slug(proj_name),
+        "display_name": title,
+        "description": (
+            f"Use this skill when working with {title} documentation, APIs, workflows, "
+            "examples, command patterns, or domain methods from the bundled references."
+        ),
+        "keywords": keywords,
+        "when_to_use": [
+            "The user asks how to use this documented tool, method, workflow, or domain package.",
+            "The task needs examples, parameters, file formats, or implementation guidance from the references.",
+            "The answer should be grounded in local documentation instead of generic memory.",
+        ],
+        "workflow": [
+            "Read SKILL.md first to understand the scope.",
+            "Load only the relevant files under references/ for the user request.",
+            "Extract concrete commands, APIs, parameters, assumptions, and constraints from the references.",
+            "If code is needed, produce a minimal runnable implementation and include a small self-check.",
+            "Cite the reference file names used in the final answer when possible.",
+        ],
+        "validation": [
+            "Check referenced commands or code snippets for syntax before presenting them.",
+            "Do not invent unavailable APIs, parameters, or results.",
+            "State missing documentation or uncertainty explicitly.",
+        ],
+        "example_prompts": [
+            f"How do I use {title} for a practical task?",
+            f"Summarize the key workflow from the {title} docs.",
+        ],
+    }
+
+
+def _normalize_folder_skill_spec(spec: dict, proj_name: str, docs: List[dict]) -> dict:
+    fallback = _fallback_folder_skill_spec(proj_name, docs)
+    if not isinstance(spec, dict):
+        return fallback
+    out = {**fallback}
+    for key in ("name", "display_name", "description"):
+        if isinstance(spec.get(key), str) and spec[key].strip():
+            out[key] = spec[key].strip()
+    for key in ("keywords", "when_to_use", "workflow", "validation", "example_prompts"):
+        val = spec.get(key)
+        if isinstance(val, list):
+            cleaned = [str(v).strip() for v in val if str(v).strip()]
+            if cleaned:
+                out[key] = cleaned[:14]
+    out["name"] = _safe_skill_slug(out["name"])
+    return out
+
+
+def _resolve_generated_skill_target(skill_name: str, overwrite: bool = True) -> Path:
+    base = _BUILTIN_SKILL_DIR / skill_name
+    if not base.exists():
+        return base
+    skill_md = base / "SKILL.md"
+    text = skill_md.read_text(encoding="utf-8", errors="ignore") if skill_md.exists() else ""
+    if overwrite and f"generated_by: {_DOC_SKILL_GENERATOR}" in text:
+        return base
+    for i in range(2, 100):
+        candidate = _BUILTIN_SKILL_DIR / f"{skill_name}_{i}"
+        if not candidate.exists():
+            return candidate
+    raise FileExistsError(f"Cannot find free skill folder for {skill_name}")
+
+
+def _yaml_list(items: List[str], indent: str = "") -> str:
+    return "\n".join(f"{indent}- {str(item).replace(chr(10), ' ').strip()}" for item in items)
+
+
+def _render_folder_skill_md(proj_name: str, spec: dict, docs: List[dict]) -> str:
+    name = _safe_skill_slug(spec.get("name") or proj_name)
+    display = spec.get("display_name") or name.replace("_", " ").title()
+    keywords = [str(k) for k in spec.get("keywords", [])][:14]
+    description = str(spec.get("description", "")).replace("\n", " ").strip()
+    when = spec.get("when_to_use", [])
+    workflow = spec.get("workflow", [])
+    validation = spec.get("validation", [])
+    examples = spec.get("example_prompts", [])
+    refs = [d["path"] for d in docs[:12]]
+    return f"""---
+name: {name}
+description: >-
+  {description}
+category: generated
+keywords:
+{_yaml_list(keywords, "  ")}
+source: generated
+generated_by: {_DOC_SKILL_GENERATOR}
+generated_from: seismo_skill/docs/{proj_name}/
+generated_at: {datetime.now().isoformat(timespec="seconds")}
+---
+
+# {display}
+
+## Purpose
+
+Use this skill to turn the bundled documentation into concrete, grounded help for coding, analysis, interpretation, or workflow design. Keep answers tied to the reference files and call out uncertainty when the documents do not contain enough evidence.
+
+## When To Use
+
+{_yaml_list(when)}
+
+## Workflow
+
+{_yaml_list(workflow)}
+
+## References
+
+Start with `references/manifest.md`, then open only the specific reference files needed for the current request.
+
+{_yaml_list(refs)}
+
+## Validation
+
+{_yaml_list(validation)}
+
+## Example Prompts
+
+{_yaml_list(examples)}
+"""
+
+
+def _render_agent_yaml(spec: dict) -> str:
+    display = str(spec.get("display_name") or spec.get("name") or "Generated Skill")
+    desc = str(spec.get("description") or "").replace("\n", " ").strip()
+    return f"""display_name: {display}
+short_description: >-
+  {desc}
+default_prompt: >-
+  Use the generated SKILL.md and only the relevant references/ files. Ground claims in the bundled documentation, produce runnable code when asked, and state missing information explicitly.
+"""
+
+
+def delete_generated_builtin_skill(name: str) -> bool:
+    """Delete a docs-generated folder skill under seismo_skill/skills/ only."""
+    safe = _safe_skill_slug(name)
+    folders = _BUILTIN_SKILL_DIR.iterdir() if _BUILTIN_SKILL_DIR.exists() else []
+    for folder in folders:
+        if not folder.is_dir():
+            continue
+        skill_md = folder / "SKILL.md"
+        if not skill_md.exists():
+            continue
+        text = skill_md.read_text(encoding="utf-8", errors="ignore")
+        if f"name: {safe}" not in text and folder.name != safe:
+            continue
+        if f"generated_by: {_DOC_SKILL_GENERATOR}" not in text:
+            continue
+        shutil.rmtree(folder, ignore_errors=True)
+        _invalidate_skill_cache()
+        return True
+    return False
 
 
 # ── 辅助函数 ──────────────────────────────────────────────────────────────────

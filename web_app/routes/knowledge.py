@@ -222,12 +222,16 @@ def knowledge_dir_status():
 
 @bp.route('/api/knowledge/build_from_dir', methods=['POST'])
 def knowledge_build_from_dir():
-    """启动后台任务：扫描 seismo_skill/docs/ 并构建/更新 RAG 索引与 Skill。"""
+    """启动后台任务：扫描 seismo_skill/docs/ 并按模式构建 RAG 或文件夹型 Skill。"""
+    data = request.get_json(silent=True) or {}
+    mode = (data.get("mode") or "both").strip().lower()
+    if mode not in {"rag", "skill", "both"}:
+        mode = "both"
     job_id = f"kbdir_{_uuid.uuid4().hex[:8]}"
     stop_ev = threading.Event()
     _kb_dir_jobs[job_id] = {
         "status": "running", "log": [], "result": None,
-        "progress": 0, "stop_event": stop_ev,
+        "progress": 0, "stop_event": stop_ev, "mode": mode,
     }
 
     def _run(jid):
@@ -256,7 +260,35 @@ def knowledge_build_from_dir():
                     done = int(m.group(1))
                     job["progress"] = max(5, int(done / total * 90))
 
-            result = indexer.build(progress_cb=_progress_cb, stop_event=stop_event)
+            log_lines.append(f"▶ 构建模式：{mode}")
+            if mode == "rag":
+                result = indexer.build(
+                    progress_cb=_progress_cb,
+                    stop_event=stop_event,
+                    skip_skill_gen=True,
+                )
+            elif mode == "skill":
+                result = indexer.build_folder_skills(
+                    progress_cb=_progress_cb,
+                    stop_event=stop_event,
+                    use_llm=True,
+                )
+            else:
+                result = indexer.build(
+                    progress_cb=_progress_cb,
+                    stop_event=stop_event,
+                    skip_skill_gen=True,
+                )
+                if not result.interrupted and not stop_event.is_set():
+                    skill_result = indexer.build_folder_skills(
+                        progress_cb=_progress_cb,
+                        stop_event=stop_event,
+                        use_llm=True,
+                    )
+                    result.skills_generated.extend(skill_result.skills_generated)
+                    result.skipped.extend(skill_result.skipped)
+                    result.failed.extend(skill_result.failed)
+                    result.interrupted = result.interrupted or skill_result.interrupted
 
             if result.interrupted:
                 job["status"] = "stopped"
@@ -270,6 +302,7 @@ def knowledge_build_from_dir():
                 "skipped": result.skipped,
                 "failed": result.failed,
                 "interrupted": result.interrupted,
+                "mode": mode,
             }
         except Exception as exc:
             job["status"] = "error"
@@ -277,7 +310,7 @@ def knowledge_build_from_dir():
             log_lines.append(f"❌ 错误：{exc}")
 
     threading.Thread(target=_run, args=(job_id,), daemon=True).start()
-    return jsonify({"ok": True, "job_id": job_id})
+    return jsonify({"ok": True, "job_id": job_id, "mode": mode})
 
 
 @bp.route('/api/knowledge/build_from_dir/<job_id>', methods=['GET'])
@@ -311,7 +344,9 @@ def knowledge_delete_project(proj_name):
         _proj = str(_PROJECT_ROOT)
         if _proj not in _s.path:
             _s.path.insert(0, _proj)
-        from seismo_skill.knowledge_indexer import KnowledgeIndexer, _USER_SKILL_DIR
+        from seismo_skill.knowledge_indexer import (
+            KnowledgeIndexer, _USER_SKILL_DIR, delete_generated_builtin_skill,
+        )
 
         indexer = KnowledgeIndexer()
         kb = get_kb_instance()
@@ -357,6 +392,7 @@ def knowledge_delete_project(proj_name):
             if skill_name:
                 skill_file = _USER_SKILL_DIR / f"{skill_name}.md"
                 skill_file.unlink(missing_ok=True)
+                delete_generated_builtin_skill(skill_name)
                 # Invalidate skill cache
                 try:
                     from seismo_skill import skill_loader as _sl

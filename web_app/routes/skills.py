@@ -135,9 +135,15 @@ def skills_delete(name):
         return jsonify({'ok': False, 'error': '技能模块未安装'}), 500
     ok = sl.skill_loader.delete_user_skill(name)
     if not ok:
+        try:
+            from seismo_skill.knowledge_indexer import delete_generated_builtin_skill
+            ok = delete_generated_builtin_skill(name)
+        except Exception:
+            ok = False
+    if not ok:
         return jsonify({
             'ok': False,
-            'error': f'未找到可删除的用户技能：{name}（内置技能不可删除）'
+            'error': f'未找到可删除的用户/自动生成技能：{name}（手写内置技能不可删除）'
         }), 404
     return jsonify({'ok': True})
 
