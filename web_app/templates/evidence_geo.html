@@ -30,6 +30,16 @@ body{background:var(--bg);height:100vh;display:flex;flex-direction:column;overfl
 .sb-title{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:#aaa;margin-bottom:.5rem;font-weight:600;}
 .form-label-sm{font-size:.78rem;color:#555;margin-bottom:.2rem;}
 .form-control-sm,.form-select-sm{font-size:.8rem;}
+.mini-list{max-height:160px;overflow-y:auto;border:1px solid #eef0fb;border-radius:8px;background:#fafbff;padding:.25rem;}
+.mini-item{display:flex;align-items:center;gap:.35rem;padding:.28rem .4rem;border-radius:7px;font-size:.78rem;cursor:pointer;color:#555;}
+.mini-item:hover{background:#f0f2ff;}
+.mini-item.active{background:#eef1ff;color:#3949ab;font-weight:600;}
+.mini-title{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.mini-del{border:none;background:none;color:#bbb;padding:0 .1rem;line-height:1;}
+.mini-del:hover{color:#e53935;}
+.project-check{display:flex;align-items:flex-start;gap:.35rem;padding:.28rem .35rem;border-radius:7px;font-size:.78rem;color:#555;}
+.project-check:hover{background:#f0f2ff;}
+.project-check input{margin-top:.18rem;flex-shrink:0;}
 
 /* Upload zone */
 .upload-zone{border:2px dashed #c5cae9;border-radius:10px;padding:.9rem;text-align:center;cursor:pointer;
@@ -229,8 +239,28 @@ body{background:var(--bg);height:100vh;display:flex;flex-direction:column;overfl
   <!-- ── Left sidebar: config ─────────────────────────────────────────────── -->
   <div class="cfg-sidebar">
     <div class="sb-section">
-      <div class="sb-title"><i class="bi bi-collection me-1"></i><span data-i18n="proj_title">项目</span></div>
-      <select id="cfgProject" class="form-control form-control-sm mb-1" style="font-size:.78rem" onchange="applySelectedProjectContext()"></select>
+      <div class="d-flex align-items-center justify-content-between mb-2">
+        <div class="sb-title mb-0"><i class="bi bi-folder2-open me-1"></i><span data-i18n="interp_proj_title">解译项目</span></div>
+        <button class="btn btn-sm btn-outline-primary" style="font-size:.72rem;padding:.12rem .45rem" onclick="newInterpProject()">
+          <i class="bi bi-plus-lg"></i> <span data-i18n="proj_new">新建</span>
+        </button>
+      </div>
+      <div id="interpProjectList" class="mini-list mb-2"></div>
+      <input id="interpProjectTitle" class="form-control form-control-sm mb-2" style="font-size:.78rem"
+             data-i18n-placeholder="interp_proj_name_ph" placeholder="解译项目名称" oninput="updateInterpProjectTitle()">
+      <div class="d-flex gap-1">
+        <button class="btn btn-sm btn-outline-secondary flex-fill" style="font-size:.72rem" onclick="saveInterpProject()">
+          <i class="bi bi-save"></i> <span data-i18n="proj_save">保存</span>
+        </button>
+        <button class="btn btn-sm btn-outline-danger" style="font-size:.72rem" onclick="deleteInterpProject()">
+          <i class="bi bi-trash3"></i>
+        </button>
+      </div>
+    </div>
+
+    <div class="sb-section">
+      <div class="sb-title"><i class="bi bi-collection me-1"></i><span data-i18n="proj_title">引用 Chat 项目</span></div>
+      <div id="cfgProjectList" class="mini-list"></div>
       <div id="cfgProjectHint" class="form-label-sm" style="color:#888"></div>
     </div>
 
@@ -476,11 +506,16 @@ function renderMd(text) {
 // ── State ──────────────────────────────────────────────────────────────────
 let currentJobId   = null;
 let pollTimer      = null;
+const geoPollTimers = {};
 let uploadedFiles  = [];   // [{name, path, type}]  — server-side paths
 let lastResult     = null;
+const INTERP_PROJECTS_KEY = 'sage_geo_interp_projects_v1';
+const ACTIVE_INTERP_PROJECT_KEY = 'sage_geo_active_interp_project';
+let interpProjects = [];
+let activeInterpProjectId = '';
 
 // ── Workspace: track where uploaded files live ────────────────────────────
-const SESSION_WS = 'geo_ws_' + Math.random().toString(36).slice(2,8);
+let SESSION_WS = 'geo_ws_' + Math.random().toString(36).slice(2,8);
 
 // ── Tab switching ──────────────────────────────────────────────────────────
 function switchTab(name) {
@@ -517,6 +552,207 @@ function autoResizeQ(el) {
   el.style.height = Math.min(el.scrollHeight, 110) + 'px';
 }
 
+// ── Interpretation projects ───────────────────────────────────────────────
+function _newInterpProject(title='') {
+  const now = Date.now();
+  return {
+    id: 'geo_proj_' + Math.random().toString(36).slice(2,10),
+    title,
+    createdAt: now,
+    updatedAt: now,
+    session_id: 'geo_ws_' + Math.random().toString(36).slice(2,8),
+    state: {},
+  };
+}
+
+function loadInterpProjects() {
+  try { interpProjects = JSON.parse(localStorage.getItem(INTERP_PROJECTS_KEY) || '[]'); } catch(e) { interpProjects = []; }
+  if (!Array.isArray(interpProjects) || !interpProjects.length) interpProjects = [_newInterpProject('')];
+  activeInterpProjectId = localStorage.getItem(ACTIVE_INTERP_PROJECT_KEY) || interpProjects[0].id;
+  if (!interpProjects.some(p => p.id === activeInterpProjectId)) activeInterpProjectId = interpProjects[0].id;
+  renderInterpProjectList();
+  restoreInterpProject(activeInterpProjectId);
+}
+
+function activeInterpProject() {
+  return interpProjects.find(p => p.id === activeInterpProjectId) || interpProjects[0];
+}
+
+function interpProjectTitle(p) {
+  const t = String(p?.title || '').trim();
+  return t || (currentLang === 'zh' ? '未命名解译项目' : 'Untitled interpretation project');
+}
+
+function collectInterpState() {
+  return {
+    question: document.getElementById('questionInput')?.value || '',
+    study_area: document.getElementById('studyAreaInput')?.value || '',
+    workspace_root: document.getElementById('cfgWorkspace')?.value || '',
+    authorized_roots: document.getElementById('cfgAuthorizedRoots')?.value || '',
+    literature_root: document.getElementById('cfgLiterature')?.value || '',
+    output_dir: document.getElementById('cfgOutput')?.value || '',
+    max_iterations: document.getElementById('cfgMaxIter')?.value || '',
+    max_tools: document.getElementById('cfgMaxTools')?.value || '',
+    rag_top_k: document.getElementById('cfgRagK')?.value || '',
+    score_threshold: document.getElementById('cfgScore')?.value || '',
+    caps: {
+      python: !!document.getElementById('togPython')?.checked,
+      rag: !!document.getElementById('togRag')?.checked,
+      local_files: !!document.getElementById('togLocalFiles')?.checked,
+      multimodal: !!document.getElementById('togMultimodal')?.checked,
+      web_search: !!document.getElementById('togWebSearch')?.checked,
+    },
+    selected_project_ids: getSelectedProjectIds(),
+    uploaded_files: uploadedFiles,
+    last_result: lastResult,
+    running_job: activeInterpProject()?.state?.running_job || null,
+  };
+}
+
+function applyInterpState(state={}) {
+  const setVal = (id, v) => { const el = document.getElementById(id); if (el && v !== undefined) el.value = v; };
+  setVal('questionInput', state.question || '');
+  setVal('studyAreaInput', state.study_area || '');
+  setVal('cfgWorkspace', state.workspace_root || './examples/evidence_geo_agent');
+  setVal('cfgAuthorizedRoots', state.authorized_roots || '');
+  setVal('cfgLiterature', state.literature_root || '');
+  setVal('cfgOutput', state.output_dir || 'outputs/evidence_geo_agent');
+  setVal('cfgMaxIter', state.max_iterations || 3);
+  setVal('cfgMaxTools', state.max_tools || 8);
+  setVal('cfgRagK', state.rag_top_k || 8);
+  setVal('cfgScore', state.score_threshold || 0.30);
+  const caps = state.caps || {};
+  const setChk = (id, v, fallback=true) => { const el = document.getElementById(id); if (el) el.checked = v === undefined ? fallback : !!v; };
+  setChk('togPython', caps.python, true);
+  setChk('togRag', caps.rag, true);
+  setChk('togLocalFiles', caps.local_files, true);
+  setChk('togMultimodal', caps.multimodal, false);
+  setChk('togWebSearch', caps.web_search, false);
+  toggleWebSearch();
+  uploadedFiles = Array.isArray(state.uploaded_files) ? state.uploaded_files : [];
+  lastResult = state.last_result || null;
+  renderUploadedList();
+  renderSharedProjectChecks(state.selected_project_ids || []);
+  applySelectedProjectContext();
+  restoreResultView();
+  autoResizeQ(document.getElementById('questionInput'));
+}
+
+function restoreResultView() {
+  const empty = document.getElementById('emptyState');
+  const progress = document.getElementById('progressPanel');
+  const status = document.getElementById('statusBar');
+  const tabs = document.getElementById('resultTabs');
+  document.getElementById('progressLog').innerHTML = '';
+  document.getElementById('iterBadge').style.display = 'none';
+  if (lastResult) {
+    if (empty) empty.style.display = 'none';
+    if (progress) progress.style.display = 'block';
+    document.getElementById('progSpinner').style.display = 'none';
+    document.getElementById('progTitleText').textContent = T('prog_done');
+    renderResults(lastResult);
+  } else {
+    if (empty) empty.style.display = '';
+    if (progress) progress.style.display = 'none';
+    if (status) status.style.display = 'none';
+    if (tabs) tabs.style.display = 'none';
+    ['reportContent','evidenceContent','hypothesesContent','figuresContent','toollogContent','missingContent','paperContent']
+      .forEach(id => { const el = document.getElementById(id); if (el) el.innerHTML = ''; });
+  }
+}
+
+function renderInterpProjectList() {
+  const el = document.getElementById('interpProjectList');
+  if (!el) return;
+  const sorted = [...interpProjects].sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0));
+  el.innerHTML = sorted.map(p => `
+    <div class="mini-item ${p.id === activeInterpProjectId ? 'active' : ''}" onclick="switchInterpProject('${p.id}')">
+      <i class="bi bi-folder2"></i>
+      <span class="mini-title" title="${escHtml(interpProjectTitle(p))}">${escHtml(interpProjectTitle(p))}</span>
+    </div>
+  `).join('');
+}
+
+function persistInterpProjects() {
+  try { localStorage.setItem(INTERP_PROJECTS_KEY, JSON.stringify(interpProjects)); } catch(e) {}
+  try { localStorage.setItem(ACTIVE_INTERP_PROJECT_KEY, activeInterpProjectId); } catch(e) {}
+}
+
+function saveInterpProject() {
+  const p = activeInterpProject();
+  if (!p) return;
+  p.title = document.getElementById('interpProjectTitle')?.value || p.title || '';
+  p.state = collectInterpState();
+  p.updatedAt = Date.now();
+  p.session_id = SESSION_WS;
+  persistInterpProjects();
+  renderInterpProjectList();
+}
+
+function restoreInterpProject(id) {
+  const p = interpProjects.find(x => x.id === id);
+  if (!p) return;
+  activeInterpProjectId = p.id;
+  SESSION_WS = p.session_id || ('geo_ws_' + Math.random().toString(36).slice(2,8));
+  document.getElementById('interpProjectTitle').value = p.title || '';
+  applyInterpState(p.state || {});
+  if (p.state?.running_job?.job_id && p.state.running_job.status === 'running') {
+    currentJobId = p.state.running_job.job_id;
+    _lastProgLen = p.state.running_job.last_prog_len || 0;
+    resumeProjectPolling(p.id);
+    document.getElementById('emptyState').style.display = 'none';
+    document.getElementById('progressPanel').style.display = 'block';
+    document.getElementById('progSpinner').style.display = '';
+    document.getElementById('progTitleText').textContent = T('prog_running');
+    document.getElementById('runBtnText').style.display = 'none';
+    document.getElementById('runBtnSpinner').style.display = 'inline-flex';
+    document.getElementById('runBtn').disabled = true;
+  } else {
+    currentJobId = null;
+    document.getElementById('runBtnText').style.display = '';
+    document.getElementById('runBtnSpinner').style.display = 'none';
+    document.getElementById('runBtn').disabled = false;
+  }
+  persistInterpProjects();
+  renderInterpProjectList();
+}
+
+function switchInterpProject(id) {
+  saveInterpProject();
+  const cur = activeInterpProject();
+  if (cur?.state?.running_job?.job_id && cur.state.running_job.status === 'running') {
+    resumeProjectPolling(cur.id);
+  }
+  restoreInterpProject(id);
+}
+
+function newInterpProject() {
+  saveInterpProject();
+  const p = _newInterpProject('');
+  interpProjects.unshift(p);
+  activeInterpProjectId = p.id;
+  persistInterpProjects();
+  renderInterpProjectList();
+  restoreInterpProject(p.id);
+}
+
+function updateInterpProjectTitle() {
+  const p = activeInterpProject();
+  if (!p) return;
+  p.title = document.getElementById('interpProjectTitle')?.value || '';
+  persistInterpProjects();
+  renderInterpProjectList();
+}
+
+function deleteInterpProject() {
+  if (!confirm(currentLang === 'zh' ? '确定删除当前解译项目？本地保存的配置和结果会删除。' : 'Delete current interpretation project? Saved local config and results will be removed.')) return;
+  interpProjects = interpProjects.filter(p => p.id !== activeInterpProjectId);
+  if (!interpProjects.length) interpProjects = [_newInterpProject('')];
+  activeInterpProjectId = interpProjects[0].id;
+  persistInterpProjects();
+  restoreInterpProject(activeInterpProjectId);
+}
+
 // ── File upload ────────────────────────────────────────────────────────────
 function handleDrop(e) {
   e.preventDefault();
@@ -540,6 +776,7 @@ async function uploadGeoFiles(files) {
       if (d.ok) {
         uploadedFiles.push({name: file.name, path: d.path, type: d.file_type});
         renderUploadedList();
+        saveInterpProject();
         statusEl.textContent = '';
       } else {
         statusEl.innerHTML = `<span style="color:#c62828">✗ ${d.error}</span>`;
@@ -569,6 +806,7 @@ function renderUploadedList() {
 function removeFile(i) {
   uploadedFiles.splice(i, 1);
   renderUploadedList();
+  saveInterpProject();
 }
 
 // ── Inline web search (client-side call to /api/evidence_geo_agent/web_search) ──
@@ -611,8 +849,7 @@ async function runAgent() {
     return;
   }
 
-  // Stop any existing poll
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  const runProjectId = activeInterpProjectId;
 
   // Show progress panel, hide empty state and old results
   document.getElementById('emptyState').style.display    = 'none';
@@ -638,6 +875,8 @@ async function runAgent() {
 
   const authorizedRoots = parseAuthorizedRoots(document.getElementById('cfgAuthorizedRoots')?.value || '');
   const projectContext = getSelectedProjectContext();
+  const selectedProjectIds = getSelectedProjectIds();
+  saveInterpProject();
 
   // Build request payload
   const payload = {
@@ -661,7 +900,8 @@ async function runAgent() {
     use_code_engine:      true,
     authorized_roots:     authorizedRoots,
     project_context:      projectContext,
-    project_id:           document.getElementById('cfgProject')?.value || '',
+    project_id:           selectedProjectIds[0] || '',
+    project_ids:          selectedProjectIds,
     session_id:           SESSION_WS,
     uploaded_files:       uploadedFiles.map(f => f.path),
   };
@@ -675,7 +915,12 @@ async function runAgent() {
     const d = await r.json();
     if (!d.ok) { showRunError(d.error || '启动失败'); return; }
     currentJobId = d.job_id;
-    startPolling();
+    const p = activeInterpProject();
+    p.state = collectInterpState();
+    p.state.running_job = {job_id: d.job_id, status: 'running', last_prog_len: 0, started_at: Date.now()};
+    p.updatedAt = Date.now();
+    persistInterpProjects();
+    startPolling(runProjectId, d.job_id, 0);
   } catch(ex) {
     showRunError(ex.message);
   }
@@ -692,19 +937,52 @@ function showRunError(msg) {
 // ── Polling ────────────────────────────────────────────────────────────────
 let _lastProgLen = 0;
 
-function startPolling() {
-  _lastProgLen = 0;
-  pollTimer = setInterval(doPoll, 1200);
+function startPolling(projectId=activeInterpProjectId, jobId=currentJobId, lastLen=0) {
+  if (!projectId || !jobId) return;
+  if (geoPollTimers[projectId]) clearInterval(geoPollTimers[projectId]);
+  if (projectId === activeInterpProjectId) _lastProgLen = lastLen || 0;
+  geoPollTimers[projectId] = setInterval(() => doPoll(projectId, jobId), 1200);
+  if (projectId === activeInterpProjectId) pollTimer = geoPollTimers[projectId];
 }
 
-async function doPoll() {
-  if (!currentJobId) return;
+function resumeProjectPolling(projectId) {
+  const p = interpProjects.find(x => x.id === projectId);
+  const job = p?.state?.running_job;
+  if (!job || job.status !== 'running' || !job.job_id) return;
+  if (!geoPollTimers[projectId]) startPolling(projectId, job.job_id, job.last_prog_len || 0);
+}
+
+async function doPoll(projectId=activeInterpProjectId, jobId=currentJobId) {
+  if (!jobId) return;
+  const isActive = projectId === activeInterpProjectId;
   try {
-    const r = await fetch(`/api/evidence_geo_agent/poll/${currentJobId}`);
+    const r = await fetch(`/api/evidence_geo_agent/poll/${jobId}`);
     const d = await r.json();
     if (!d.ok) return;
 
     // Append new progress rows
+    const p = interpProjects.find(x => x.id === projectId);
+    if (p) {
+      p.state = p.state || {};
+      p.state.running_job = p.state.running_job || {job_id: jobId, status: 'running'};
+      p.state.running_job.last_prog_len = (d.progress || []).length;
+      p.updatedAt = Date.now();
+      persistInterpProjects();
+      renderInterpProjectList();
+    }
+    if (!isActive) {
+      if (d.status === 'done' || d.status === 'error') {
+        clearInterval(geoPollTimers[projectId]); delete geoPollTimers[projectId];
+        if (p) {
+          p.state.running_job.status = d.status;
+          if (d.status === 'done') p.state.last_result = d.result || {};
+          p.state.running_job.error = d.error || '';
+          persistInterpProjects();
+        }
+      }
+      return;
+    }
+
     const progLog  = document.getElementById('progressLog');
     const entries  = d.progress || [];
     for (let i = _lastProgLen; i < entries.length; i++) {
@@ -729,12 +1007,24 @@ async function doPoll() {
     _lastProgLen = entries.length;
 
     if (d.status === 'done') {
-      clearInterval(pollTimer); pollTimer = null;
+      clearInterval(geoPollTimers[projectId]); delete geoPollTimers[projectId]; pollTimer = null;
       lastResult = d.result || {};
       renderResults(lastResult);
+      const ap = activeInterpProject();
+      if (ap) {
+        ap.state = collectInterpState();
+        ap.state.running_job = {job_id: jobId, status: 'done', last_prog_len: entries.length, finished_at: Date.now()};
+      }
+      saveInterpProject();
       finishRun('converged');
     } else if (d.status === 'error') {
-      clearInterval(pollTimer); pollTimer = null;
+      clearInterval(geoPollTimers[projectId]); delete geoPollTimers[projectId]; pollTimer = null;
+      const ap = activeInterpProject();
+      if (ap) {
+        ap.state = collectInterpState();
+        ap.state.running_job = {job_id: jobId, status: 'error', error: d.error || '', last_prog_len: entries.length, finished_at: Date.now()};
+        persistInterpProjects();
+      }
       document.getElementById('progTitleText').textContent = '✗ 运行出错：' + (d.error || '未知错误');
       document.getElementById('progSpinner').style.display = 'none';
       finishRunBtn();
@@ -998,57 +1288,72 @@ async function loadSharedProjects() {
     const r = await fetch('/api/chat/conversations');
     const d = await r.json();
     _sharedProjects = Array.isArray(d.projects) && d.projects.length ? d.projects : [];
-    const sel = document.getElementById('cfgProject');
-    if (!sel) return;
-    sel.innerHTML = `<option value="">${(currentLang || localStorage.getItem('sage_lang') || 'zh') === 'zh' ? '不使用项目' : 'No project'}</option>` +
-      _sharedProjects.map(p => `<option value="${p.id}">${escHtml(_projectTitle(p))}</option>`).join('');
-    if (d.active_project_id && _sharedProjects.some(p => p.id === d.active_project_id)) {
-      sel.value = d.active_project_id;
-      applySelectedProjectContext();
-    }
+    renderSharedProjectChecks(activeInterpProject()?.state?.selected_project_ids || []);
   } catch(e) {}
 }
 
-function getSelectedProject() {
-  const id = document.getElementById('cfgProject')?.value || '';
-  return _sharedProjects.find(p => p.id === id);
+function renderSharedProjectChecks(selectedIds=[]) {
+  const box = document.getElementById('cfgProjectList');
+  if (!box) return;
+  const selected = new Set(selectedIds || []);
+  if (!_sharedProjects.length) {
+    box.innerHTML = `<div class="form-label-sm" style="color:#aaa">${currentLang === 'zh' ? '暂无 Chat 项目' : 'No Chat projects'}</div>`;
+    return;
+  }
+  box.innerHTML = _sharedProjects.map(p => `
+    <label class="project-check">
+      <input type="checkbox" value="${p.id}" ${selected.has(p.id) ? 'checked' : ''} onchange="applySelectedProjectContext();saveInterpProject();">
+      <span class="mini-title" title="${escHtml(_projectTitle(p))}">${escHtml(_projectTitle(p))}</span>
+    </label>
+  `).join('');
+}
+
+function getSelectedProjectIds() {
+  return Array.from(document.querySelectorAll('#cfgProjectList input[type="checkbox"]:checked')).map(el => el.value);
+}
+
+function getSelectedProjects() {
+  const ids = new Set(getSelectedProjectIds());
+  return _sharedProjects.filter(p => ids.has(p.id));
 }
 
 function getSelectedProjectContext() {
-  const p = getSelectedProject();
-  if (!p) return '';
-  const docs = (p.docs || []).map(d => d.name).filter(Boolean).join(', ');
-  return [
-    p.preface ? `项目背景：${p.preface}` : '',
-    p.prompt ? `项目共享 Prompt：${p.prompt}` : '',
-    docs ? `项目文献：${docs}` : '',
-  ].filter(Boolean).join('\n');
+  return getSelectedProjects().map(p => {
+    const docs = (p.docs || []).map(d => d.name).filter(Boolean).join(', ');
+    return [
+      `### ${_projectTitle(p)} (${p.id})`,
+      p.preface ? `项目背景：${p.preface}` : '',
+      p.prompt ? `项目共享 Prompt：${p.prompt}` : '',
+      docs ? `项目文献：${docs}` : '',
+    ].filter(Boolean).join('\n');
+  }).join('\n\n');
 }
 
 function applySelectedProjectContext() {
-  const p = getSelectedProject();
+  const selected = getSelectedProjects();
   const hint = document.getElementById('cfgProjectHint');
   if (!hint) return;
-  if (!p) {
+  if (!selected.length) {
     hint.textContent = '';
     return;
   }
-  const nDocs = (p.docs || []).length;
+  const nDocs = selected.reduce((n, p) => n + ((p.docs || []).length), 0);
   hint.textContent = currentLang === 'zh'
-    ? `将引用项目上下文和 ${nDocs} 篇项目文献`
-    : `Will use project context and ${nDocs} project document(s)`;
+    ? `将引用 ${selected.length} 个 Chat 项目和 ${nDocs} 篇项目文献`
+    : `Will use ${selected.length} Chat project(s) and ${nDocs} project document(s)`;
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────
 document.getElementById('questionInput').focus();
-loadSharedWorkspaceRoots();
+loadSharedWorkspaceRoots().then(() => loadInterpProjects());
 loadSharedProjects();
 
 // ── i18n ───────────────────────────────────────────────────────────────────
 const I18N_GEO = {
   zh: {
     nav_chat:'对话', nav_geo:'地学解译', nav_knowledge:'知识库', nav_skills:'技能',
-    proj_title:'项目',
+    interp_proj_title:'解译项目', interp_proj_name_ph:'解译项目名称', proj_new:'新建', proj_save:'保存',
+    proj_title:'引用 Chat 项目',
     sb_workspace:'工作目录', lbl_workspace:'Workspace Root', ph_workspace:'./examples/weiyuan',
     lbl_authorized_roots:'额外授权位置',
     lbl_literature:'Literature Root', ph_literature:'./papers',
@@ -1090,7 +1395,8 @@ const I18N_GEO = {
   },
   en: {
     nav_chat:'Chat', nav_geo:'Geo Agent', nav_knowledge:'Knowledge', nav_skills:'Skills',
-    proj_title:'Project',
+    interp_proj_title:'Interpretation Projects', interp_proj_name_ph:'Interpretation project name', proj_new:'New', proj_save:'Save',
+    proj_title:'Referenced Chat Projects',
     sb_workspace:'Workspace', lbl_workspace:'Workspace Root', ph_workspace:'./examples/weiyuan',
     lbl_authorized_roots:'Authorized Extra Roots',
     lbl_literature:'Literature Root', ph_literature:'./papers',

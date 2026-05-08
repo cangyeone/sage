@@ -746,12 +746,17 @@ def evidence_geo_agent():
 
     _geo_agent_gc()
     job_id = "geo_" + _uuid.uuid4().hex[:10]
+    session_id = _clean_conversation_id(data.get("session_id") or "default_geo")
+    run_output_base = Path(data.get("output_dir") or "outputs/evidence_driven_geo_agent").expanduser()
+    effective_output_dir = run_output_base / session_id / job_id
     _geo_agent_jobs[job_id] = {
         "status":   "running",
         "progress": [],
         "result":   None,
         "error":    None,
         "ts":       _time.time(),
+        "session_id": session_id,
+        "output_dir": str(effective_output_dir),
     }
 
     def _prefetch_web_literature(data, cfg, progress_cb):
@@ -776,8 +781,7 @@ def evidence_geo_agent():
                 progress_cb({"phase": "warning", "message": msg})
                 return ""
 
-            ws = Path(cfg.workspace_root).expanduser()
-            seed_dir = ws / "literature"
+            seed_dir = Path(cfg.output_dir).expanduser() / "literature"
             seed_dir.mkdir(parents=True, exist_ok=True)
             seed = seed_dir / "web_literature_seed.md"
             lines = [
@@ -826,7 +830,7 @@ def evidence_geo_agent():
             cfg = AgentConfig(
                 workspace_root=data.get("workspace_root") or ".",
                 literature_root=data.get("literature_root") or "",
-                output_dir=data.get("output_dir") or "outputs/evidence_driven_geo_agent",
+                output_dir=str(effective_output_dir),
                 authorized_roots=authorized_roots,
                 allow_python=bool(data.get("allow_python", True)),
                 allow_shell=bool(data.get("allow_shell", False)),
@@ -857,8 +861,11 @@ def evidence_geo_agent():
             profile = get_user_profile_context(max_chars=2500)
             question_for_agent = question
             project_context = (data.get("project_context") or "").strip()
+            project_ids = data.get("project_ids") or []
+            if isinstance(project_ids, list) and project_ids:
+                question_for_agent += "\n\n===== Referenced Chat Project IDs =====\n" + ", ".join(str(x) for x in project_ids[:12])
             if project_context and project_context not in question_for_agent:
-                question_for_agent += "\n\n===== Project shared context =====\n" + project_context[:4000]
+                question_for_agent += "\n\n===== Project shared context =====\n" + project_context[:12000]
             if profile:
                 question_for_agent += (
                     "\n\n===== Long-term user profile (soft context; do not mention unless useful) =====\n"
@@ -869,6 +876,9 @@ def evidence_geo_agent():
             result = agent.run(question_for_agent, study_area, on_progress=_prog)
             _geo_agent_jobs[job_id]["status"] = "done"
             _geo_agent_jobs[job_id]["result"] = result
+            if isinstance(result, dict):
+                result.setdefault("_run_output_dir", str(effective_output_dir))
+                result.setdefault("_session_id", session_id)
         except Exception as exc:
             _geo_agent_jobs[job_id]["status"] = "error"
             _geo_agent_jobs[job_id]["error"]  = str(exc)
