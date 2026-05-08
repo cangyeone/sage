@@ -221,7 +221,7 @@ body{background:var(--bg);height:100vh;display:flex;flex-direction:column;overfl
         <li class="nav-item"><a class="nav-link active fw-bold" href="/evidence-geo-agent"><i class="bi bi-geo-alt-fill"></i> <span data-i18n="nav_geo">地学解译</span> <span class="badge text-bg-warning fw-normal" style="font-size:.65rem;vertical-align:middle;">alpha</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/knowledge"><i class="bi bi-journal-bookmark-fill"></i> <span data-i18n="nav_knowledge">知识库</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/skills"><i class="bi bi-lightning-charge"></i> <span data-i18n="nav_skills">技能</span></a></li>
-        <li class="nav-item"><a class="nav-link" href="/llm-settings"><i class="bi bi-cpu"></i> LLM</a></li>
+        <li class="nav-item"><a class="nav-link" href="/llm-settings"><i class="bi bi-sliders"></i> Config</a></li>
         <li class="nav-item">
           <button id="langToggle" onclick="toggleLang()"
             style="border:1.5px solid #dde;background:#f8f9ff;color:#555;border-radius:16px;
@@ -548,6 +548,26 @@ function toggleWebSearch() {
 
 function selectedWebSources() {
   return Array.from(document.querySelectorAll('.web-src:checked')).map(x => x.value);
+}
+
+async function loadGeoSearchConfig() {
+  try {
+    const r = await fetch('/api/config/search');
+    const d = await r.json();
+    const search = d.search || {};
+    const providers = search.providers || {};
+    const defaults = search.default_sources || ['openalex','semantic_scholar'];
+    const panel = document.getElementById('webSourceOptions');
+    if (!panel) return;
+    const labels = Object.entries(providers).map(([key, p]) => {
+      const enabled = !!p.enabled;
+      const checked = defaults.includes(key) && enabled;
+      const disabled = enabled ? '' : 'disabled';
+      const title = p.requires_key && !p.api_key_masked ? ' title="API Key not configured"' : '';
+      return `<label class="me-2"${title}><input class="form-check-input web-src" type="checkbox" value="${escHtml(key)}" ${checked ? 'checked' : ''} ${disabled}> ${escHtml(p.display || key)}</label>`;
+    }).join('');
+    panel.innerHTML = `<div class="form-label-sm">${T('web_sources')}</div>${labels}`;
+  } catch(e) {}
 }
 
 // ── Quick-fill examples ────────────────────────────────────────────────────
@@ -1304,6 +1324,18 @@ function parseAuthorizedRoots(raw) {
 
 async function loadSharedWorkspaceRoots() {
   try {
+    const cr = await fetch('/api/config/app_paths');
+    const cd = await cr.json();
+    const ap = cd.app_paths || {};
+    if (ap.geo_workspace_root && document.getElementById('cfgWorkspace') && !document.getElementById('cfgWorkspace').value.trim()) {
+      document.getElementById('cfgWorkspace').value = ap.geo_workspace_root;
+    }
+    if (ap.geo_literature_root && document.getElementById('cfgLiterature') && !document.getElementById('cfgLiterature').value.trim()) {
+      document.getElementById('cfgLiterature').value = ap.geo_literature_root;
+    }
+    if (ap.geo_output_dir && document.getElementById('cfgOutput') && !document.getElementById('cfgOutput').value.trim()) {
+      document.getElementById('cfgOutput').value = ap.geo_output_dir;
+    }
     const r = await fetch('/api/workspace/config');
     const d = await r.json();
     if (d.enabled && Array.isArray(d.paths) && d.paths.length) {
@@ -1450,6 +1482,7 @@ function applySelectedProjectContext() {
 
 // ── Init ───────────────────────────────────────────────────────────────────
 document.getElementById('questionInput').focus();
+loadGeoSearchConfig();
 loadSharedWorkspaceRoots().then(() => loadInterpProjects());
 loadSharedProjects();
 

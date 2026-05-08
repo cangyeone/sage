@@ -31,6 +31,11 @@ def llm_settings_page():
     return render_template('llm_settings.html')
 
 
+@bp.route('/config')
+def config_page():
+    return render_template('llm_settings.html')
+
+
 @bp.route('/evidence-geo-agent')
 def evidence_geo_agent_page():
     return render_template('evidence_geo.html')
