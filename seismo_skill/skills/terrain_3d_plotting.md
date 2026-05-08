@@ -74,6 +74,26 @@ Use vertical exaggeration by default:
 Z_EXAGGERATION = 2.5
 ```
 
+## Critical Grid Rules
+
+The most common failure mode is a Plotly surface that becomes a **thin vertical wall or strip**. This means the DEM array and the longitude/latitude axes were transposed, flattened, or masked incorrectly.
+
+Always enforce this invariant before plotting:
+
+```python
+assert elev.shape == (len(lat), len(lon))
+```
+
+For Plotly, prefer 1D axes:
+
+```python
+go.Surface(x=lon, y=lat, z=z_display, surfacecolor=elev)
+```
+
+Do not pass a mismatched `LON, LAT = np.meshgrid(...)` result. If a mesh is needed, use `np.meshgrid(lon, lat, indexing="xy")` and assert `LON.shape == elev.shape`.
+
+For Sichuan, do **not** mask/crop the DEM by an administrative polygon in the first pass. Render the rectangular DEM extent first, then optionally overlay a verified boundary line. A bad polygon mask can leave only a narrow sliver and produce the wall-like result.
+
 ## Recommended Robust Pattern
 
 ```python
@@ -87,6 +107,60 @@ OUTDIR.mkdir(parents=True, exist_ok=True)
 
 REGION = {"west": 97.0, "east": 109.0, "south": 26.0, "north": 34.5}
 Z_EXAGGERATION = 2.5
+
+
+def validate_grid(lon, lat, elev, label="DEM"):
+    lon = np.asarray(lon, dtype=float).ravel()
+    lat = np.asarray(lat, dtype=float).ravel()
+    elev = np.asarray(elev, dtype=float)
+    if elev.ndim != 2:
+        raise ValueError(f"{label} must be 2D, got shape {elev.shape}")
+    if elev.shape != (len(lat), len(lon)):
+        if elev.T.shape == (len(lat), len(lon)):
+            elev = elev.T
+        else:
+            raise ValueError(
+                f"{label} grid mismatch: elev={elev.shape}, "
+                f"lat={len(lat)}, lon={len(lon)}"
+            )
+    if lon[0] > lon[-1]:
+        lon = lon[::-1]
+        elev = elev[:, ::-1]
+    if lat[0] > lat[-1]:
+        lat = lat[::-1]
+        elev = elev[::-1, :]
+    if len(lon) < 20 or len(lat) < 20:
+        raise ValueError(f"{label} grid too small: {len(lat)} x {len(lon)}")
+    if max(len(lon), len(lat)) / max(1, min(len(lon), len(lat))) > 8:
+        raise ValueError(f"{label} grid aspect suspicious: {len(lat)} x {len(lon)}")
+    elev = np.nan_to_num(elev, nan=float(np.nanmedian(elev)))
+    assert elev.shape == (len(lat), len(lon))
+    return lon, lat, elev
+
+
+def load_grd_regular(grd_path):
+    """
+    Read a GMT/NetCDF grid robustly as lon(1D), lat(1D), elev(nlat, nlon).
+    This prevents the classic Plotly 'vertical strip' caused by transposed axes.
+    """
+    import xarray as xr
+
+    ds = xr.open_dataset(grd_path)
+    data_vars = list(ds.data_vars)
+    if not data_vars:
+        raise ValueError(f"No data variable found in {grd_path}")
+    da = ds[data_vars[0]].squeeze()
+
+    lon_name = next((n for n in ("lon", "longitude", "x") if n in da.coords), None)
+    lat_name = next((n for n in ("lat", "latitude", "y") if n in da.coords), None)
+    if lon_name is None or lat_name is None:
+        raise ValueError(f"Cannot identify lon/lat coordinates in {grd_path}: {list(da.coords)}")
+
+    da = da.transpose(lat_name, lon_name)
+    lon = da[lon_name].values
+    lat = da[lat_name].values
+    elev = da.values
+    return validate_grid(lon, lat, elev, label=str(grd_path))
 
 
 def synthetic_sichuan_dem(region, nx=180, ny=140):
@@ -103,7 +177,7 @@ def synthetic_sichuan_dem(region, nx=180, ny=140):
     texture = 180 * np.sin(LON * 2.7) * np.cos(LAT * 2.2)
     elev = plateau + basin + ridge + texture
     elev = np.clip(elev, 200, 6500)
-    return lon, lat, elev
+    return validate_grid(lon, lat, elev, label="synthetic DEM")
 
 
 def try_fetch_dem(region):
@@ -137,21 +211,39 @@ def try_fetch_dem(region):
                 west, south, east, north = ds.bounds
                 lon = np.linspace(west, east, arr.shape[1])
                 lat = np.linspace(north, south, arr.shape[0])
-                arr = np.nan_to_num(arr, nan=np.nanmedian(arr))
-                return lon, lat, arr
+                return validate_grid(lon, lat, arr, label="OpenTopography DEM")
     except Exception:
         return None
 
 
-dem = try_fetch_dem(REGION)
-if dem is None:
-    lon, lat, elev = synthetic_sichuan_dem(REGION)
-    dem_source = "synthetic offline relief fallback"
+local_grd = next((p for p in (OUTDIR / "sichuan_topo.grd", Path("sichuan_topo.grd")) if p.exists()), None)
+if local_grd:
+    lon, lat, elev = load_grd_regular(local_grd)
+    dem_source = f"GMT grid: {local_grd.name}"
 else:
-    lon, lat, elev = dem
-    dem_source = "OpenTopography SRTMGL1"
+    dem = try_fetch_dem(REGION)
+    if dem is None:
+        lon, lat, elev = synthetic_sichuan_dem(REGION)
+        dem_source = "synthetic offline relief fallback"
+    else:
+        lon, lat, elev = dem
+        dem_source = "OpenTopography SRTMGL1"
+
+lon, lat, elev = validate_grid(lon, lat, elev, label=dem_source)
+print(
+    f"[SAGE_TEST] DEM source = {dem_source}; "
+    f"grid = {len(lat)} x {len(lon)}; "
+    f"elevation = {np.nanmin(elev):.0f}..{np.nanmax(elev):.0f} m"
+)
+
+if max(len(lon), len(lat)) / max(1, min(len(lon), len(lat))) > 4:
+    # A valid Sichuan grid should be rectangular, not a narrow strip.
+    raise RuntimeError("DEM grid is suspiciously narrow; refusing to render a wall-like surface")
 
 z = elev * Z_EXAGGERATION
+xspan = float(np.nanmax(lon) - np.nanmin(lon))
+yspan = float(np.nanmax(lat) - np.nanmin(lat))
+aspect_y = max(0.55, min(1.15, yspan / max(xspan, 1e-9) * 1.45))
 
 fig = go.Figure(data=[
     go.Surface(
@@ -182,7 +274,8 @@ fig.update_layout(
         xaxis_title="Longitude",
         yaxis_title="Latitude",
         zaxis_title=f"Elevation x{Z_EXAGGERATION}",
-        aspectratio=dict(x=1.45, y=1.0, z=0.35),
+        aspectmode="manual",
+        aspectratio=dict(x=1.45, y=aspect_y, z=0.34),
         camera=dict(
             eye=dict(x=1.35, y=-1.35, z=0.95),
             center=dict(x=0, y=0, z=0),
@@ -205,7 +298,7 @@ except Exception as exc:
     print(f"[SAGE_TEST] PNG export skipped; install kaleido for static image export: {exc}")
 
 assert html_path.exists() and html_path.stat().st_size > 0
-print(f"[SAGE_TEST] DEM source = {dem_source}; grid = {len(lat)} x {len(lon)}")
+assert elev.shape == (len(lat), len(lon))
 ```
 
 ## Three.js / WebGL Pattern

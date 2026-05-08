@@ -264,6 +264,12 @@ body{background:var(--bg);height:100vh;display:flex;flex-direction:column;overfl
       <div id="cfgProjectHint" class="form-label-sm" style="color:#888"></div>
     </div>
 
+    <div class="sb-section">
+      <div class="sb-title"><i class="bi bi-diagram-3 me-1"></i><span data-i18n="geo_ref_title">引用解译项目</span></div>
+      <div id="cfgGeoProjectList" class="mini-list"></div>
+      <div id="cfgGeoProjectHint" class="form-label-sm" style="color:#888"></div>
+    </div>
+
     <!-- Workspace paths -->
     <div class="sb-section">
       <div class="sb-title"><i class="bi bi-folder2-open me-1"></i><span data-i18n="sb_workspace">工作目录</span></div>
@@ -344,7 +350,7 @@ body{background:var(--bg);height:100vh;display:flex;flex-direction:column;overfl
            ondragleave="this.classList.remove('dragover')"
            ondrop="handleDrop(event)">
         <div class="uz-icon"><i class="bi bi-file-earmark-arrow-up"></i></div>
-        <div class="uz-text" data-i18n="uz_text">拖拽或点击上传<br><small style="font-size:.7rem;color:#bbb">PDF · PNG/JPG · CSV</small></div>
+        <div class="uz-text" data-i18n-html="uz_text">拖拽或点击上传<br><small style="font-size:.7rem;color:#bbb">PDF · PNG/JPG · CSV</small></div>
       </div>
       <input type="file" id="fileInputGeo"
              accept=".pdf,.png,.jpg,.jpeg,.csv,.txt,.md,.json,.yaml,.yml"
@@ -603,6 +609,7 @@ function collectInterpState() {
       web_search: !!document.getElementById('togWebSearch')?.checked,
     },
     selected_project_ids: getSelectedProjectIds(),
+    selected_geo_project_ids: getSelectedGeoProjectIds(),
     uploaded_files: uploadedFiles,
     last_result: lastResult,
     running_job: activeInterpProject()?.state?.running_job || null,
@@ -633,7 +640,9 @@ function applyInterpState(state={}) {
   lastResult = state.last_result || null;
   renderUploadedList();
   renderSharedProjectChecks(state.selected_project_ids || []);
+  renderGeoProjectChecks(state.selected_geo_project_ids || []);
   applySelectedProjectContext();
+  applySelectedGeoProjectContext();
   restoreResultView();
   autoResizeQ(document.getElementById('questionInput'));
 }
@@ -671,6 +680,7 @@ function renderInterpProjectList() {
       <span class="mini-title" title="${escHtml(interpProjectTitle(p))}">${escHtml(interpProjectTitle(p))}</span>
     </div>
   `).join('');
+  renderGeoProjectChecks(activeInterpProject()?.state?.selected_geo_project_ids || []);
 }
 
 function persistInterpProjects() {
@@ -678,12 +688,13 @@ function persistInterpProjects() {
   try { localStorage.setItem(ACTIVE_INTERP_PROJECT_KEY, activeInterpProjectId); } catch(e) {}
 }
 
-function saveInterpProject() {
+function saveInterpProject(opts={}) {
+  const touch = !!opts.touch;
   const p = activeInterpProject();
   if (!p) return;
   p.title = document.getElementById('interpProjectTitle')?.value || p.title || '';
   p.state = collectInterpState();
-  p.updatedAt = Date.now();
+  if (touch) p.updatedAt = Date.now();
   p.session_id = SESSION_WS;
   persistInterpProjects();
   renderInterpProjectList();
@@ -776,7 +787,7 @@ async function uploadGeoFiles(files) {
       if (d.ok) {
         uploadedFiles.push({name: file.name, path: d.path, type: d.file_type});
         renderUploadedList();
-        saveInterpProject();
+        saveInterpProject({touch:true});
         statusEl.textContent = '';
       } else {
         statusEl.innerHTML = `<span style="color:#c62828">✗ ${d.error}</span>`;
@@ -806,7 +817,7 @@ function renderUploadedList() {
 function removeFile(i) {
   uploadedFiles.splice(i, 1);
   renderUploadedList();
-  saveInterpProject();
+  saveInterpProject({touch:true});
 }
 
 // ── Inline web search (client-side call to /api/evidence_geo_agent/web_search) ──
@@ -876,11 +887,13 @@ async function runAgent() {
   const authorizedRoots = parseAuthorizedRoots(document.getElementById('cfgAuthorizedRoots')?.value || '');
   const projectContext = getSelectedProjectContext();
   const selectedProjectIds = getSelectedProjectIds();
+  const geoProjectContext = getSelectedGeoProjectContext();
+  const selectedGeoProjectIds = getSelectedGeoProjectIds();
   saveInterpProject();
 
   // Build request payload
   const payload = {
-    question: projectContext ? `${question}\n\n===== 项目共享上下文 =====\n${projectContext}` : question,
+    question: [question, projectContext ? `===== Chat 项目共享上下文 =====\n${projectContext}` : '', geoProjectContext ? `===== 上游解译项目证据链 =====\n${geoProjectContext}` : ''].filter(Boolean).join('\n\n'),
     study_area:           studyArea,
     workspace_root:       document.getElementById('cfgWorkspace').value   || './examples/evidence_geo_agent',
     literature_root:      document.getElementById('cfgLiterature').value  || '',
@@ -900,8 +913,10 @@ async function runAgent() {
     use_code_engine:      true,
     authorized_roots:     authorizedRoots,
     project_context:      projectContext,
+    geo_project_context:  geoProjectContext,
     project_id:           selectedProjectIds[0] || '',
     project_ids:          selectedProjectIds,
+    geo_project_ids:      selectedGeoProjectIds,
     session_id:           SESSION_WS,
     uploaded_files:       uploadedFiles.map(f => f.path),
   };
@@ -1147,8 +1162,12 @@ function renderEvidenceTable(table) {
       </div>
       <div class="ev-body" id="evb_${i}">
         <div class="ev-row"><span class="lbl">来源</span>${escHtml(ev.source||'')}</div>
+        ${ev.source_excerpt ? `<div class="ev-row"><span class="lbl">依据片段</span>${escHtml(ev.source_excerpt)}</div>` : ''}
         <div class="ev-row"><span class="lbl">观察事实</span>${escHtml(ev.observation||'')}</div>
         <div class="ev-row"><span class="lbl">解释</span>${escHtml(ev.interpretation||'')}</div>
+        <div class="ev-row"><span class="lbl">可靠性 / 相关性</span>${escHtml(ev.reliability||'unverified')} / ${escHtml(ev.relevance||'unverified')}</div>
+        <div class="ev-row"><span class="lbl">验证状态</span>${escHtml(ev.verification_status||'unverified')}${ev.verification_needed ? `；${escHtml(ev.verification_needed)}` : ''}</div>
+        ${(ev.upstream_evidence||[]).length ? `<div class="ev-row"><span class="lbl">上游依据</span>${escHtml((ev.upstream_evidence||[]).join(', '))}</div>` : ''}
         ${ev.alternative_interpretation ? `<div class="ev-alt">🔄 替代解释：${escHtml(ev.alternative_interpretation)}</div>` : ''}
         ${ev.assumption ? `<div class="ev-row"><span class="lbl">假设前提</span>${escHtml(ev.assumption)}</div>` : ''}
         ${ev.uncertainty ? `<div class="ev-row"><span class="lbl">不确定性</span>${escHtml(ev.uncertainty)}</div>` : ''}
@@ -1308,6 +1327,76 @@ function renderSharedProjectChecks(selectedIds=[]) {
   `).join('');
 }
 
+function renderGeoProjectChecks(selectedIds=[]) {
+  const box = document.getElementById('cfgGeoProjectList');
+  if (!box) return;
+  const selected = new Set(selectedIds || []);
+  const candidates = interpProjects.filter(p => p.id !== activeInterpProjectId);
+  if (!candidates.length) {
+    box.innerHTML = `<div class="form-label-sm" style="color:#aaa">${currentLang === 'zh' ? '暂无其他解译项目' : 'No other interpretation projects'}</div>`;
+    return;
+  }
+  box.innerHTML = candidates
+    .sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0))
+    .map(p => `
+      <label class="project-check">
+        <input type="checkbox" value="${p.id}" ${selected.has(p.id) ? 'checked' : ''} onchange="applySelectedGeoProjectContext();saveInterpProject();">
+        <span class="mini-title" title="${escHtml(interpProjectTitle(p))}">${escHtml(interpProjectTitle(p))}</span>
+      </label>
+    `).join('');
+}
+
+function getSelectedGeoProjectIds() {
+  return Array.from(document.querySelectorAll('#cfgGeoProjectList input[type="checkbox"]:checked')).map(el => el.value);
+}
+
+function getSelectedGeoProjects() {
+  const ids = new Set(getSelectedGeoProjectIds());
+  return interpProjects.filter(p => ids.has(p.id));
+}
+
+function _geoProjectContextOne(p) {
+  const res = p?.state?.last_result || {};
+  const ev = (res.evidence_table || []).slice(0, 18).map(e => {
+    const rel = e.relevance || e.relevance_score || '';
+    const rlb = e.reliability || e.reliability_score || e.confidence || '';
+    const chain = (e.upstream_evidence || e.evidence_lineage || []).join(', ');
+    return `- [${e.evidence_id || '?'}] ${e.observation || ''} | source=${e.source || ''} | reliability=${rlb} | relevance=${rel}${chain ? ` | upstream=${chain}` : ''}`;
+  }).join('\n');
+  const hyps = (res.hypotheses || []).map(h =>
+    `- [${h.hypothesis_id || '?'}] ${h.statement || ''} confidence=${h.confidence || ''} status=${h.status || ''}`
+  ).join('\n');
+  const missing = (res.missing_information || []).slice(0, 12).map(m => `- ${m}`).join('\n');
+  const qs = (res.scientific_questions || []).slice(0, 10).map(q => `- ${q}`).join('\n');
+  return [
+    `### ${interpProjectTitle(p)} (${p.id})`,
+    p.state?.question ? `Original question: ${p.state.question}` : '',
+    res.final_report ? `Report summary:\n${String(res.final_report).slice(0, 2500)}` : '',
+    hyps ? `Hypotheses:\n${hyps}` : '',
+    ev ? `Evidence chain candidates:\n${ev}` : '',
+    missing ? `Missing information:\n${missing}` : '',
+    qs ? `Mined scientific questions:\n${qs}` : '',
+  ].filter(Boolean).join('\n\n');
+}
+
+function getSelectedGeoProjectContext() {
+  return getSelectedGeoProjects().map(_geoProjectContextOne).join('\n\n');
+}
+
+function applySelectedGeoProjectContext() {
+  const selected = getSelectedGeoProjects();
+  const hint = document.getElementById('cfgGeoProjectHint');
+  if (!hint) return;
+  if (!selected.length) {
+    hint.textContent = '';
+    return;
+  }
+  const nEvidence = selected.reduce((n, p) => n + (((p.state?.last_result || {}).evidence_table || []).length), 0);
+  hint.textContent = currentLang === 'zh'
+    ? `将引用 ${selected.length} 个上游解译项目和 ${nEvidence} 条证据`
+    : `Will use ${selected.length} upstream interpretation project(s) and ${nEvidence} evidence records`;
+}
+
 function getSelectedProjectIds() {
   return Array.from(document.querySelectorAll('#cfgProjectList input[type="checkbox"]:checked')).map(el => el.value);
 }
@@ -1353,7 +1442,7 @@ const I18N_GEO = {
   zh: {
     nav_chat:'对话', nav_geo:'地学解译', nav_knowledge:'知识库', nav_skills:'技能',
     interp_proj_title:'解译项目', interp_proj_name_ph:'解译项目名称', proj_new:'新建', proj_save:'保存',
-    proj_title:'引用 Chat 项目',
+    proj_title:'引用 Chat 项目', geo_ref_title:'引用解译项目',
     sb_workspace:'工作目录', lbl_workspace:'Workspace Root', ph_workspace:'./examples/weiyuan',
     lbl_authorized_roots:'额外授权位置',
     lbl_literature:'Literature Root', ph_literature:'./papers',
@@ -1396,7 +1485,7 @@ const I18N_GEO = {
   en: {
     nav_chat:'Chat', nav_geo:'Geo Agent', nav_knowledge:'Knowledge', nav_skills:'Skills',
     interp_proj_title:'Interpretation Projects', interp_proj_name_ph:'Interpretation project name', proj_new:'New', proj_save:'Save',
-    proj_title:'Referenced Chat Projects',
+    proj_title:'Referenced Chat Projects', geo_ref_title:'Referenced Geo Projects',
     sb_workspace:'Workspace', lbl_workspace:'Workspace Root', ph_workspace:'./examples/weiyuan',
     lbl_authorized_roots:'Authorized Extra Roots',
     lbl_literature:'Literature Root', ph_literature:'./papers',

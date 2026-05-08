@@ -759,6 +759,20 @@ def evidence_geo_agent():
         "output_dir": str(effective_output_dir),
     }
 
+    def _model_likely_supports_vision(llm_cfg: dict) -> bool:
+        provider = str(llm_cfg.get("provider", "")).lower()
+        model = str(llm_cfg.get("model", "")).lower()
+        vision_markers = (
+            "vision", "vl", "qwen-vl", "qwen2-vl", "qwen2.5-vl", "llava",
+            "bakllava", "minicpm-v", "gemma3", "gpt-4o", "gpt-4.1", "o4",
+            "claude-3", "glm-4v", "internvl", "pixtral", "molmo",
+        )
+        if any(m in model for m in vision_markers):
+            return True
+        if provider == "openai" and any(m in model for m in ("gpt-4o", "gpt-4.1", "o4")):
+            return True
+        return False
+
     def _prefetch_web_literature(data, cfg, progress_cb):
         """Search scholarly web sources and write a seed literature note into the workspace."""
         if not cfg.allow_web_search:
@@ -858,21 +872,56 @@ def evidence_geo_agent():
             if seed_path and not cfg.literature_root:
                 cfg.literature_root = str(Path(seed_path).parent)
 
+            llm_cfg = get_llm_config()
+            if cfg.use_multimodal and not _model_likely_supports_vision(llm_cfg):
+                _prog({
+                    "phase": "warning",
+                    "message": (
+                        "Multimodal image/table parsing was requested, but the selected model "
+                        f"({llm_cfg.get('provider','')}/{llm_cfg.get('model','')}) does not look vision-capable. "
+                        "The agent will still parse text/CSV tables and will warn if image analysis fails."
+                    ),
+                })
+
             profile = get_user_profile_context(max_chars=2500)
             question_for_agent = question
             project_context = (data.get("project_context") or "").strip()
+            geo_project_context = (data.get("geo_project_context") or "").strip()
             project_ids = data.get("project_ids") or []
+            geo_project_ids = data.get("geo_project_ids") or []
             if isinstance(project_ids, list) and project_ids:
                 question_for_agent += "\n\n===== Referenced Chat Project IDs =====\n" + ", ".join(str(x) for x in project_ids[:12])
             if project_context and project_context not in question_for_agent:
                 question_for_agent += "\n\n===== Project shared context =====\n" + project_context[:12000]
+            if isinstance(geo_project_ids, list) and geo_project_ids:
+                question_for_agent += "\n\n===== Referenced upstream Geo Project IDs =====\n" + ", ".join(str(x) for x in geo_project_ids[:12])
+            if geo_project_context and geo_project_context not in question_for_agent:
+                question_for_agent += (
+                    "\n\n===== Upstream interpretation projects: evidence chains to inherit and re-audit =====\n"
+                    "Use these as prior research assets, not as unquestioned truth. For each inherited claim, "
+                    "seek evidence-of-evidence, check reliability/relevance, preserve upstream_evidence links, "
+                    "and list missing verification data.\n"
+                    + geo_project_context[:18000]
+                )
+            question_for_agent += (
+                "\n\n===== Required reasoning protocol =====\n"
+                "During the investigation, iteratively test hypotheses by collecting evidence and evidence-of-evidence. "
+                "For figures and tables from papers or uploaded images, extract quantitative values when possible. "
+                "For every important evidence record, estimate relevance and reliability, identify upstream evidence, "
+                "state verification_status, and describe verification_needed. Explicitly report missing information and "
+                "rank which evidence is most relevant and most reliable only when the ranking is grounded in the "
+                "collected evidence table. Every evidence record must include a source_excerpt that can be traced "
+                "to a tool output, file, RAG chunk, web result, figure/table extraction, or upstream project record. "
+                "Do not invent evidence IDs, citations, star ratings, scores, locations, numbers, methods, or source names; "
+                "if support is missing, say evidence is insufficient and list the missing source.\n"
+            )
             if profile:
                 question_for_agent += (
                     "\n\n===== Long-term user profile (soft context; do not mention unless useful) =====\n"
                     + profile
                 )
 
-            agent  = EvidenceDrivenGeoAgent(config=cfg, llm_cfg=get_llm_config())
+            agent  = EvidenceDrivenGeoAgent(config=cfg, llm_cfg=llm_cfg)
             result = agent.run(question_for_agent, study_area, on_progress=_prog)
             _geo_agent_jobs[job_id]["status"] = "done"
             _geo_agent_jobs[job_id]["result"] = result

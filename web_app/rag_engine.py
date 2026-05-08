@@ -34,10 +34,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
 import sys
+from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -66,6 +68,59 @@ DOCS_DIR   = KB_DIR / "docs"
 
 KB_DIR.mkdir(parents=True, exist_ok=True)
 DOCS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Keyword retrieval helpers
+# ---------------------------------------------------------------------------
+
+_STOPWORDS = {
+    # English high-frequency function words
+    "a", "an", "and", "are", "as", "at", "be", "by", "can", "for", "from",
+    "has", "have", "how", "in", "is", "it", "its", "of", "on", "or", "that",
+    "the", "their", "this", "to", "was", "were", "what", "when", "where",
+    "which", "with", "using", "use", "used", "into", "about", "than", "then",
+    # Common Chinese filler words. Domain terms such as 震相/地震/速度 are kept.
+    "的", "了", "和", "与", "或", "在", "是", "我", "你", "他", "她", "它",
+    "我们", "你们", "他们", "这个", "那个", "一下", "一个", "一些", "进行",
+    "使用", "用于", "可以", "需要", "如何", "什么", "怎么", "以及", "并且",
+}
+
+_WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9_+\-/.]*|\d+(?:\.\d+)?|[\u4e00-\u9fff]+")
+
+
+try:
+    import jieba as _jieba  # type: ignore
+except Exception:  # pragma: no cover - optional dependency fallback
+    _jieba = None
+
+
+def _keyword_tokens(text: str) -> List[str]:
+    """
+    Tokenize mixed English/Chinese scientific text for lexical retrieval.
+
+    Chinese words are hard without a segmenter, so we keep the whole CJK span
+    and add 2-4 character shingles. This catches terms such as 震相检测,
+    长宁地震, 速度层析 without adding an external dependency.
+    """
+    tokens: List[str] = []
+    for raw in _WORD_RE.findall(text.lower()):
+        if raw in _STOPWORDS:
+            continue
+        if re.fullmatch(r"[\u4e00-\u9fff]+", raw):
+            if _jieba is not None:
+                for word in _jieba.cut(raw, cut_all=False):
+                    word = word.strip()
+                    if len(word) >= 2 and word not in _STOPWORDS:
+                        tokens.append(word)
+            elif len(raw) <= 6 and raw not in _STOPWORDS:
+                tokens.append(raw)
+            for n in (2, 3, 4):
+                if len(raw) >= n:
+                    tokens.extend(raw[i:i + n] for i in range(len(raw) - n + 1))
+        elif len(raw) >= 2 and raw not in _STOPWORDS:
+            tokens.append(raw)
+    return tokens
 
 
 # ---------------------------------------------------------------------------
@@ -454,6 +509,129 @@ class KnowledgeBase:
         except Exception:
             return []
 
+    def _keyword_candidates(self) -> List[DocChunk]:
+        """Return chunks available to lexical retrieval, including TF-IDF-only docs."""
+        chunks = list(self._chunks.values())
+        seen = {c.chunk_id for c in chunks}
+        try:
+            sr = _get_simple_rag()
+            for item in getattr(sr.db, "items", []):
+                meta = getattr(item, "metadata", {}) or {}
+                cid = meta.get("chunk_id") or f"simple_{len(seen)}"
+                if cid in seen:
+                    continue
+                seen.add(cid)
+                chunks.append(DocChunk(
+                    chunk_id=cid,
+                    doc_id=meta.get("doc_id") or getattr(item, "doc_id", "") or "simple",
+                    doc_name=meta.get("doc_name") or "Unknown",
+                    page=int(meta.get("page") or 0),
+                    text=getattr(item, "text", "") or "",
+                ))
+        except Exception:
+            pass
+        return [c for c in chunks if c.text]
+
+    def _keyword_retrieve(self, query: str, top_k: int) -> List[Tuple[DocChunk, float]]:
+        """
+        BM25-style keyword retrieval.
+
+        This is intentionally not TF-IDF cosine search: it keeps exact scientific
+        terms, abbreviations, phase names, and Chinese jieba tokens visible, while
+        removing corpus-wide high-frequency tokens automatically.
+        """
+        query_terms = list(dict.fromkeys(_keyword_tokens(query)))
+        if not query_terms:
+            return []
+
+        chunks = self._keyword_candidates()
+        if not chunks:
+            return []
+
+        token_counts: list[Counter] = []
+        doc_freq: Counter = Counter()
+        doc_lens: list[int] = []
+        for chunk in chunks:
+            counts = Counter(_keyword_tokens(chunk.text))
+            token_counts.append(counts)
+            doc_lens.append(sum(counts.values()) or 1)
+            for tok in counts:
+                doc_freq[tok] += 1
+
+        n_docs = len(chunks)
+        # Drop corpus-wide generic words. If that removes every query token,
+        # keep the original query terms so short technical queries still work.
+        useful_terms = [
+            t for t in query_terms
+            if doc_freq.get(t, 0) > 0 and (doc_freq[t] / max(n_docs, 1)) <= 0.55
+        ]
+        if not useful_terms:
+            useful_terms = [t for t in query_terms if doc_freq.get(t, 0) > 0]
+        if not useful_terms:
+            return []
+
+        avgdl = sum(doc_lens) / max(len(doc_lens), 1)
+        k1, b = 1.45, 0.72
+        q_lower = query.lower()
+        scored: list[tuple[DocChunk, float]] = []
+        for chunk, counts, dl in zip(chunks, token_counts, doc_lens):
+            score = 0.0
+            for term in useful_terms:
+                tf = counts.get(term, 0)
+                if tf <= 0:
+                    continue
+                df = doc_freq.get(term, 0)
+                idf = math.log(1 + (n_docs - df + 0.5) / (df + 0.5))
+                denom = tf + k1 * (1 - b + b * dl / max(avgdl, 1e-9))
+                score += idf * (tf * (k1 + 1)) / max(denom, 1e-9)
+            text_lower = chunk.text.lower()
+            if q_lower and q_lower in text_lower:
+                score += 0.8
+            score += 0.08 * sum(1 for t in useful_terms if t in text_lower)
+            if score > 0:
+                scored.append((chunk, score))
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+        if not scored:
+            return []
+        top = scored[:top_k]
+        max_score = max(s for _, s in top) or 1.0
+        return [(chunk, min(1.0, score / max_score)) for chunk, score in top]
+
+    def _hybrid_retrieve(
+        self,
+        query: str,
+        top_k: int,
+        score_threshold: float,
+    ) -> List[Tuple[DocChunk, float]]:
+        """Fuse dense retrieval with BM25 keyword retrieval."""
+        dense = self._retrieve_core(query, top_k=max(top_k * 4, 20), score_threshold=score_threshold)
+        keyword = self._keyword_retrieve(query, top_k=max(top_k * 4, 20))
+        if not dense:
+            return keyword[:top_k]
+        if not keyword:
+            return dense[:top_k]
+
+        max_dense = max((s for _, s in dense), default=1.0) or 1.0
+        merged: dict[str, dict] = {}
+        for rank, (chunk, score) in enumerate(dense, 1):
+            rec = merged.setdefault(chunk.chunk_id, {"chunk": chunk, "dense": 0.0, "kw": 0.0, "rrf": 0.0})
+            rec["dense"] = max(rec["dense"], score / max_dense)
+            rec["rrf"] += 1.0 / (60 + rank)
+        for rank, (chunk, score) in enumerate(keyword, 1):
+            rec = merged.setdefault(chunk.chunk_id, {"chunk": chunk, "dense": 0.0, "kw": 0.0, "rrf": 0.0})
+            rec["kw"] = max(rec["kw"], score)
+            rec["rrf"] += 1.0 / (60 + rank)
+
+        fused: list[Tuple[DocChunk, float]] = []
+        for rec in merged.values():
+            # Keyword gets a strong vote because scientific terms and Chinese
+            # method names are often more precise than embedding similarity.
+            score = 0.62 * rec["dense"] + 0.58 * rec["kw"] + 2.5 * rec["rrf"]
+            fused.append((rec["chunk"], min(1.0, score)))
+        fused.sort(key=lambda x: x[1], reverse=True)
+        return fused[:top_k]
+
     @staticmethod
     def _norm_source(value: str) -> str:
         return re.sub(r"[^a-z0-9]+", "", str(value).lower())
@@ -504,7 +682,7 @@ class KnowledgeBase:
         candidate_k = top_k
         if sources or source_types:
             candidate_k = max(top_k * 8, 40)
-        results = self._retrieve_core(query, candidate_k, score_threshold)
+        results = self._hybrid_retrieve(query, candidate_k, score_threshold)
         if sources or source_types:
             results = [
                 (chunk, score) for chunk, score in results

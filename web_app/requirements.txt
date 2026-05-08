@@ -24,3 +24,4 @@ faiss-cpu>=1.7.4
 sentence-transformers>=2.2.0
 pdfminer.six>=20221105
 PyMuPDF>=1.23.0
+jieba>=0.42.1
