@@ -76,7 +76,7 @@ _USER_SKILL_DIR = Path(__file__).parent / "user_skills"
 _BUILTIN_SKILL_DIR = Path(__file__).parent / "skills"
 _DOC_SKILL_GENERATOR = "seismo_skill_docs_builder"
 _SKILL_BUILDER_CACHE_DIR = _KB_DIR / "skill_builder_cache"
-_MARKDOWN_NORMALIZER_VERSION = "v2"
+_MARKDOWN_NORMALIZER_VERSION = "v3"
 
 def _env_optional_int(name: str) -> Optional[int]:
     try:
@@ -2185,13 +2185,13 @@ def _llm_convert_to_markdown(path: Path, text: str, max_chars: int = 18000) -> s
         try:
             cached = cache_file.read_text(encoding="utf-8")
             if cached.strip():
-                return cached[:max_chars]
+                return _repair_markdown_code_fences(cached)[:max_chars]
         except Exception:
             pass
     # Already-clean Markdown/code files can skip the extra call unless they
     # contain Sphinx directives that confuse downstream skill synthesis.
     if path.suffix.lower() in {".md", ".txt"} and not re.search(r"```\\{|\.\.\s+\w+::|:\w+:`", source):
-        return source[:max_chars]
+        return _repair_markdown_code_fences(source)[:max_chars]
 
     excerpt = source[: min(len(source), 12000)]
     prompt = f"""请把下面的文档片段转换为干净、可读、可被二次处理的 Markdown。
@@ -2223,13 +2223,46 @@ def _llm_convert_to_markdown(path: Path, text: str, max_chars: int = 18000) -> s
         ).strip()
         md = re.sub(r"^```(?:markdown|md)?\s*", "", md.strip(), flags=re.I)
         md = re.sub(r"\s*```$", "", md.strip())
+        md = _repair_markdown_code_fences(md)
         if len(md) < 40 and len(source) > 300:
-            return source[:max_chars]
+            return _repair_markdown_code_fences(source)[:max_chars]
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         cache_file.write_text(md[:max_chars], encoding="utf-8")
         return md[:max_chars]
     except Exception:
-        return source[:max_chars]
+        return _repair_markdown_code_fences(source)[:max_chars]
+
+
+def _repair_markdown_code_fences(text: str) -> str:
+    """Close dangling Markdown fenced code blocks without changing valid blocks."""
+    lines = str(text or "").splitlines()
+    in_fence = False
+    fence_char = ""
+    fence_len = 0
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        m = re.match(r"^([`~]{3,})(.*)$", stripped)
+        if not m:
+            continue
+        marker = m.group(1)
+        char = marker[0]
+        if any(ch != char for ch in marker):
+            continue
+        if not in_fence:
+            in_fence = True
+            fence_char = char
+            fence_len = len(marker)
+            continue
+        if char == fence_char and len(marker) >= fence_len:
+            in_fence = False
+            fence_char = ""
+            fence_len = 0
+    out = "\n".join(lines).rstrip()
+    if in_fence:
+        out += "\n" + (fence_char * max(3, fence_len))
+    return out.strip()
 
 
 def _markdown_cache_file(path: Path, text: str) -> Path:
@@ -2985,7 +3018,7 @@ def _clean_generated_skill_markdown(text: str) -> str:
     s = re.sub(r":doc:`([^`<]+)<([^`>]+)>`", r"\1 (\2)", s)
     s = re.sub(r":doc:`([^`]+)`", r"\1", s)
     s = re.sub(r":file:`([^`]+)`", r"`\1`", s)
-    return s.strip()
+    return _repair_markdown_code_fences(s).strip()
 
 
 def _toctree_to_plain(block: str) -> str:

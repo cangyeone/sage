@@ -176,9 +176,12 @@ SAGE is an earthquake science AI platform integrating **natural language interac
 ## Quick Start
 
 ```bash
-# 1. Clone the main repository
-git clone https://github.com/cangyeone/sage.git
+# 1. Clone the main repository and bundled submodules
+git clone --recurse-submodules https://github.com/cangyeone/sage.git
 cd sage
+
+# If you already cloned without submodules, run:
+# git submodule update --init --recursive
 
 # 2. Clone the pnsn phase picking module (must be placed under sage/ directory)
 git clone https://github.com/cangyeone/pnsn.git
@@ -518,6 +521,8 @@ SAGE now separates coding into complementary backends:
 - **Built-in CodeEngine**: the default sandboxed runner for scientific scripts, GMT/Python plotting, mini tests, and reproducible artifacts.
 - **Aider backend**: an integrated repository-level coding backend for bug fixes, refactors, and coordinated multi-file edits. SAGE first loads the vendored Aider source at `third_party/aider`, uses Aider's Python scripting API, and falls back to the installed package or CLI if needed. Install project dependencies with `pip install -r requirements.txt`, then select **Aider API / CLI** in `Config -> Coding Agent`.
 - **OpenHands backend**: an experimental CLI-compatible option for heavier agentic development workflows.
+
+`third_party/aider` is tracked as a Git submodule. Clone with `git clone --recurse-submodules ...`, or run `git submodule update --init --recursive` after cloning, so the Aider source is available locally.
 
 Coding backend settings are stored in the project file `seismo_rag/project_config.json`, so they are easy to inspect, version-control selectively, or remove.
 

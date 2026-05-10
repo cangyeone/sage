@@ -132,9 +132,12 @@ SAGE 是集**自然语言交互**、**智能震相拾取**、**统计分析**、
 ## 快速开始
 
 ```bash
-# 1. 克隆主仓库
-git clone https://github.com/cangyeone/sage.git
+# 1. 克隆主仓库和内置子模块
+git clone --recurse-submodules https://github.com/cangyeone/sage.git
 cd sage
+
+# 如果已经普通 clone 过，补拉子模块：
+# git submodule update --init --recursive
 
 # 2. 克隆 pnsn 震相拾取模块（必须放在 sage/ 目录下）
 git clone https://github.com/cangyeone/pnsn.git
@@ -474,6 +477,8 @@ SAGE 的编程能力分为两个互补后端：
 - **内置 CodeEngine**：默认后端，适合科学数据脚本、GMT/Python 绘图、mini test 和可复现中间产物。
 - **Aider 后端**：作为 SAGE 内部仓库级 Coding Backend，用于修复 bug、重构、多文件编辑和 Git 工作流。SAGE 会优先加载项目内置源码 `third_party/aider`，通过 Aider Python scripting API 调用，必要时退回已安装包或 CLI。安装项目依赖 `pip install -r requirements.txt` 后，在 `Config -> Coding Agent` 中选择 **Aider API / CLI**。
 - **OpenHands 后端**：实验性 CLI 后端，适合更重的 agentic development 工作流。
+
+`third_party/aider` 使用 Git submodule 管理。clone 时建议使用 `git clone --recurse-submodules ...`；如果已经普通 clone 过，则运行 `git submodule update --init --recursive`，这样本地才会真正拉下 Aider 源码。
 
 代码后端配置写入项目目录下的 `seismo_rag/project_config.json`，便于检查、选择性纳入版本控制或清理。
 
