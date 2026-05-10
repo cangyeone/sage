@@ -38,12 +38,17 @@ def config_page():
 
 @bp.route('/evidence-geo-agent')
 def evidence_geo_agent_page():
-    return render_template('evidence_geo.html')
+    return redirect(url_for('pages.parameter_optimization_page'))
 
 
 @bp.route('/science-analysis-agent')
 def science_analysis_agent_page():
     return render_template('science_analysis.html')
+
+
+@bp.route('/parameter-optimization-agent')
+def parameter_optimization_page():
+    return render_template('parameter_optimization.html')
 
 
 @bp.route('/health')

@@ -226,7 +226,7 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
     <div class="collapse navbar-collapse">
       <ul class="navbar-nav ms-auto gap-1 align-items-center">
         <li class="nav-item"><a class="nav-link active fw-bold" href="/chat"><i class="bi bi-chat-dots"></i> <span data-i18n="nav_chat">对话</span></a></li>
-        <li class="nav-item"><a class="nav-link" href="/evidence-geo-agent"><i class="bi bi-geo-alt-fill"></i> <span data-i18n="nav_geo">地学解译</span></a></li>
+        <li class="nav-item"><a class="nav-link" href="/parameter-optimization-agent"><i class="bi bi-diagram-3-fill"></i> <span data-i18n="nav_opt">参数优化</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/science-analysis-agent"><i class="bi bi-beaker"></i> <span data-i18n="nav_science">科学分析</span> <span class="badge text-bg-warning fw-normal" style="font-size:.62rem;vertical-align:middle;">alpha</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/knowledge"><i class="bi bi-journal-bookmark-fill"></i> <span data-i18n="nav_knowledge">知识库</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/skills"><i class="bi bi-lightning-charge"></i> <span data-i18n="nav_skills">技能</span></a></li>
@@ -446,7 +446,7 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
 <script>
 const I18N = {
   zh: {
-    nav_chat: '对话', nav_geo: '地学解译', nav_science: '科学分析', nav_knowledge: '知识库', nav_skills: '技能',
+    nav_chat: '对话', nav_opt:'参数优化', nav_science: '科学分析', nav_knowledge: '知识库', nav_skills: '技能',
     proj_title: '项目', proj_new: '新建', proj_default: '默认项目', proj_settings: '设置',
     proj_conv_title: '项目对话', proj_promote_kb: '入库',
     proj_new_tip: '创建一个独立项目工作区',
@@ -505,7 +505,7 @@ const I18N = {
     think_label: '思考过程',
   },
   en: {
-    nav_chat: 'Chat', nav_geo: 'Geo Agent', nav_science: 'Science Agent', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
+    nav_chat: 'Chat', nav_opt:'Param Optimizer', nav_science: 'Science Agent', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
     proj_title: 'Projects', proj_new: 'New', proj_default: 'Default project', proj_settings: 'Settings',
     proj_conv_title: 'Project chats', proj_promote_kb: 'Add',
     proj_new_tip: 'Create an independent project workspace',

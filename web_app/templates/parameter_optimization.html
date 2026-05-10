@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <title>参数优化 Agent alpha — SeismicX</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+  <style>
+    :root{--accent:#5d6ee7;--accent2:#18a579;--line:#dfe4f2;--soft:#f6f8ff}
+    body{margin:0;background:#f5f7fb;color:#24262d;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    .navbar{background:#fff!important;box-shadow:0 2px 10px rgba(0,0,0,.08);z-index:100}
+    .navbar-brand span{background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+    .app{display:grid;grid-template-columns:320px 1fr;min-height:calc(100vh - 58px)}
+    .side{background:#fff;border-right:1px solid #e7e9f2;padding:1rem;overflow:auto}
+    .main{padding:1.25rem;overflow:auto}
+    .panel{background:#fff;border:1px solid #e3e7f5;border-radius:14px;box-shadow:0 8px 24px rgba(20,30,80,.06);padding:1rem;margin-bottom:1rem}
+    .title{font-weight:800;color:#5964bb;letter-spacing:.02em}
+    .muted{color:#7c8391}
+    .mini{border:1px solid #cdd5ef;background:#fff;border-radius:10px;padding:.45rem .75rem;font-weight:650}
+    .mini.primary{background:linear-gradient(135deg,#4479f1,#13a16f);color:#fff;border:0}
+    .mini.danger{border-color:#ff9aa2;color:#d92d3d}
+    .project{padding:.7rem;border-radius:12px;cursor:pointer;border:1px solid transparent}
+    .project.active{background:#eef1ff;border-color:#d9ddff;color:#3548b8;font-weight:800}
+    textarea,input{border-color:#d9deea!important}
+    .module-card{border:1px solid var(--line);border-radius:12px;padding:.8rem;background:#fbfcff;margin-bottom:.7rem}
+    .log{background:#111428;color:#b9ffb7;border-radius:12px;padding:1rem;min-height:180px;max-height:360px;overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.86rem;white-space:pre-wrap}
+    .artifact-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:.85rem}
+    .artifact{border:1px solid var(--line);border-radius:12px;background:#fff;overflow:hidden}
+    .artifact img{width:100%;height:170px;object-fit:contain;background:#f8f9fc}
+    .artifact div{padding:.55rem;font-size:.84rem;word-break:break-word}
+    .pill{display:inline-flex;gap:.35rem;align-items:center;border:1px solid #d9ddf7;border-radius:999px;padding:.35rem .75rem;background:#fff}
+    @media(max-width:980px){.app{grid-template-columns:1fr}.side{border-right:0;border-bottom:1px solid #e7e9f2}}
+  </style>
+</head>
+<body>
+<nav class="navbar navbar-expand-lg navbar-light">
+  <div class="container-fluid px-3">
+    <a class="navbar-brand" href="/chat"><i class="bi bi-activity text-primary"></i> <span><strong>SeismicX</strong></span></a>
+    <div class="collapse navbar-collapse">
+      <ul class="navbar-nav ms-auto gap-1 align-items-center">
+        <li class="nav-item"><a class="nav-link" href="/chat"><i class="bi bi-chat-dots"></i> <span data-i18n="nav_chat">对话</span></a></li>
+        <li class="nav-item"><a class="nav-link active fw-bold" href="/parameter-optimization-agent"><i class="bi bi-diagram-3-fill"></i> <span data-i18n="nav_opt">参数优化</span> <span class="badge text-bg-warning fw-normal">alpha</span></a></li>
+        <li class="nav-item"><a class="nav-link" href="/science-analysis-agent"><i class="bi bi-beaker"></i> <span data-i18n="nav_science">科学分析</span> <span class="badge text-bg-warning fw-normal">alpha</span></a></li>
+        <li class="nav-item"><a class="nav-link" href="/knowledge"><i class="bi bi-journal-bookmark-fill"></i> <span data-i18n="nav_knowledge">知识库</span></a></li>
+        <li class="nav-item"><a class="nav-link" href="/skills"><i class="bi bi-lightning-charge"></i> <span data-i18n="nav_skills">技能</span></a></li>
+        <li class="nav-item"><a class="nav-link" href="/llm-settings"><i class="bi bi-sliders"></i> Config</a></li>
+        <li class="nav-item"><button class="mini" onclick="toggleLang()">🌐 <span id="langLabel">EN</span></button></li>
+      </ul>
+    </div>
+  </div>
+</nav>
+
+<div class="app">
+  <aside class="side">
+    <div class="d-flex align-items-center justify-content-between mb-2">
+      <div class="title"><i class="bi bi-folder2-open"></i> <span data-i18n="projects">优化项目</span></div>
+      <button class="mini" onclick="newProject()"><i class="bi bi-plus"></i> <span data-i18n="new">新建</span></button>
+    </div>
+    <div id="projectList"></div>
+    <div class="d-grid gap-2 mt-3">
+      <button class="mini" onclick="saveProject()"><i class="bi bi-save"></i> <span data-i18n="save">保存</span></button>
+      <button class="mini danger" onclick="deleteProject()"><i class="bi bi-trash"></i> <span data-i18n="delete">删除项目</span></button>
+    </div>
+    <hr>
+    <label class="form-label fw-bold" data-i18n="project_name">项目名</label>
+    <input id="projectName" class="form-control mb-2">
+    <label class="form-label fw-bold" data-i18n="workspace">项目目录</label>
+    <input id="workspaceRoot" class="form-control mb-2" placeholder="/path/to/project">
+    <div class="form-text mb-2" data-i18n="workspace_hint">所有数据、脚本、日志和结果都保存在这个目录内。</div>
+    <label class="form-label fw-bold" data-i18n="authorized">额外授权位置</label>
+    <textarea id="authorizedRoots" class="form-control mb-2" rows="3">/data/project
+/Users/you/project</textarea>
+    <label class="form-label fw-bold" data-i18n="output">输出目录</label>
+    <input id="outputDir" class="form-control" value="outputs/parameter_optimization">
+  </aside>
+
+  <main class="main">
+    <div class="panel">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <div>
+          <div class="title fs-4"><i class="bi bi-diagram-3"></i> <span data-i18n="hero">参数优化 Agent</span></div>
+          <div class="muted" data-i18n="hero_sub">定义流程模块、输入输出、优化参数和目标；Agent 会调用 SKILL、RAG 与 CodeEngine 自动实现、调试并保存结果。</div>
+        </div>
+        <span class="pill"><i class="bi bi-lightning-charge"></i><span data-i18n="multi_skill">多技能/RAG</span></span>
+      </div>
+      <div class="row g-3">
+        <div class="col-lg-6">
+          <label class="form-label fw-bold" data-i18n="objective">优化目标</label>
+          <textarea id="objective" class="form-control" rows="4" data-i18n-placeholder="objective_ph" placeholder="例如：最大化震相检测 F1，同时限制误检率和训练时间。"></textarea>
+        </div>
+        <div class="col-lg-3">
+          <label class="form-label fw-bold" data-i18n="input_format">输入格式</label>
+          <textarea id="inputFormat" class="form-control" rows="4" data-i18n-placeholder="input_ph" placeholder="数据集目录、标签格式、采样率、窗口长度等。"></textarea>
+        </div>
+        <div class="col-lg-3">
+          <label class="form-label fw-bold" data-i18n="final_output">最终输出</label>
+          <textarea id="finalOutput" class="form-control" rows="4" data-i18n-placeholder="output_ph" placeholder="best_parameters.json、曲线图、报告、可复现实验脚本。"></textarea>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <div class="title"><i class="bi bi-boxes"></i> <span data-i18n="modules">流程模块</span></div>
+        <button class="mini" onclick="addModule()"><i class="bi bi-plus-lg"></i> <span data-i18n="add_module">添加模块</span></button>
+      </div>
+      <div id="modules"></div>
+      <div class="d-flex flex-wrap align-items-center gap-2 mt-3">
+        <label class="pill"><input id="useMultimodal" class="form-check-input mt-0" type="checkbox" checked> <span data-i18n="vision">多模态图像分析</span></label>
+        <label class="pill"><input id="allowWeb" class="form-check-input mt-0" type="checkbox" checked> <span data-i18n="web">Web/RAG 证据</span></label>
+        <label class="pill"><input id="dryRun" class="form-check-input mt-0" type="checkbox"> <span data-i18n="dry">快速 dry-run</span></label>
+        <button id="runBtn" class="mini primary ms-auto" onclick="startOptimization()"><i class="bi bi-play-fill"></i> <span data-i18n="run">开始优化</span></button>
+        <button id="stopBtn" class="mini danger" onclick="stopOptimization()" disabled><i class="bi bi-stop-fill"></i> <span data-i18n="stop">停止</span></button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="title mb-2"><i class="bi bi-terminal"></i> <span data-i18n="log">运行日志</span></div>
+      <div id="log" class="log" data-i18n="idle">尚未开始运行</div>
+    </div>
+
+    <div class="panel">
+      <ul class="nav nav-pills gap-2 mb-3">
+        <li class="nav-item"><button class="nav-link active" data-bs-toggle="pill" data-bs-target="#tab_summary" data-i18n="tab_summary">总结</button></li>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab_artifacts" data-i18n="tab_artifacts">产物</button></li>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab_code" data-i18n="tab_code">代码</button></li>
+      </ul>
+      <div class="tab-content">
+        <div id="tab_summary" class="tab-pane fade show active"><div id="summary" class="muted" data-i18n="no_result">暂无结果</div></div>
+        <div id="tab_artifacts" class="tab-pane fade"><div id="artifacts" class="artifact-grid"></div></div>
+        <div id="tab_code" class="tab-pane fade"><pre id="code" class="log"></pre></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+const I18N={
+ zh:{nav_chat:'对话',nav_opt:'参数优化',nav_science:'科学分析',nav_knowledge:'知识库',nav_skills:'技能',projects:'优化项目',new:'新建',save:'保存',delete:'删除项目',project_name:'项目名',workspace:'项目目录',workspace_hint:'所有数据、脚本、日志和结果都保存在这个目录内。',authorized:'额外授权位置',output:'输出目录',hero:'参数优化 Agent',hero_sub:'定义流程模块、输入输出、优化参数和目标；Agent 会调用 SKILL、RAG 与 CodeEngine 自动实现、调试并保存结果。',multi_skill:'多技能/RAG',objective:'优化目标',objective_ph:'例如：最大化震相检测 F1，同时限制误检率和训练时间。',input_format:'输入格式',input_ph:'数据集目录、标签格式、采样率、窗口长度等。',final_output:'最终输出',output_ph:'best_parameters.json、曲线图、报告、可复现实验脚本。',modules:'流程模块',add_module:'添加模块',vision:'多模态图像分析',web:'Web/RAG 证据',dry:'快速 dry-run',run:'开始优化',stop:'停止',log:'运行日志',idle:'尚未开始运行',tab_summary:'总结',tab_artifacts:'产物',tab_code:'代码',no_result:'暂无结果',module_name:'模块名称',module_role:'模块目标',module_inputs:'输入',module_outputs:'输出',module_params:'待优化参数'},
+ en:{nav_chat:'Chat',nav_opt:'Param Optimizer',nav_science:'Science Agent',nav_knowledge:'Knowledge',nav_skills:'Skills',projects:'Optimization Projects',new:'New',save:'Save',delete:'Delete Project',project_name:'Project name',workspace:'Project directory',workspace_hint:'All data, scripts, logs, and results stay inside this directory.',authorized:'Extra authorized roots',output:'Output dir',hero:'Parameter Optimization Agent',hero_sub:'Define workflow modules, I/O, tunable parameters, and objectives; the agent uses SKILLs, RAG, and CodeEngine to implement, debug, and save results.',multi_skill:'Multi-skill/RAG',objective:'Objective',objective_ph:'Example: maximize phase-picking F1 while constraining false picks and training time.',input_format:'Input format',input_ph:'Dataset folders, labels, sample rate, window length, etc.',final_output:'Final output',output_ph:'best_parameters.json, curves, report, reproducible scripts.',modules:'Workflow modules',add_module:'Add module',vision:'Multimodal image analysis',web:'Web/RAG evidence',dry:'Fast dry-run',run:'Run optimization',stop:'Stop',log:'Run log',idle:'Not started',tab_summary:'Summary',tab_artifacts:'Artifacts',tab_code:'Code',no_result:'No result yet',module_name:'Module name',module_role:'Module goal',module_inputs:'Inputs',module_outputs:'Outputs',module_params:'Tunable parameters'}
+};
+let lang=localStorage.getItem('sage_lang')||'zh';
+let projects=JSON.parse(localStorage.getItem('sage_param_projects')||'[]');
+let activeId=localStorage.getItem('sage_param_active')||'';
+let currentJob='';
+function tr(k){return (I18N[lang]&&I18N[lang][k])||I18N.zh[k]||k}
+function applyLang(){document.querySelectorAll('[data-i18n]').forEach(e=>e.textContent=tr(e.dataset.i18n));document.querySelectorAll('[data-i18n-placeholder]').forEach(e=>e.placeholder=tr(e.dataset.i18nPlaceholder));langLabel.textContent=lang==='zh'?'EN':'中'}
+function persist(){localStorage.setItem('sage_param_projects',JSON.stringify(projects));localStorage.setItem('sage_param_active',activeId)}
+function active(){return projects.find(p=>p.id===activeId)}
+function newProject(){const id='opt_'+Math.random().toString(36).slice(2,9);projects.unshift({id,name:lang==='zh'?'未命名优化项目':'Untitled optimization',workspace_root:'web_app/examples/parameter_optimization_agent',output_dir:'outputs/parameter_optimization',authorized_roots:'/data/project\\n/Users/you/project',modules:[defaultModule()],objective:'',input_format:'',final_output:''});activeId=id;persist();loadActive()}
+function defaultModule(){return {name:'dataset_input',role:'Load and validate dataset',inputs:'project data directory',outputs:'standardized dataset manifest',parameters:''}}
+function renderProjects(){projectList.innerHTML=projects.map(p=>`<div class="project ${p.id===activeId?'active':''}" onclick="activeId='${p.id}';persist();loadActive()"><i class="bi bi-folder2"></i> ${esc(p.name||p.id)}</div>`).join('')||`<div class="muted">${tr('no_result')}</div>`}
+function loadActive(){if(!projects.length)newProject();const p=active()||projects[0];activeId=p.id;projectName.value=p.name||'';workspaceRoot.value=p.workspace_root||'';outputDir.value=p.output_dir||'outputs/parameter_optimization';authorizedRoots.value=p.authorized_roots||'';objective.value=p.objective||'';inputFormat.value=p.input_format||'';finalOutput.value=p.final_output||'';renderModules();renderProjects();applyLang()}
+function saveProject(){const p=active();if(!p)return;p.name=projectName.value;p.workspace_root=workspaceRoot.value;p.output_dir=outputDir.value;p.authorized_roots=authorizedRoots.value;p.objective=objective.value;p.input_format=inputFormat.value;p.final_output=finalOutput.value;p.modules=collectModules();persist();renderProjects()}
+function deleteProject(){projects=projects.filter(p=>p.id!==activeId);activeId=projects[0]?.id||'';persist();loadActive()}
+function addModule(){const p=active();p.modules=collectModules();p.modules.push({name:'new_module',role:'',inputs:'',outputs:'',parameters:''});persist();renderModules()}
+function collectModules(){return [...document.querySelectorAll('.module-card')].map(card=>({name:card.querySelector('.m-name').value,role:card.querySelector('.m-role').value,inputs:card.querySelector('.m-inputs').value,outputs:card.querySelector('.m-outputs').value,parameters:card.querySelector('.m-params').value}))}
+function renderModules(){const p=active();modules.innerHTML=(p?.modules||[defaultModule()]).map((m,i)=>`<div class="module-card"><div class="row g-2"><div class="col-lg-3"><label class="form-label small fw-bold">${tr('module_name')}</label><input class="form-control m-name" value="${esc(m.name||'')}"></div><div class="col-lg-3"><label class="form-label small fw-bold">${tr('module_role')}</label><textarea class="form-control m-role" rows="2">${esc(m.role||'')}</textarea></div><div class="col-lg-2"><label class="form-label small fw-bold">${tr('module_inputs')}</label><textarea class="form-control m-inputs" rows="2">${esc(m.inputs||'')}</textarea></div><div class="col-lg-2"><label class="form-label small fw-bold">${tr('module_outputs')}</label><textarea class="form-control m-outputs" rows="2">${esc(m.outputs||'')}</textarea></div><div class="col-lg-2"><label class="form-label small fw-bold">${tr('module_params')}</label><textarea class="form-control m-params" rows="2">${esc(m.parameters||'')}</textarea></div></div><button class="mini danger mt-2" onclick="this.closest('.module-card').remove()"><i class="bi bi-trash"></i></button></div>`).join('')}
+async function startOptimization(){saveProject();const p=active();log.textContent='Starting...';runBtn.disabled=true;stopBtn.disabled=false;const body={project_id:p.id,workspace_root:p.workspace_root,output_dir:p.output_dir,authorized_roots:(p.authorized_roots||'').split(/\\n|,|;/).map(s=>s.trim()).filter(Boolean),workflow:p.modules,objective:p.objective,input_format:p.input_format,final_output:p.final_output,user_notes:dryRun.checked?'User requested a fast dry-run.':'' ,use_multimodal:useMultimodal.checked,allow_web_search:allowWeb.checked};const r=await fetch('/api/parameter_optimization/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();if(!d.ok){log.textContent=d.error||'error';runBtn.disabled=false;stopBtn.disabled=true;return}currentJob=d.job_id;poll()}
+async function poll(){if(!currentJob)return;const r=await fetch('/api/parameter_optimization/poll/'+currentJob);const d=await r.json();if(!d.ok){log.textContent=d.error;return}log.textContent=(d.progress||[]).map(x=>`${x.phase} ${x.message}`).join('\\n')||d.status; if(d.result){renderResult(d.result)} if(['done','error','cancelled'].includes(d.status)){runBtn.disabled=false;stopBtn.disabled=true;return}setTimeout(poll,1500)}
+async function stopOptimization(){if(!currentJob)return;await fetch('/api/parameter_optimization/stop/'+currentJob,{method:'POST'});stopBtn.disabled=true}
+function renderResult(res){summary.innerHTML=`<pre>${esc(res.response||res.stdout||'')}</pre>`;code.textContent=res.code||'';const files=[...(res.figures||[]),...(res.output_files||[])];artifacts.innerHTML=files.map(fp=>{const name=fp.split('/').pop();const isImg=/\\.(png|jpg|jpeg|svg)$/i.test(name);const url='/api/parameter_optimization/artifact?path='+encodeURIComponent(fp);return `<div class="artifact">${isImg?`<img src="${url}" onclick="window.open('${url}','_blank')">`:''}<div><a href="${url}" target="_blank">${esc(name)}</a></div></div>`}).join('')||`<div class="muted">${tr('no_result')}</div>`}
+function toggleLang(){lang=lang==='zh'?'en':'zh';localStorage.setItem('sage_lang',lang);applyLang();renderModules();renderProjects()}
+function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+loadActive();
+</script>
+</body>
+</html>

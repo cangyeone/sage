@@ -119,6 +119,31 @@ def _science_read_file_preview(path: Path, max_chars: int = 4000) -> str:
     """Best-effort text/table preview for scientific-analysis project files."""
     ext = path.suffix.lower()
     try:
+        if ext in {".png", ".jpg", ".jpeg", ".svg", ".tif", ".tiff"}:
+            try:
+                if ext == ".svg":
+                    data = path.read_text(encoding="utf-8", errors="ignore")[:max_chars]
+                    return (
+                        "[image/svg evidence candidate]\n"
+                        f"path: {path}\n"
+                        f"size_bytes: {path.stat().st_size}\n"
+                        "Use a vision-capable model or image parser if quantitative visual evidence is needed.\n"
+                        f"svg_preview:\n{data}"
+                    )[:max_chars].strip()
+                from PIL import Image  # type: ignore
+                with Image.open(str(path)) as im:
+                    return (
+                        "[image evidence candidate]\n"
+                        f"path: {path}\n"
+                        f"format: {im.format}\n"
+                        f"mode: {im.mode}\n"
+                        f"width: {im.width}\n"
+                        f"height: {im.height}\n"
+                        f"size_bytes: {path.stat().st_size}\n"
+                        "Use a vision-capable model for visual interpretation; otherwise treat this as an image artifact."
+                    )
+            except Exception as exc:
+                return f"[image metadata unavailable: {exc}]"
         if ext in {".pdf", ".docx", ".md", ".txt", ".text", ".rst", ".html", ".htm"}:
             sys.path.insert(0, str(Path(__file__).parent))
             from rag_extractors import extract_text
@@ -1153,7 +1178,7 @@ def literature_loop_poll(job_id):
     })
 
 
-# ── Evidence-Driven Geo Agent ─────────────────────────────────────────────────
+# ── Evidence-driven scientific analysis helpers ───────────────────────────────
 
 def _geo_agent_gc():
     """Discard jobs older than 45 minutes."""
@@ -1512,7 +1537,7 @@ def science_analysis_agent():
             profile = get_user_profile_context(max_chars=2500)
             project_context = (data.get("project_context") or "").strip()
             prompt_parts = [
-                "你是 Scientific Analysis Agent alpha，不是地学解译专用助手。",
+                "你是 Scientific Analysis Agent alpha，不是参数优化专用助手。",
                 "目标是把用户提供的数据说明、工作目录数据、本地/在线文献和知识库证据，转化为可复现的科学分析、报告和论文草稿。",
                 f"项目根目录：{workspace_root_str}",
                 "编程执行时当前工作目录就是项目根目录；请使用项目相对路径（如 data/xxx、literature/xxx、docs/xxx）访问文件。",
@@ -1534,18 +1559,20 @@ def science_analysis_agent():
                 "===== Required autonomous workflow =====",
                 "1. 数据研究：根据文件画像、数据说明、文献和必要的 web search，先判断这些数据可以支持哪些研究方向；用户指定方向时优先服从用户方向。",
                 "2. 科学问题规划：基于数据可用性和文献背景，提出可验证的科学问题、假设、反证路径和缺失信息。",
-                "3. 图件与统计规划：让 LLM 先规划论文需要哪些图件、统计量、表格和中间产物，再进入编程；主文图件默认不超过 3 张、主表默认不超过 2 张，必须服务于机制假设检验。",
-                "4. Coding Agent 执行：自己编程解析数据格式、整理字段、做 mini test、统计和绘图；出错后不要停，必须让 LLM 根据错误自动诊断、改方案、重试。",
-                "5. 证据综合：写论文前必须把数据统计、图件、表格、本地论文/RAG 和 web search 整合成 claim-evidence-warrant 矩阵；每个科学结论都要列出支持证据、反证路径和缺失信息。",
-                "6. 结论驱动图表复审：形成初步结论后，必须反向判断哪些图表应保留为主文、哪些降为补充/QC、哪些缺口需要补图补表，并据此迭代一次论证。",
-                "7. 论文撰写：根据生成图件、统计结果、给定论文和 web search 证据撰写 Markdown 论文草稿，并用 Markdown 图片语法嵌入图件；Results 是文章核心，必须围绕新的机制性科学结论，而不是围绕数据质量或图件说明。",
-                "8. 三审稿人循环：模拟 3 个严格审稿人分别审查机制创新、数据/统计可重复性、文献证据与写作；根据意见修订，直到三位均为小修/接收或达到轮次上限。",
-                "9. 交互式迭代：如果用户后续提出修改、补充或新假设，基于上一轮结果继续研究，不要从零开始。",
-                "10. 所有读写、脚本、图表、报告、LaTeX 和临时文件都必须限制在用户指定的项目工作目录内；不要写到项目目录之外。",
-                "11. 必须使用上面的文件画像判断文件作用：numeric_text_data/structured_data/waveform_data 都应视为候选数据；reference_paper_or_report 视为参考文献；data_description_or_project_notes 视为数据说明。不要因为文件扩展名是 .txt/.doc/.pdf 就忽略它。",
-                "12. 所有结论必须有来源依据：数据文件、统计输出、图件、RAG chunk、web 文献或工具输出。证据不足就明确说明。",
-                "13. 不要把中间猜测写成事实；报告中保留“已验证/待验证/缺失信息”状态。",
-                "14. 这不是数据质量分析页面：不要把质量分级、字段清单、参数直方图、基础计数作为主线；这些只能进入补充 QC 文件。主线必须围绕科学问题，例如断层几何、弱层/低速体、应力转移、分段破裂、流体或应变释放机制。",
+                "3. 多技能/RAG 编排：可同时调用或交叉调用多个 SKILL（如 deep-research、academic-paper、academic-paper-reviewer、领域绘图/数据处理技能）和知识库 RAG；先选择技能组合，再开展分析。",
+                "4. 多模态证据：如果启用了多模态且当前模型支持图像/表格解析，应分析上传图片、论文图件和表格并提取定量证据；如果模型不支持，必须明确警示并退回文本/数值证据。",
+                "5. 图件与统计规划：让 LLM 先规划论文需要哪些图件、统计量、表格和中间产物，再进入编程；主文图件默认不超过 3 张、主表默认不超过 2 张，必须服务于机制假设检验。",
+                "6. Coding Agent 执行：自己编程解析数据格式、整理字段、做 mini test、统计和绘图；出错后不要停，必须让 LLM 根据错误自动诊断、改方案、重试。",
+                "7. 证据综合：写论文前必须把数据统计、图件、表格、本地论文/RAG 和 web search 整合成 claim-evidence-warrant 矩阵；每个科学结论都要列出支持证据、反证路径和缺失信息。",
+                "8. 结论驱动图表复审：形成初步结论后，必须反向判断哪些图表应保留为主文、哪些降为补充/QC、哪些缺口需要补图补表，并据此迭代一次论证。",
+                "9. 论文撰写：根据生成图件、统计结果、给定论文和 web search 证据撰写 Markdown 论文草稿，并用 Markdown 图片语法嵌入图件；Results 是文章核心，必须围绕新的机制性科学结论，而不是围绕数据质量或图件说明。",
+                "10. 三审稿人循环：模拟 3 个严格审稿人分别审查机制创新、数据/统计可重复性、文献证据与写作；根据意见修订，直到三位均为小修/接收或达到轮次上限。",
+                "11. 交互式迭代：如果用户后续提出修改、补充或新假设，基于上一轮结果继续研究，不要从零开始。",
+                "12. 所有读写、脚本、图表、报告、LaTeX 和临时文件都必须限制在用户指定的项目工作目录内；不要写到项目目录之外。",
+                "13. 必须使用上面的文件画像判断文件作用：numeric_text_data/structured_data/waveform_data 都应视为候选数据；reference_paper_or_report 视为参考文献；data_description_or_project_notes 视为数据说明。不要因为文件扩展名是 .txt/.doc/.pdf 就忽略它。",
+                "14. 所有结论必须有来源依据：数据文件、统计输出、图件、RAG chunk、web 文献或工具输出。证据不足就明确说明。",
+                "15. 不要把中间猜测写成事实；报告中保留“已验证/待验证/缺失信息”状态。",
+                "16. 这不是数据质量分析页面：不要把质量分级、字段清单、参数直方图、基础计数作为主线；这些只能进入补充 QC 文件。主线必须围绕科学问题，例如断层几何、弱层/低速体、应力转移、分段破裂、流体或应变释放机制。",
             ]
             if project_context:
                 prompt_parts += ["", "===== Project shared context =====", project_context[:16000]]
@@ -1666,7 +1693,7 @@ def science_analysis_agent_poll(job_id):
 
 
 _SCI_ALLOWED_EXTS = {
-    ".pdf", ".png", ".jpg", ".jpeg",
+    ".pdf", ".png", ".jpg", ".jpeg", ".svg", ".tif", ".tiff",
     ".csv", ".txt", ".md", ".json",
     ".yaml", ".yml", ".bib", ".dat",
     ".sac", ".mseed", ".xml",
@@ -1691,7 +1718,7 @@ def science_analysis_agent_upload():
     ws_dir = _science_resolve_workspace_root(workspace_root, session_id)
     if ext == ".pdf":
         sub = "literature"
-    elif ext in {".png", ".jpg", ".jpeg"}:
+    elif ext in {".png", ".jpg", ".jpeg", ".svg", ".tif", ".tiff"}:
         sub = "figures"
     elif ext in {".csv", ".tsv", ".xlsx", ".xls", ".parquet", ".h5", ".hdf5", ".nc", ".dat", ".json"}:
         sub = "data"

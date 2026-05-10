@@ -265,7 +265,7 @@ def search_config():
 
 @bp.route('/api/config/app_paths', methods=['GET', 'POST'])
 def app_paths_config():
-    """Get/update shared Chat and Geo Agent path defaults."""
+    """Get/update shared Chat and Parameter Optimizer path defaults."""
     from config_manager import get_config_manager
     mgr = get_config_manager()
     project_cfg = mgr.get_project_config()

@@ -74,7 +74,7 @@ body { background: #f5f7fa; min-height: 100vh; }
     <div class="collapse navbar-collapse">
       <ul class="navbar-nav ms-auto gap-1 align-items-center">
         <li class="nav-item"><a class="nav-link" href="/chat"><i class="bi bi-chat-dots"></i> <span data-i18n="nav_chat">对话</span></a></li>
-        <li class="nav-item"><a class="nav-link" href="/evidence-geo-agent"><i class="bi bi-geo-alt-fill"></i> <span data-i18n="nav_geo">地学解译</span> <span class="badge text-bg-warning fw-normal" style="font-size:.62rem;vertical-align:middle;">alpha</span></a></li>
+        <li class="nav-item"><a class="nav-link" href="/parameter-optimization-agent"><i class="bi bi-diagram-3-fill"></i> <span data-i18n="nav_opt">参数优化</span> <span class="badge text-bg-warning fw-normal" style="font-size:.62rem;vertical-align:middle;">alpha</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/science-analysis-agent"><i class="bi bi-beaker"></i> <span data-i18n="nav_science">科学分析</span> <span class="badge text-bg-warning fw-normal" style="font-size:.62rem;vertical-align:middle;">alpha</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/knowledge"><i class="bi bi-journal-bookmark-fill"></i> <span data-i18n="nav_knowledge">知识库</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/skills"><i class="bi bi-lightning-charge"></i> <span data-i18n="nav_skills">技能</span></a></li>
@@ -96,7 +96,7 @@ body { background: #f5f7fa; min-height: 100vh; }
 <div class="page-header">
   <div class="container">
     <h4 class="mb-1"><i class="bi bi-sliders me-2"></i><span data-i18n="page_title">Config 设置</span></h4>
-    <p class="mb-0 opacity-75" style="font-size:.9rem" data-i18n="page_sub">统一配置模型、搜索源和 Chat / Geo Agent 默认路径</p>
+    <p class="mb-0 opacity-75" style="font-size:.9rem" data-i18n="page_sub">统一配置模型、搜索源和 Chat / Param Optimizer 默认路径</p>
   </div>
 </div>
 
@@ -130,13 +130,13 @@ body { background: #f5f7fa; min-height: 100vh; }
         </button>
       </div>
       <div class="text-muted mb-3" style="font-size:.84rem" data-i18n="search_sub">
-        API Key 写入项目目录 seismo_rag/project_config.json，Chat 和 Geo Agent 可选择启用哪些搜索源。
+        API Key 写入项目目录 seismo_rag/project_config.json，Chat 和 参数优化可选择启用哪些搜索源。
       </div>
       <div id="searchProviderList"></div>
       <div class="mt-3">
         <label class="form-label fw-bold" data-i18n="search_defaults">默认搜索源</label>
         <input type="text" class="form-control" id="searchDefaultSources" placeholder="openalex,semantic_scholar,arxiv">
-        <div class="form-text" data-i18n="search_defaults_hint">逗号分隔；Chat/Geo Agent 未显式选择时使用这些源。</div>
+        <div class="form-text" data-i18n="search_defaults_hint">逗号分隔；Chat/Param Optimizer 未显式选择时使用这些源。</div>
       </div>
       <button class="btn btn-save mt-3" type="button" onclick="saveSearchConfig()">
         <i class="bi bi-check-circle me-1"></i><span data-i18n="search_save">保存搜索配置</span>
@@ -147,18 +147,18 @@ body { background: #f5f7fa; min-height: 100vh; }
   <!-- Shared path settings -->
   <div class="card border-0 shadow-sm mb-3">
     <div class="card-body p-4">
-      <h6 class="fw-bold mb-2"><i class="bi bi-folder2-open me-1"></i><span data-i18n="paths_title">Chat / Geo Agent 路径</span></h6>
+      <h6 class="fw-bold mb-2"><i class="bi bi-folder2-open me-1"></i><span data-i18n="paths_title">Chat / Param Optimizer 路径</span></h6>
       <div class="form-check form-switch mb-2">
         <input class="form-check-input" type="checkbox" id="cfgChatWsEnabled">
         <label class="form-check-label" for="cfgChatWsEnabled" data-i18n="paths_chat_enable">Chat 默认授权本地工作目录</label>
       </div>
       <label class="form-label fw-bold" data-i18n="paths_chat_roots">Chat 授权目录</label>
       <textarea class="form-control mb-3" id="cfgChatWsPaths" rows="3" placeholder="/data/seismic&#10;/Users/you/project"></textarea>
-      <label class="form-label fw-bold" data-i18n="paths_geo_workspace">Geo Agent Workspace Root</label>
+      <label class="form-label fw-bold" data-i18n="paths_geo_workspace">Param Optimizer Workspace Root</label>
       <input class="form-control mb-2" id="cfgGeoWorkspace" placeholder="./examples/evidence_geo_agent">
-      <label class="form-label fw-bold" data-i18n="paths_geo_lit">Geo Agent Literature Root</label>
+      <label class="form-label fw-bold" data-i18n="paths_geo_lit">Param Optimizer Literature Root</label>
       <input class="form-control mb-2" id="cfgGeoLiterature" placeholder="./papers">
-      <label class="form-label fw-bold" data-i18n="paths_geo_output">Geo Agent Output Dir</label>
+      <label class="form-label fw-bold" data-i18n="paths_geo_output">Param Optimizer Output Dir</label>
       <input class="form-control mb-3" id="cfgGeoOutput" placeholder="outputs/evidence_geo_agent">
       <button class="btn btn-save" type="button" onclick="saveAppPathsConfig()">
         <i class="bi bi-check-circle me-1"></i><span data-i18n="paths_save">保存路径配置</span>
@@ -489,21 +489,21 @@ body { background: #f5f7fa; min-height: 100vh; }
 // ── i18n ──────────────────────────────────────────────────────────────────────
 const I18N = {
   zh: {
-    nav_chat: '对话', nav_geo: '地学解译', nav_science: '科学分析', nav_knowledge: '知识库', nav_skills: '技能',
+    nav_chat: '对话', nav_opt:'参数优化', nav_science: '科学分析', nav_knowledge: '知识库', nav_skills: '技能',
     page_title: 'Config 设置',
-    page_sub: '统一配置模型、搜索源和 Chat / Geo Agent 默认路径',
+    page_sub: '统一配置模型、搜索源和 Chat / Param Optimizer 默认路径',
     model_scope_note: '此页统一控制回答模型、Web Search API Key 和常用路径。知识库向量化/检索模型仍在知识库页单独设置。',
     search_title: 'Web Search 源配置',
-    search_sub: 'API Key 写入项目目录 seismo_rag/project_config.json，Chat 和 Geo Agent 可选择启用哪些搜索源。',
+    search_sub: 'API Key 写入项目目录 seismo_rag/project_config.json，Chat 和 参数优化可选择启用哪些搜索源。',
     search_defaults: '默认搜索源',
-    search_defaults_hint: '逗号分隔；Chat/Geo Agent 未显式选择时使用这些源。',
+    search_defaults_hint: '逗号分隔；Chat/Param Optimizer 未显式选择时使用这些源。',
     search_save: '保存搜索配置',
-    paths_title: 'Chat / Geo Agent 路径',
+    paths_title: 'Chat / Param Optimizer 路径',
     paths_chat_enable: 'Chat 默认授权本地工作目录',
     paths_chat_roots: 'Chat 授权目录',
-    paths_geo_workspace: 'Geo Agent Workspace Root',
-    paths_geo_lit: 'Geo Agent Literature Root',
-    paths_geo_output: 'Geo Agent Output Dir',
+    paths_geo_workspace: 'Param Optimizer Workspace Root',
+    paths_geo_lit: 'Param Optimizer Literature Root',
+    paths_geo_output: 'Param Optimizer Output Dir',
     paths_save: '保存路径配置',
     coding_title: 'Coding Agent',
     coding_sub: 'Aider 作为 SAGE 的仓库级代码后端，优先使用 Python API，必要时退回 CLI；内置 CodeEngine 保留用于轻量脚本、绘图和 mini test。OpenHands 可作为实验后端。配置写入项目目录 seismo_rag/project_config.json。',
@@ -583,21 +583,21 @@ const I18N = {
     ollama_timeout: 'Ollama 响应超时，请确认 <code>ollama serve</code> 已启动',
   },
   en: {
-    nav_chat: 'Chat', nav_geo: 'Geo Agent', nav_science: 'Science Agent', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
+    nav_chat: 'Chat', nav_opt:'Param Optimizer', nav_science: 'Science Agent', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
     page_title: 'Config',
-    page_sub: 'Configure models, search providers, and Chat / Geo Agent default paths',
+    page_sub: 'Configure models, search providers, and Chat / Param Optimizer default paths',
     model_scope_note: 'This page controls the answer model, Web Search API keys, and common paths. Knowledge embeddings remain configured on the Knowledge page.',
     search_title: 'Web Search Providers',
-    search_sub: 'API keys are stored in the project at seismo_rag/project_config.json. Chat and Geo Agent can choose which sources to use.',
+    search_sub: 'API keys are stored in the project at seismo_rag/project_config.json. Chat and Param Optimizer can choose which sources to use.',
     search_defaults: 'Default search sources',
-    search_defaults_hint: 'Comma-separated; used when Chat/Geo Agent does not explicitly choose sources.',
+    search_defaults_hint: 'Comma-separated; used when Chat/Param Optimizer does not explicitly choose sources.',
     search_save: 'Save Search Config',
-    paths_title: 'Chat / Geo Agent Paths',
+    paths_title: 'Chat / Param Optimizer Paths',
     paths_chat_enable: 'Authorize Chat local workspace by default',
     paths_chat_roots: 'Chat authorized roots',
-    paths_geo_workspace: 'Geo Agent Workspace Root',
-    paths_geo_lit: 'Geo Agent Literature Root',
-    paths_geo_output: 'Geo Agent Output Dir',
+    paths_geo_workspace: 'Param Optimizer Workspace Root',
+    paths_geo_lit: 'Param Optimizer Literature Root',
+    paths_geo_output: 'Param Optimizer Output Dir',
     paths_save: 'Save Path Config',
     coding_title: 'Coding Agent',
     coding_sub: 'Aider is the integrated repository-level coding backend for SAGE. SAGE uses the Python API first and falls back to the CLI when needed. The built-in CodeEngine remains available for lightweight scripts, plotting, and mini tests. OpenHands is available as an experimental backend. Settings are stored at seismo_rag/project_config.json.',
