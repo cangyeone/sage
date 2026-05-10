@@ -11,11 +11,12 @@ from pathlib import Path
 from typing import Any, Optional
 
 
+_FALLBACK_RUN_DIR = Path(__file__).parent / "outputs" / "runs"
 _DEFAULT_RUN_DIR = Path(os.environ.get("SAGE_RUN_RECORD_DIR", Path.home() / ".seismicx" / "runs"))
 try:
     _DEFAULT_RUN_DIR.mkdir(parents=True, exist_ok=True)
 except PermissionError:
-    _DEFAULT_RUN_DIR = Path(__file__).parent / "outputs" / "runs"
+    _DEFAULT_RUN_DIR = _FALLBACK_RUN_DIR
     _DEFAULT_RUN_DIR.mkdir(parents=True, exist_ok=True)
 
 RUN_RECORD_DIR = _DEFAULT_RUN_DIR
@@ -53,12 +54,26 @@ def _read(path: Path) -> dict:
 
 
 def _write(path: Path, record: dict):
+    global RUN_RECORD_DIR
     tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(
-        json.dumps(_json_safe(record), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    tmp.replace(path)
+    try:
+        tmp.write_text(
+            json.dumps(_json_safe(record), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        tmp.replace(path)
+    except PermissionError:
+        if RUN_RECORD_DIR == _FALLBACK_RUN_DIR:
+            raise
+        RUN_RECORD_DIR = _FALLBACK_RUN_DIR
+        RUN_RECORD_DIR.mkdir(parents=True, exist_ok=True)
+        fallback_path = RUN_RECORD_DIR / path.name
+        fallback_tmp = fallback_path.with_suffix(".json.tmp")
+        fallback_tmp.write_text(
+            json.dumps(_json_safe(record), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        fallback_tmp.replace(fallback_path)
 
 
 def start_run(

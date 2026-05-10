@@ -4,7 +4,7 @@
 This demo intentionally avoids online services and heavy models. It creates a
 small synthetic seismic sequence, performs simple threshold phase picking,
 associates the picks into one event, writes a catalog, generates a figure, and
-records the run in ~/.seismicx/runs.
+records the run in SAGE_RUN_RECORD_DIR, ~/.seismicx/runs, or web_app/outputs/runs.
 """
 from __future__ import annotations
 

@@ -10,6 +10,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -64,6 +65,31 @@ class TestRunRecordsAndSmokeDemo(unittest.TestCase):
                 self.assertEqual(run_records.list_runs()[0]["run_id"], run_id)
             finally:
                 run_records.RUN_RECORD_DIR = old_dir
+
+    def test_run_records_falls_back_when_default_dir_is_not_writable(self):
+        with tempfile.TemporaryDirectory() as primary_tmp, tempfile.TemporaryDirectory() as fallback_tmp:
+            old_dir = run_records.RUN_RECORD_DIR
+            old_fallback = run_records._FALLBACK_RUN_DIR
+            original_write_text = Path.write_text
+            calls = {"count": 0}
+
+            def flaky_write_text(path, *args, **kwargs):
+                if calls["count"] == 0:
+                    calls["count"] += 1
+                    raise PermissionError("primary run record directory is not writable")
+                return original_write_text(path, *args, **kwargs)
+
+            run_records.RUN_RECORD_DIR = Path(primary_tmp)
+            run_records._FALLBACK_RUN_DIR = Path(fallback_tmp)
+            try:
+                with patch.object(Path, "write_text", flaky_write_text):
+                    run_id = run_records.start_run("unit", request="fallback")
+
+                self.assertEqual(run_records.RUN_RECORD_DIR, Path(fallback_tmp))
+                self.assertTrue((Path(fallback_tmp) / f"{run_id}.json").is_file())
+            finally:
+                run_records.RUN_RECORD_DIR = old_dir
+                run_records._FALLBACK_RUN_DIR = old_fallback
 
     def test_smoke_demo_outputs_artifacts_and_record(self):
         with tempfile.TemporaryDirectory() as out_tmp, tempfile.TemporaryDirectory() as rec_tmp:
