@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -77,6 +78,8 @@ _BUILTIN_SKILL_DIR = Path(__file__).parent / "skills"
 _DOC_SKILL_GENERATOR = "seismo_skill_docs_builder"
 _SKILL_BUILDER_CACHE_DIR = _KB_DIR / "skill_builder_cache"
 _MARKDOWN_NORMALIZER_VERSION = "v3"
+_DOCS_COLLECTION_CACHE_VERSION = "v1"
+_BATCH_PLAN_CACHE_VERSION = "v1"
 
 def _env_optional_int(name: str) -> Optional[int]:
     try:
@@ -318,6 +321,115 @@ def _source_manifest_for_skill(files: List[Path], source_root: Path) -> Dict[str
         except Exception:
             continue
     return out
+
+
+def _skill_docs_cache_file(proj_name: str, source_manifest: Dict[str, dict], use_llm: bool) -> Path:
+    """Project-level cache for already normalized docs used by Skill Builder Agent."""
+    payload = {
+        "version": _DOCS_COLLECTION_CACHE_VERSION,
+        "normalizer": _MARKDOWN_NORMALIZER_VERSION,
+        "project": proj_name,
+        "use_llm": bool(use_llm),
+        "source_manifest": source_manifest,
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", proj_name).strip("._-")[:80] or "project"
+    return _SKILL_BUILDER_CACHE_DIR / "docs" / f"{safe_name}_{digest}.json"
+
+
+def _load_skill_docs_cache(cache_path: Path) -> Optional[List[dict]]:
+    try:
+        if not cache_path.exists():
+            return None
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        if payload.get("version") != _DOCS_COLLECTION_CACHE_VERSION:
+            return None
+        docs = payload.get("docs")
+        if not isinstance(docs, list) or not docs:
+            return None
+        valid = []
+        for item in docs:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text") or "").strip()
+            if not text:
+                continue
+            valid.append({
+                "path": str(item.get("path") or ""),
+                "abs_path": str(item.get("abs_path") or ""),
+                "text": text,
+                "headings": item.get("headings") if isinstance(item.get("headings"), list) else _extract_headings(text),
+            })
+        return valid or None
+    except Exception:
+        return None
+
+
+def _write_skill_docs_cache(cache_path: Path, docs: List[dict], meta: Dict[str, object]) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": _DOCS_COLLECTION_CACHE_VERSION,
+        "normalizer": _MARKDOWN_NORMALIZER_VERSION,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "meta": meta,
+        "docs": docs,
+    }
+    tmp = cache_path.with_suffix(cache_path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(cache_path)
+
+
+def _skill_batch_plan_cache_file(proj_name: str, batch_no: int, batch_label: str, docs: List[dict]) -> Path:
+    doc_fingerprints = []
+    for doc in docs:
+        text = str(doc.get("text") or "")
+        h = hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()[:16]
+        doc_fingerprints.append({
+            "path": str(doc.get("path") or ""),
+            "len": len(text),
+            "sha": h,
+        })
+    payload = {
+        "version": _BATCH_PLAN_CACHE_VERSION,
+        "normalizer": _MARKDOWN_NORMALIZER_VERSION,
+        "project": proj_name,
+        "batch_no": batch_no,
+        "batch_label": batch_label,
+        "docs": doc_fingerprints,
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", proj_name).strip("._-")[:80] or "project"
+    return _SKILL_BUILDER_CACHE_DIR / "batch_plans" / safe_name / f"batch_{batch_no:03d}_{digest}.json"
+
+
+def _load_skill_batch_plan_cache(cache_path: Path) -> Optional[dict]:
+    try:
+        if not cache_path.exists():
+            return None
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        if payload.get("version") != _BATCH_PLAN_CACHE_VERSION:
+            return None
+        plan = payload.get("plan")
+        return plan if isinstance(plan, dict) and plan else None
+    except Exception:
+        return None
+
+
+def _write_skill_batch_plan_cache(cache_path: Path, plan: dict) -> None:
+    if not isinstance(plan, dict) or not plan:
+        return
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": _BATCH_PLAN_CACHE_VERSION,
+        "normalizer": _MARKDOWN_NORMALIZER_VERSION,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "plan": plan,
+    }
+    tmp = cache_path.with_suffix(cache_path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(cache_path)
 
 
 # ── 主类 ──────────────────────────────────────────────────────────────────────
@@ -884,49 +996,81 @@ class KnowledgeIndexer:
                 _log(f"   ✅ SKILL 已是最新，跳过增量重建：{existing_skill}")
                 continue
 
-            docs = []
+            docs_cache_path = _skill_docs_cache_file(proj_name, source_manifest, use_llm=use_llm)
+            docs = _load_skill_docs_cache(docs_cache_path) or []
             max_docs = len(files)
-            if is_single_file:
-                _log("   📚 收集目录证据：1 个文件")
+            if docs:
+                _log(
+                    f"   ✅ 复用已标准化文档缓存：{len(docs)} 个文件；"
+                    "直接进入 Skill Builder Agent 规划阶段。"
+                )
             else:
-                _log(f"   📚 收集目录证据：选择 {max_docs}/{len(all_source_files)} 个候选文件")
-            for doc_i, path in enumerate(files[:max_docs], 1):
-                if stop_event and stop_event.is_set():
-                    result.interrupted = True
-                    _log("⚠  已中断（文件夹型 Skill 构建停止）。")
-                    break
-                if doc_i == 1 or doc_i % 20 == 0 or doc_i == max_docs:
-                    _log(f"   · 读取证据 {doc_i}/{max_docs}: {_safe_relpath(path, source_root)}")
-                # Skill generation should digest the source documents, not just
-                # keep a pointer to the original PDFs. Single-file skills get a
-                # larger text budget so a whole paper/manual can be converted
-                # into hierarchical Markdown references.
-                text_budget = 140000 if is_single_file else 18000
-                text = _read_source_text(path, max_chars=text_budget)
-                if text.strip() and not is_single_file:
-                    text = _append_referenced_code(path, source_root, text, max_chars=26000)
-                quality_issue = _source_text_quality_issue(path, text)
-                if quality_issue:
-                    _log(f"   ⚠ 跳过 {path.name}：{quality_issue}")
-                    if path.suffix.lower() == ".pdf":
-                        _log("      建议提供可复制文本版 PDF、Markdown/HTML 原文，或先进行中文 OCR 后再构建 SKILL。")
-                    continue
-                if not text.strip():
-                    continue
-                if use_llm:
-                    rel_for_log = _safe_relpath(path, source_root)
-                    cache_hit = _markdown_cache_file(path, text).exists()
-                    _log(
-                        f"   🤖 Markdown 标准化 {doc_i}/{max_docs}: {rel_for_log}"
-                        + ("（缓存）" if cache_hit else "")
+                markdown_cache_hits = 0
+                markdown_new_runs = 0
+                if is_single_file:
+                    _log("   📚 收集目录证据：1 个文件")
+                else:
+                    _log(f"   📚 收集目录证据：选择 {max_docs}/{len(all_source_files)} 个候选文件")
+                for doc_i, path in enumerate(files[:max_docs], 1):
+                    if stop_event and stop_event.is_set():
+                        result.interrupted = True
+                        _log("⚠  已中断（文件夹型 Skill 构建停止）。")
+                        break
+                    if doc_i == 1 or doc_i % 100 == 0 or doc_i == max_docs:
+                        _log(f"   · 读取证据 {doc_i}/{max_docs}: {_safe_relpath(path, source_root)}")
+                    # Skill generation should digest the source documents, not just
+                    # keep a pointer to the original PDFs. Single-file skills get a
+                    # larger text budget so a whole paper/manual can be converted
+                    # into hierarchical Markdown references.
+                    text_budget = 140000 if is_single_file else 18000
+                    text = _read_source_text(path, max_chars=text_budget)
+                    if text.strip() and not is_single_file:
+                        text = _append_referenced_code(path, source_root, text, max_chars=26000)
+                    quality_issue = _source_text_quality_issue(path, text)
+                    if quality_issue:
+                        _log(f"   ⚠ 跳过 {path.name}：{quality_issue}")
+                        if path.suffix.lower() == ".pdf":
+                            _log("      建议提供可复制文本版 PDF、Markdown/HTML 原文，或先进行中文 OCR 后再构建 SKILL。")
+                        continue
+                    if not text.strip():
+                        continue
+                    if use_llm:
+                        rel_for_log = _safe_relpath(path, source_root)
+                        cache_hit = _markdown_cache_file(path, text).exists()
+                        if cache_hit:
+                            markdown_cache_hits += 1
+                        else:
+                            markdown_new_runs += 1
+                        if (not cache_hit) or doc_i == 1 or doc_i % 100 == 0 or doc_i == max_docs:
+                            _log(
+                                f"   🤖 Markdown 标准化 {doc_i}/{max_docs}: {rel_for_log}"
+                                + ("（缓存）" if cache_hit else "")
+                            )
+                        text = _llm_convert_to_markdown(path, text, max_chars=text_budget) or text
+                    docs.append({
+                        "path": str(_safe_relpath(path, source_root)),
+                        "abs_path": str(path),
+                        "text": text,
+                        "headings": _extract_headings(text),
+                    })
+                if not result.interrupted and docs:
+                    _write_skill_docs_cache(
+                        docs_cache_path,
+                        docs,
+                        {
+                            "project": proj_name,
+                            "source_root": str(source_root),
+                            "selected_files": max_docs,
+                            "source_files_total": len(all_source_files),
+                            "use_llm": bool(use_llm),
+                        },
                     )
-                    text = _llm_convert_to_markdown(path, text, max_chars=text_budget) or text
-                docs.append({
-                    "path": str(_safe_relpath(path, source_root)),
-                    "abs_path": str(path),
-                    "text": text,
-                    "headings": _extract_headings(text),
-                })
+                    if use_llm:
+                        _log(
+                            f"   ✅ Markdown 标准化缓存命中：{markdown_cache_hits} 个；"
+                            f"新增标准化：{markdown_new_runs} 个。"
+                        )
+                    _log("   💾 已保存阶段缓存；下次会从这里继续，不再重跑标准化。")
 
             if result.interrupted:
                 break
@@ -969,11 +1113,14 @@ class KnowledgeIndexer:
                 }
                 self._save_proj_manifest()
                 result.skills_generated.append(final_name)
+                _cleanup_completed_build_artifacts({final_name, skill_name, proj_name})
                 _log(f"   ✅ OpenAI-style 文件夹 Skill 已生成：{final_name}")
             except Exception as exc:
                 result.failed.append(proj_name)
                 _log(f"   ❌ 生成失败：{exc}")
 
+        if result.skills_generated and not result.failed and not result.interrupted:
+            _cleanup_completed_build_artifacts(set(result.skills_generated))
         _invalidate_skill_cache()
         _log(f"\n✅ 完成：{result.summary()}")
         return result
@@ -1873,8 +2020,15 @@ def _doc_digest_for_llm(docs: List[dict], max_chars: int = 42000) -> str:
         remaining = max_chars - used - len(preface_text)
         if remaining <= 0:
             break
-        excerpt = _condense_rst_for_skill_builder(text[:remaining])
-        used += len(excerpt)
+        excerpt_source, was_truncated = _complete_markdown_excerpt(text, remaining)
+        excerpt = _condense_rst_for_skill_builder(excerpt_source)
+        excerpt = _drop_dangling_fence_tail(excerpt)
+        if was_truncated:
+            preface_text += (
+                "截断策略：本段只保留预算内的完整段落/列表/代码块；"
+                "疑似不完整的尾部已省略，禁止据此补全或原样输出。\n\n"
+            )
+        used += len(preface_text) + len(excerpt)
         parts.append(preface_text + excerpt)
     return "\n\n---\n\n".join(parts)
 
@@ -2204,7 +2358,8 @@ def _llm_convert_to_markdown(path: Path, text: str, max_chars: int = 18000) -> s
 3. 把 .. gmtplot::、.. literalinclude::、```{{eval-rst}} 中的真实命令提取为 fenced code block。
 4. 删除纯布局指令，例如 :width:、:align:、.. only::、.. hlist::。
 5. 如果文本明显是乱码或正文不足，输出空字符串。
-6. 只输出 Markdown 正文，不要解释。
+6. 如果输入片段来自切片或预算截断，只保留完整句子、完整段落、完整列表项和完整代码块；半句话、半个表格、未闭合代码块、疑似截断尾部不要输出，也不要猜测补全。
+7. 只输出 Markdown 正文，不要解释。
 
 文件名：{path.name}
 
@@ -2263,6 +2418,68 @@ def _repair_markdown_code_fences(text: str) -> str:
     if in_fence:
         out += "\n" + (fence_char * max(3, fence_len))
     return out.strip()
+
+
+def _drop_dangling_fence_tail(text: str) -> str:
+    """Remove an incomplete trailing fenced block from evidence excerpts."""
+    lines = str(text or "").splitlines()
+    in_fence = False
+    fence_char = ""
+    fence_len = 0
+    open_idx = -1
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        m = re.match(r"^([`~]{3,})(.*)$", stripped)
+        if not m:
+            continue
+        marker = m.group(1)
+        char = marker[0]
+        if any(ch != char for ch in marker):
+            continue
+        if not in_fence:
+            in_fence = True
+            fence_char = char
+            fence_len = len(marker)
+            open_idx = i
+        elif char == fence_char and len(marker) >= fence_len:
+            in_fence = False
+            fence_char = ""
+            fence_len = 0
+            open_idx = -1
+    if in_fence and open_idx >= 0:
+        return "\n".join(lines[:open_idx]).rstrip()
+    return str(text or "").rstrip()
+
+
+def _complete_markdown_excerpt(text: str, max_chars: int) -> Tuple[str, bool]:
+    """
+    Return a budgeted excerpt that ends at a reasonable Markdown/text boundary.
+
+    RAG and long-document digests are inevitably budgeted. This helper avoids
+    feeding the Skill Builder half a sentence or half a code block that it may
+    later reproduce as if it were complete source material.
+    """
+    source = str(text or "").strip()
+    if max_chars <= 0 or not source:
+        return "", False
+    if len(source) <= max_chars:
+        return _repair_markdown_code_fences(source), False
+
+    cut = source[:max_chars]
+    # Prefer paragraph or heading boundaries; fall back to line boundaries.
+    candidates = [
+        cut.rfind("\n\n"),
+        cut.rfind("\n# "),
+        cut.rfind("\n## "),
+        cut.rfind("\n### "),
+        cut.rfind("\n- "),
+        cut.rfind("\n"),
+    ]
+    floor = max(120, int(max_chars * 0.55))
+    pos = max((p for p in candidates if p >= floor), default=-1)
+    snippet = cut[:pos].rstrip() if pos > 0 else cut.rstrip()
+    snippet = _drop_dangling_fence_tail(snippet).strip()
+    return snippet, True
 
 
 def _markdown_cache_file(path: Path, text: str) -> Path:
@@ -2328,6 +2545,7 @@ def _llm_hierarchical_skill_plan(
 12. 参考“相似片段候选”决定哪些内容应合并，但最终合并/拆分由你根据功能语义判断。
 13. SOURCE_EVIDENCE 必须列出相对文件路径、章节、脚本或代码块线索；如果证据来自多个文件，要全部列出，方便后续打开源文件复核。
 14. 优先输出下面的 RAW TEXT 协议；不要强行输出 JSON。小模型也可以稳定遵循这个协议。
+15. 文档内容可能来自 RAG 切片或预算截断；只能把完整句子、完整段落、完整列表项、完整代码块写入 CONTENT/COMMANDS/PARAMETERS。疑似半句、半个代码块、未闭合 fence、以截断提示结尾的内容只能作为线索，必须省略，不能补全。
 
 RAW TEXT 协议：
 SKILL_NAME: 中文技能包名称
@@ -2435,18 +2653,34 @@ def _llm_map_reduce_skill_plan(
     failed = 0
     for batch_idx, batch_info in enumerate(batches, 1):
         batch = batch_info["docs"]
-        batch_plan = _llm_subskills_from_doc_batch(
-            proj_name=proj_name,
-            docs=batch,
-            batch_no=batch_idx,
-            batch_total=len(batches),
-            batch_label=batch_info.get("label", ""),
-        )
+        batch_label = str(batch_info.get("label", "") or "未命名主题簇")
+        batch_cache = _skill_batch_plan_cache_file(proj_name, batch_idx, batch_label, batch)
+        batch_plan = _load_skill_batch_plan_cache(batch_cache)
+        if batch_plan:
+            if log:
+                log(f"   ♻️ 复用 LLM 批次缓存 {batch_idx}/{len(batches)}：{batch_label}")
+        else:
+            if log:
+                log(f"   🧠 LLM 批次 {batch_idx}/{len(batches)} 开始：{batch_label}（{len(batch)} 个文档）")
+            batch_plan = _llm_subskills_from_doc_batch(
+                proj_name=proj_name,
+                docs=batch,
+                batch_no=batch_idx,
+                batch_total=len(batches),
+                batch_label=batch_label,
+            )
+            if isinstance(batch_plan, dict) and not batch_plan.get("_error"):
+                _write_skill_batch_plan_cache(batch_cache, batch_plan)
         units = _normalize_llm_units(_extract_subskill_units(batch_plan))
         if units:
             all_units.extend(units)
+            if log:
+                log(f"   ✅ LLM 批次 {batch_idx}/{len(batches)} 完成：抽取 {len(units)} 个候选子技能")
         else:
             failed += 1
+            detail = batch_plan.get("_error") if isinstance(batch_plan, dict) else ""
+            if log:
+                log(f"   ⚠ LLM 批次 {batch_idx}/{len(batches)} 未产出有效子技能" + (f"：{detail}" if detail else ""))
 
     merged_units = _filter_usable_subskills(_merge_similar_subskills(all_units, use_embedding=rag_assist))
     if not merged_units:
@@ -2507,6 +2741,7 @@ def _llm_subskills_from_doc_batch(
 3. 输出 RAW TEXT，不要 JSON。
 4. 每个子技能必须有可执行步骤、命令/API、关键参数、验证方法和来源依据。
 5. 如果多个片段属于同一任务，合并成一个子技能。
+6. 文档证据可能来自切片；只输出完整句子、完整段落、完整列表项和完整代码块。疑似截断的半句话、半个命令、未闭合代码块只作为线索，不能写入技能正文。
 
 RAW TEXT 格式：
 === SUBSKILL ===
@@ -2743,6 +2978,7 @@ SOURCE_EVIDENCE:
 === END_SUBSKILL ===
 
 如果多个片段属于同一功能，必须合并。例如 coast -EAU 和 coast -E=OC 都属于“GMT coast 国家与区域边界绘制”。
+文档证据可能来自切片；只输出完整句子、完整段落、完整列表项和完整代码块。疑似截断的半句话、半个命令、未闭合代码块只作为线索，不能写入技能正文，也不能猜测补全。
 
 总体关键词：{capability_hint or "GMT 绘图、地图、CPT、投影、数据集、示例脚本"}
 
@@ -3247,6 +3483,39 @@ def _resolve_generated_skill_target(skill_name: str, overwrite: bool = True) -> 
         if not candidate.exists():
             return candidate
     raise FileExistsError(f"Cannot find free skill folder for {skill_name}")
+
+
+def _cleanup_completed_build_artifacts(names) -> int:
+    """Remove stale .building directories that belong to completed generated skills."""
+    wanted: set[str] = set()
+    for raw in names or []:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        text = text.removesuffix(".building").lstrip(".")
+        for candidate in {text, _safe_skill_slug(text), _generated_skill_slug(text)}:
+            key = str(candidate or "").strip().lower().removesuffix(".building").lstrip(".")
+            if key:
+                wanted.add(key)
+
+    if not wanted:
+        return 0
+
+    removed = 0
+    for root in (_USER_SKILL_DIR, _BUILTIN_SKILL_DIR):
+        if not root.exists():
+            continue
+        for folder in list(root.iterdir()):
+            if not folder.is_dir() or not folder.name.endswith(".building"):
+                continue
+            key = folder.name.removesuffix(".building").lstrip(".").lower()
+            if key not in wanted:
+                continue
+            shutil.rmtree(folder, ignore_errors=True)
+            removed += 1
+    if removed:
+        _invalidate_skill_cache()
+    return removed
 
 
 def _yaml_list(items: List[str], indent: str = "") -> str:

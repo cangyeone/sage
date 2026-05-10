@@ -548,6 +548,8 @@ async function refreshStatus() {
 function renderDocCard(doc, isZh) {
   const TYPE_BADGE = {
     skill_docs:    { cls: 'bg-primary',   label_zh: 'Skill文档', label_en: 'Skill Doc' },
+    skill_asset:   { cls: 'bg-info',      label_zh: '已生成SKILL', label_en: 'Generated Skill' },
+    skill_building:{ cls: 'bg-warning text-dark', label_zh: '构建残留', label_en: 'Build Artifact' },
     ref_knowledge: { cls: 'bg-success',   label_zh: '参考文献',  label_en: 'Reference' },
     upload:        { cls: 'bg-secondary', label_zh: '上传',      label_en: 'Upload' },
   };
@@ -558,14 +560,20 @@ function renderDocCard(doc, isZh) {
   const badge    = TYPE_BADGE[st] || TYPE_BADGE.upload;
   const label    = isZh ? badge.label_zh : badge.label_en;
   const safeName = doc.doc_name.replace(/'/g, "\\'");
+  const domId    = 'doc-' + String(doc.doc_id).replace(/[^a-zA-Z0-9_-]/g, '_');
+  const isSkill  = st === 'skill_asset' || st === 'skill_building';
+  const icon     = isSkill ? 'bi-lightning-charge-fill' : 'bi-file-earmark-pdf-fill';
+  const iconColor = isSkill ? '#667eea' : '#e53935';
+  const unitA    = isSkill ? (isZh ? '子技能' : 'subskills') : pageWord;
+  const unitB    = isSkill ? (isZh ? '引用页' : 'refs') : chkWord;
   return `
-  <div class="doc-card" id="doc-${doc.doc_id}">
-    <div class="doc-icon"><i class="bi bi-file-earmark-pdf-fill"></i></div>
+  <div class="doc-card" id="${domId}">
+    <div class="doc-icon" style="color:${iconColor}"><i class="bi ${icon}"></i></div>
     <div class="doc-info">
       <div class="doc-name" title="${doc.doc_name}">${doc.doc_name}</div>
       <div class="doc-meta">
         <span class="badge ${badge.cls}" style="font-size:.65rem;">${label}</span>
-        &nbsp; ${doc.n_pages} ${pageWord} &nbsp;·&nbsp; ${doc.n_chunks} ${chkWord}
+        &nbsp; ${doc.n_pages} ${unitA} &nbsp;·&nbsp; ${doc.n_chunks} ${unitB}
         &nbsp;·&nbsp; ${doc.size_kb} KB
         &nbsp;·&nbsp; ${new Date(doc.added_at).toLocaleDateString(locale)}
       </div>
@@ -584,7 +592,7 @@ async function loadDocs() {
     const isZh = currentLang === 'zh';
     const docs  = d.docs || [];
     const cnt   = docs.length;
-    document.getElementById('docCount').textContent = isZh ? `${cnt} 篇` : `${cnt}`;
+    document.getElementById('docCount').textContent = isZh ? `${cnt} 项` : `${cnt} items`;
 
     if (!d.ok && d.error) {
       docList.innerHTML = `<div class="text-danger py-3" style="font-size:.82rem;">⚠ ${d.error}</div>`;
@@ -618,15 +626,15 @@ async function loadDocs() {
 
     // ── 文件夹分组卡片 ─────────────────────────────────────────────────────
     for (const [folder, fdocs] of Object.entries(groups)) {
-      const totalPages  = fdocs.reduce((s, d) => s + d.n_pages, 0);
       const totalChunks = fdocs.reduce((s, d) => s + d.n_chunks, 0);
       const safeFolder  = folder.replace(/'/g, "\\'");
       const groupId     = 'grp_' + folder.replace(/[^a-zA-Z0-9_]/g, '_');
       const childCards  = fdocs.map(doc => renderDocCard(doc, isZh)).join('');
       const delLabel    = isZh ? '删除整个文件夹' : 'Delete folder';
+      const hasSkill    = fdocs.some(d => ['skill_asset', 'skill_building'].includes(d.source_type || ''));
       const metaLabel   = isZh
-        ? `${fdocs.length} 个文件 · ${totalChunks} 片段`
-        : `${fdocs.length} files · ${totalChunks} chunks`;
+        ? `${fdocs.length} 个项目 · ${totalChunks} ${hasSkill ? '引用页/片段' : '片段'}`
+        : `${fdocs.length} items · ${totalChunks} ${hasSkill ? 'refs/chunks' : 'chunks'}`;
 
       parts.push(`
       <div class="folder-group" id="${groupId}">
@@ -787,28 +795,32 @@ async function pollIndexTask(taskId, bar, status) {
 
 // ── Delete / Clear ─────────────────────────────────────────────────────────
 async function deleteDoc(docId, docName) {
-  if (!confirm(`确认删除「${docName}」？`)) return;
-  const btn = document.querySelector(`#doc-${docId} .btn-del`);
+  const isZh = currentLang === 'zh';
+  if (!confirm(isZh ? `确认删除「${docName}」？` : `Delete "${docName}"?`)) return;
+  const domId = 'doc-' + String(docId).replace(/[^a-zA-Z0-9_-]/g, '_');
+  const btn = document.querySelector(`#${domId} .btn-del`);
   if (btn) {
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm" style="width:.9rem;height:.9rem;"></span>';
   }
   try {
-    const r = await fetch(`/api/knowledge/delete/${docId}`, {method:'DELETE'});
+    const r = await fetch(`/api/knowledge/delete/${encodeURIComponent(docId)}`, {method:'DELETE'});
     const d = await safeJson(r);
     if (d.ok) {
-      document.getElementById('doc-' + docId)?.remove();
-      showToast(`已删除：${docName}${d.skill_deleted ? '（关联 SKILL 已删除）' : ''}`);
+      document.getElementById(domId)?.remove();
+      showToast(isZh
+        ? `已删除：${docName}${d.skill_deleted ? '（关联 SKILL 已删除）' : ''}`
+        : `Deleted: ${docName}${d.skill_deleted ? ' (skill deleted)' : ''}`);
       refreshStatus(); loadDocs();
     } else {
-      showToast(`删除失败：${d.error || 'Document not found'}`, 'danger');
+      showToast(`${isZh ? '删除失败' : 'Delete failed'}：${d.error || 'Document not found'}`, 'danger');
       if (btn) {
         btn.disabled = false;
         btn.innerHTML = '<i class="bi bi-trash"></i>';
       }
     }
   } catch(e) {
-    showToast(`删除请求失败：${e.message}`, 'danger');
+    showToast(`${isZh ? '删除请求失败' : 'Delete request failed'}：${e.message}`, 'danger');
     if (btn) {
       btn.disabled = false;
       btn.innerHTML = '<i class="bi bi-trash"></i>';

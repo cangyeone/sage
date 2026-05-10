@@ -151,7 +151,10 @@ class CodeEngine:
         self._raise_if_cancelled(cancel_event)
         if _is_bash_code(code):
             clean = re.sub(r"^#\s*lang:bash\s*\n", "", code, count=1)
-            extra_env = {"SAGE_OUTDIR": shared_dir} if shared_dir else None
+            extra_env = (
+                {"SAGE_OUTDIR": shared_dir, "SAGE_WORKSPACE_ROOT": self.project_root}
+                if shared_dir else None
+            )
             return execute_bash(clean, project_root=self.project_root,
                                 timeout=timeout, keep_dir=True,
                                 extra_env=extra_env,
@@ -160,10 +163,13 @@ class CodeEngine:
         extra_env = None
         if shared_dir:
             preamble = (f"import os as _wf_os\n"
-                        f"_wf_os.chdir({shared_dir!r})\n"
+                        f"_wf_os.makedirs({shared_dir!r}, exist_ok=True)\n"
                         f"_wf_os.environ['SAGE_OUTDIR'] = {shared_dir!r}\n")
             clean     = preamble + clean
-            extra_env = {"SAGE_OUTDIR": shared_dir}
+            extra_env = {
+                "SAGE_OUTDIR": shared_dir,
+                "SAGE_WORKSPACE_ROOT": self.project_root,
+            }
         return execute_code(clean, project_root=self.project_root,
                             timeout=timeout, keep_dir=True,
                             extra_env=extra_env,
@@ -622,11 +628,14 @@ class CodeEngine:
         timeout: int = 120,
         run_verify: bool = False,
         on_progress: Optional[Callable[[Dict], None]] = None,
+        output_dir: Optional[str] = None,
         cancel_event=None,
     ) -> CodeRunResult:
         """Generate, execute, debug, and optionally verify Python or bash code."""
         try:
             self._raise_if_cancelled(cancel_event)
+            if output_dir:
+                Path(output_dir).mkdir(parents=True, exist_ok=True)
 
             # 1. Profile files mentioned in the request
             file_contexts: List[str] = []
@@ -732,7 +741,11 @@ class CodeEngine:
 
             # 6. First execution
             self._emit(on_progress, "executing", 0, "Executing code…")
-            exec_res = self._run_code(code, timeout, cancel_event=cancel_event)
+            if output_dir:
+                exec_res = self._run_code_in_dir(
+                    code, timeout, shared_dir=output_dir, cancel_event=cancel_event)
+            else:
+                exec_res = self._run_code(code, timeout, cancel_event=cancel_event)
             self._raise_if_cancelled(cancel_event)
         except CodeExecutionCancelled:
             self._emit(on_progress, "cancelled", 0, "Execution cancelled.")
@@ -783,7 +796,7 @@ class CodeEngine:
                 exec_res=exec_res, attempt=attempt, timeout=timeout,
                 on_progress=on_progress, file_contexts=file_contexts,
                 skill_ctx=skill_ctx, extra_rag_ctx=dbg_rag,
-                # exec_dir=None → run in fresh temp dir (single-request mode)
+                exec_dir=output_dir,
                 cancel_event=cancel_event,
             )
             self._raise_if_cancelled(cancel_event)

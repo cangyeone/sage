@@ -31,6 +31,41 @@ from helpers import (
 
 bp = Blueprint('chat', __name__)
 
+_RAG_COMPLETE_ONLY_RULE = (
+    "===== RAG 引用规则 / RAG citation rule =====\n"
+    "下面的上传文档或知识库内容可能来自切片。回答时只能引用或复述完整句子、完整段落、完整列表项、完整表格行和完整代码块；"
+    "疑似截断的半句话、半个命令、未闭合代码块只能作为检索线索，不要当作事实或原文输出。\n"
+)
+
+
+def _drop_incomplete_fenced_tail(text: str) -> str:
+    lines = str(text or "").splitlines()
+    in_fence = False
+    fence_char = ""
+    fence_len = 0
+    open_idx = -1
+    for i, line in enumerate(lines):
+        m = _re.match(r"^\s*([`~]{3,})", line)
+        if not m:
+            continue
+        marker = m.group(1)
+        char = marker[0]
+        if any(ch != char for ch in marker):
+            continue
+        if not in_fence:
+            in_fence = True
+            fence_char = char
+            fence_len = len(marker)
+            open_idx = i
+        elif char == fence_char and len(marker) >= fence_len:
+            in_fence = False
+            fence_char = ""
+            fence_len = 0
+            open_idx = -1
+    if in_fence and open_idx >= 0:
+        return "\n".join(lines[:open_idx]).rstrip()
+    return str(text or "").rstrip()
+
 
 # ── Persistent chat history ────────────────────────────────────────────────
 
@@ -169,6 +204,10 @@ def _science_numeric_text_score(text: str) -> float:
 def _science_guess_file_role(path: Path, preview: str) -> str:
     name = path.name.lower()
     ext = path.suffix.lower()
+    if "article" in path.parts and ext in {".pdf", ".aux", ".log", ".blg", ".bbl"}:
+        return "article_template_output"
+    if "article" in path.parts and ext in {".tex", ".bib", ".cls", ".sty"}:
+        return "article_template_file"
     if any(k in path.name for k in ("数据说明", "说明", "字段", "README", "readme")) or "description" in name:
         return "data_description_or_project_notes"
     if ext == ".pdf":
@@ -1284,12 +1323,25 @@ def science_analysis_agent():
             except Exception as exc:
                 file_profiles = []
                 file_role_summary = f"[file profiling failed: {exc}]"
-            literature_sources = [
-                p.get("abs_path")
-                for p in file_profiles
-                if p.get("suffix") == ".pdf" or p.get("role_hint") == "reference_paper_or_report"
-            ]
-            literature_sources = [str(p) for p in literature_sources if p]
+            literature_sources = []
+            seen_lit_keys = set()
+            for p in file_profiles:
+                if not (p.get("suffix") == ".pdf" or p.get("role_hint") == "reference_paper_or_report"):
+                    continue
+                abs_path = str(p.get("abs_path") or "")
+                if not abs_path:
+                    continue
+                rel_path = str(p.get("path") or "").replace("\\", "/")
+                # article/ contains templates and compiled manuscript drafts, not
+                # source literature. Loading those as papers pollutes the evidence
+                # context and duplicates the agent's own prior outputs.
+                if rel_path.startswith("article/"):
+                    continue
+                key = (Path(abs_path).name.lower(), int(p.get("size") or 0))
+                if key in seen_lit_keys:
+                    continue
+                seen_lit_keys.add(key)
+                literature_sources.append(abs_path)
             if literature_sources:
                 _prog({
                     "phase": "literature",
@@ -1321,7 +1373,7 @@ def science_analysis_agent():
                 "===== Required autonomous workflow =====",
                 "1. 数据研究：根据文件画像、数据说明、文献和必要的 web search，先判断这些数据可以支持哪些研究方向；用户指定方向时优先服从用户方向。",
                 "2. 科学问题规划：基于数据可用性和文献背景，提出可验证的科学问题、假设、反证路径和缺失信息。",
-                "3. 图件与统计规划：让 LLM 先规划论文需要哪些图件、统计量、表格和中间产物，再进入编程。",
+                "3. 图件与统计规划：让 LLM 先规划论文需要哪些图件、统计量、表格和中间产物，再进入编程；主文图件默认不超过 3 张、主表默认不超过 2 张，必须服务于机制假设检验。",
                 "4. Coding Agent 执行：自己编程解析数据格式、整理字段、做 mini test、统计和绘图；出错后不要停，必须让 LLM 根据错误自动诊断、改方案、重试。",
                 "5. 论文撰写：根据生成图件、统计结果、给定论文和 web search 证据撰写 Markdown 论文草稿，并用 Markdown 图片语法嵌入图件。",
                 "6. 交互式迭代：如果用户后续提出修改、补充或新假设，基于上一轮结果继续研究，不要从零开始。",
@@ -1329,6 +1381,7 @@ def science_analysis_agent():
                 "8. 必须使用上面的文件画像判断文件作用：numeric_text_data/structured_data/waveform_data 都应视为候选数据；reference_paper_or_report 视为参考文献；data_description_or_project_notes 视为数据说明。不要因为文件扩展名是 .txt/.doc/.pdf 就忽略它。",
                 "9. 所有结论必须有来源依据：数据文件、统计输出、图件、RAG chunk、web 文献或工具输出。证据不足就明确说明。",
                 "10. 不要把中间猜测写成事实；报告中保留“已验证/待验证/缺失信息”状态。",
+                "11. 这不是数据质量分析页面：不要把质量分级、字段清单、参数直方图、基础计数作为主线；这些只能进入补充 QC 文件。主线必须围绕科学问题，例如断层几何、弱层/低速体、应力转移、分段破裂、流体或应变释放机制。",
             ]
             if project_context:
                 prompt_parts += ["", "===== Project shared context =====", project_context[:16000]]
@@ -1371,16 +1424,26 @@ def science_analysis_agent():
                     progress_cb=_prog,
                     guidance_provider=_runtime_guidance,
                     max_steps=int(data.get("max_iterations", 4)),
+                    max_followup_rounds=int(data.get("max_followup_rounds", 2)),
+                    produce_latex=bool(data.get("produce_latex", True)),
+                    use_web_search=bool(data.get("allow_web_search", True)),
                 )
                 result = {
                     "final_report": fallback.get("summary", ""),
                     "generated_figures": fallback.get("figures", []),
                     "markdown_paper": fallback.get("markdown_paper", ""),
                     "markdown_paper_path": fallback.get("markdown_paper_path", ""),
+                    "latex_path": fallback.get("latex_path", ""),
+                    "latex_bib_path": fallback.get("latex_bib_path", ""),
+                    "latex_pdf": fallback.get("latex_pdf", ""),
+                    "latex_paper": fallback.get("latex_paper", ""),
                     "tool_log": [],
-                    "statistical_results": [
+                    "scientific_questions": fallback.get("scientific_questions", []),
+                    "statistical_results": fallback.get("statistical_results") or [
                         {"title": "Agent summary", "content": fallback.get("summary", "")}
                     ],
+                    "table_artifacts": fallback.get("table_artifacts", []),
+                    "paper_artifact_plan": fallback.get("paper_artifact_plan", ""),
                     "missing_information": [] if fallback.get("success") else ["部分步骤失败或底层 evidence agent 不可用，请查看运行日志。"],
                     "_fallback_backend": "seismo_agent",
                     "_raw_result": fallback,
@@ -1894,6 +1957,7 @@ def chat_rag():
     # 1. 会话文档（临时上传）
     session = _session_docs.get(session_id, {})
     if session.get("chunks"):
+        context_parts.append(_RAG_COMPLETE_ONLY_RULE)
         # 简单 TF-IDF 式关键词匹配（无需 GPU）
         query_words = set(user_msg.lower().split())
         scored = []
@@ -1905,8 +1969,11 @@ def chat_rag():
         top = scored[:4]
         for score, c in top:
             if score > 0 or mode == "paper_read":
+                chunk_text = _drop_incomplete_fenced_tail(c["text"])
+                if not chunk_text.strip():
+                    continue
                 context_parts.append(
-                    f"[上传文档 第{c['page']}页]\n{c['text']}"
+                    f"[上传文档 第{c['page']}页]\n{chunk_text}"
                 )
         if session.get("doc_names"):
             sources.extend(session["doc_names"])
@@ -1918,12 +1985,16 @@ def chat_rag():
             kb_hits = kb.retrieve(user_msg, top_k=5, score_threshold=0.45)
             if kb_hits:
                 lines = ["The following passages were retrieved from the knowledge base. "
-                         "Use them only if they are directly relevant to the question:\n"]
+                         "Use them only if they are directly relevant to the question:\n",
+                         _RAG_COMPLETE_ONLY_RULE]
                 total = 0
                 for chunk, score in kb_hits:
+                    chunk_text = _drop_incomplete_fenced_tail(chunk.text)
+                    if not chunk_text.strip():
+                        continue
                     entry = (
                         f"[Source: {chunk.doc_name}, page {chunk.page + 1}, "
-                        f"relevance {score:.2f}]\n{chunk.text}\n"
+                        f"relevance {score:.2f}]\n{chunk_text}\n"
                     )
                     if total + len(entry) > 2500:
                         break
@@ -2120,6 +2191,7 @@ def _build_rag_messages(data: dict):
     merged_chunks = list(project_session.get("chunks") or []) + list(session.get("chunks") or [])
     merged_doc_names = list(dict.fromkeys((project_session.get("doc_names") or []) + (session.get("doc_names") or [])))
     if merged_chunks:
+        context_parts.append(_RAG_COMPLETE_ONLY_RULE)
         query_words = set(user_msg.lower().split())
         scored = []
         for c in merged_chunks:
@@ -2129,7 +2201,9 @@ def _build_rag_messages(data: dict):
         scored.sort(key=lambda x: x[0], reverse=True)
         for score, c in scored[:4]:
             if score > 0 or mode == "paper_read":
-                context_parts.append(f"[上传文档 第{c['page']}页]\n{c['text']}")
+                chunk_text = _drop_incomplete_fenced_tail(c["text"])
+                if chunk_text.strip():
+                    context_parts.append(f"[上传文档 第{c['page']}页]\n{chunk_text}")
         if merged_doc_names:
             sources.extend(merged_doc_names)
 
@@ -2148,11 +2222,15 @@ def _build_rag_messages(data: dict):
             kb_hits = kb.retrieve(user_msg, top_k=5, score_threshold=0.45)
             if kb_hits:
                 lines = ["The following passages were retrieved from the knowledge base. "
-                         "Use them only if they are directly relevant to the question:\n"]
+                         "Use them only if they are directly relevant to the question:\n",
+                         _RAG_COMPLETE_ONLY_RULE]
                 total = 0
                 for chunk, score in kb_hits:
+                    chunk_text = _drop_incomplete_fenced_tail(chunk.text)
+                    if not chunk_text.strip():
+                        continue
                     entry = (f"[Source: {chunk.doc_name}, page {chunk.page + 1}, "
-                             f"relevance {score:.2f}]\n{chunk.text}\n")
+                             f"relevance {score:.2f}]\n{chunk_text}\n")
                     if total + len(entry) > 2500:
                         break
                     lines.append(entry)

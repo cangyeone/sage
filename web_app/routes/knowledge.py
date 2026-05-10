@@ -110,6 +110,106 @@ def _delete_generated_skill_by_name(skill_name: str) -> bool:
     return deleted
 
 
+def _safe_asset_id(text: str) -> str:
+    import re as _re
+    return _re.sub(r"[^A-Za-z0-9_.-]+", "_", str(text or "")).strip("._-") or "asset"
+
+
+def _folder_size_bytes(path: Path) -> int:
+    try:
+        if path.is_file():
+            return path.stat().st_size
+        total = 0
+        for child in path.rglob("*"):
+            if child.is_file():
+                total += child.stat().st_size
+        return total
+    except Exception:
+        return 0
+
+
+def _extract_skill_title(skill_md: Path, fallback: str) -> str:
+    try:
+        text = skill_md.read_text(encoding="utf-8", errors="ignore")
+        for line in text.splitlines():
+            s = line.strip()
+            if s.startswith("# "):
+                return s[2:].strip() or fallback
+        for line in text.splitlines():
+            s = line.strip()
+            if s.startswith("name:"):
+                return s.split(":", 1)[1].strip() or fallback
+    except Exception:
+        pass
+    return fallback
+
+
+def _list_generated_skill_assets() -> list[dict]:
+    """Return generated OpenAI-style SKILL folders as right-panel knowledge assets."""
+    assets: list[dict] = []
+    seen: set[str] = set()
+    try:
+        from seismo_skill.knowledge_indexer import (
+            _BUILTIN_SKILL_DIR,
+            _DOC_SKILL_GENERATOR,
+            _USER_SKILL_DIR,
+            KnowledgeIndexer,
+        )
+        indexer = KnowledgeIndexer()
+
+        def _add_skill(folder: Path, proj_folder: str = "", status: str = "skill_asset"):
+            key = str(folder.resolve())
+            if key in seen:
+                return
+            seen.add(key)
+            skill_md = folder / "SKILL.md"
+            if status == "skill_asset":
+                try:
+                    text = skill_md.read_text(encoding="utf-8", errors="ignore")
+                except Exception:
+                    text = ""
+                if f"generated_by: {_DOC_SKILL_GENERATOR}" not in text:
+                    return
+            title = _extract_skill_title(skill_md, folder.name) if skill_md.exists() else folder.name.replace(".building", "")
+            subskills = len(list((folder / "subskills").glob("*.md"))) if (folder / "subskills").exists() else 0
+            refs = len(list((folder / "references").glob("*.md"))) if (folder / "references").exists() else 0
+            try:
+                mtime = datetime.fromtimestamp(folder.stat().st_mtime).isoformat(timespec="seconds")
+            except Exception:
+                mtime = datetime.now().isoformat(timespec="seconds")
+            assets.append({
+                "doc_id": f"skill__{_safe_asset_id(folder.name)}",
+                "doc_name": title,
+                "n_pages": subskills,
+                "n_chunks": refs,
+                "added_at": mtime,
+                "size_kb": round(_folder_size_bytes(folder) / 1024, 1),
+                "proj_folder": proj_folder,
+                "source_type": status,
+                "skill_name": folder.name.replace(".building", "").strip("."),
+                "skill_path": str(folder),
+            })
+
+        for proj_name, entry in list(getattr(indexer, "_proj_manifest", {}).items()):
+            folder = Path(str(entry.get("skill_path") or ""))
+            if folder.exists() and (folder / "SKILL.md").exists():
+                _add_skill(folder, proj_folder=str(proj_name), status="skill_asset")
+
+        for root in (_USER_SKILL_DIR, _BUILTIN_SKILL_DIR):
+            if not root.exists():
+                continue
+            for folder in sorted(root.iterdir(), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True):
+                if not folder.is_dir():
+                    continue
+                if folder.name.endswith(".building"):
+                    _add_skill(folder, proj_folder=folder.name.replace(".building", "").strip("._"), status="skill_building")
+                elif (folder / "SKILL.md").exists():
+                    _add_skill(folder, status="skill_asset")
+    except Exception:
+        pass
+    return assets
+
+
 def _cleanup_generated_skill_artifacts_for_project(proj_name: str, skill_names: set[str] | None = None) -> int:
     """Remove generated skill folders/temp build dirs for a docs project, including failed builds."""
     removed = 0
@@ -274,6 +374,7 @@ def set_embedding_config():
 def knowledge_list():
     try:
         kb = get_kb_instance()
+        skill_assets = _list_generated_skill_assets()
         if kb:
             docs = [
                 {"doc_id": d.doc_id, "doc_name": d.doc_name,
@@ -284,8 +385,9 @@ def knowledge_list():
                  "source_type": getattr(d, "source_type", "upload")}
                 for d in kb.list_docs()
             ]
+            docs.extend(skill_assets)
             return jsonify({"ok": True, "docs": docs})
-        return jsonify({"ok": False, "error": "Knowledge base unavailable", "docs": []})
+        return jsonify({"ok": True, "docs": skill_assets, "warning": "Knowledge base unavailable"})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e), "docs": []})
 
@@ -348,6 +450,58 @@ def knowledge_index_status(task_id):
 @bp.route('/api/knowledge/delete/<doc_id>', methods=['DELETE'])
 def knowledge_delete(doc_id):
     try:
+        if str(doc_id).startswith("skill__"):
+            skill_key = str(doc_id)[len("skill__"):]
+            try:
+                import sys as _s
+                import shutil as _shutil
+                _proj = str(_PROJECT_ROOT)
+                if _proj not in _s.path:
+                    _s.path.insert(0, _proj)
+                from seismo_skill.knowledge_indexer import KnowledgeIndexer, _BUILTIN_SKILL_DIR, _USER_SKILL_DIR
+                indexer = KnowledgeIndexer()
+                skill_names = {skill_key}
+                proj_names = set()
+                direct_deleted = 0
+                for root in (_USER_SKILL_DIR, _BUILTIN_SKILL_DIR):
+                    if not root.exists():
+                        continue
+                    for folder in list(root.iterdir()):
+                        if folder.is_dir() and _safe_asset_id(folder.name) == skill_key:
+                            _shutil.rmtree(folder, ignore_errors=True)
+                            direct_deleted += 1
+                for key, entry in list(indexer._proj_manifest.items()):
+                    skill_name = str(entry.get("skill_name") or "")
+                    skill_path = Path(str(entry.get("skill_path") or ""))
+                    if (
+                        _safe_asset_id(skill_name) == skill_key
+                        or _safe_asset_id(skill_path.name) == skill_key
+                        or skill_path.name == skill_key
+                    ):
+                        proj_names.add(str(key))
+                        if skill_name:
+                            skill_names.add(skill_name)
+                        indexer._proj_manifest.pop(key, None)
+                if proj_names or skill_names:
+                    indexer._save_proj_manifest()
+                skill_deleted = False
+                for skill_name in skill_names:
+                    skill_deleted = _delete_generated_skill_by_name(skill_name) or skill_deleted
+                artifacts_deleted = 0
+                for name in (proj_names | skill_names | {skill_key}):
+                    artifacts_deleted += _cleanup_generated_skill_artifacts_for_project(name, skill_names)
+                artifacts_deleted += direct_deleted
+                return jsonify({
+                    "ok": skill_deleted or artifacts_deleted > 0,
+                    "removed_docs": 0,
+                    "removed_manifest": len(proj_names),
+                    "skill_deleted": skill_deleted,
+                    "artifacts_deleted": artifacts_deleted,
+                    "error": "" if (skill_deleted or artifacts_deleted > 0) else "Skill not found",
+                })
+            except Exception as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 500
+
         kb = get_kb_instance()
         if not kb:
             return jsonify({"ok": False, "error": "Knowledge base unavailable"})
@@ -507,14 +661,31 @@ def knowledge_build_from_dir():
             total = len(scan.new) + len(scan.modified) + len(scan.failed)
             import re as _re
             _file_line_re = _re.compile(r"^\[(\d+)/\d+\]")
+            _llm_batch_re = _re.compile(r".*LLM 批次\s+(\d+)/(\d+)")
 
             def _progress_cb(msg):
                 log_lines.append(msg)
                 # Count "[i/N]" lines to track per-file progress (0–90%)
-                m = _file_line_re.match(msg.strip())
+                stripped = msg.strip()
+                m = _file_line_re.match(stripped)
                 if m and total > 0:
                     done = int(m.group(1))
                     job["progress"] = max(5, int(done / total * 90))
+                    return
+                if "复用已标准化文档缓存" in stripped:
+                    job["progress"] = max(job.get("progress", 0), 72)
+                    return
+                if "Skill Builder Agent" in stripped:
+                    job["progress"] = max(job.get("progress", 0), 80)
+                    return
+                if "DBSCAN 文档聚类" in stripped:
+                    job["progress"] = max(job.get("progress", 0), 86)
+                    return
+                bm = _llm_batch_re.match(stripped)
+                if bm:
+                    done = int(bm.group(1))
+                    batch_total = max(1, int(bm.group(2)))
+                    job["progress"] = max(job.get("progress", 0), 88 + int(done / batch_total * 9))
 
             style_label = {
                 "openai": "OpenAI-style 文件夹 SKILL",

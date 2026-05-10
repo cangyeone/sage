@@ -73,6 +73,18 @@ Planning principles:
    scripts, tables, figures, logs, or markdown notes.
 6. Final step is result verification and Markdown paper/report drafting.
 7. Aim for 5-8 total steps — avoid over-splitting.
+8. Scientific questions must be mechanism-oriented, not data-description-oriented.
+   Avoid plans/titles that merely analyze "data quality", "catalog characteristics",
+   or "basic statistics" unless the user explicitly asks for QC. Prefer hypotheses
+   about physical process, fault geometry, stress transfer, weak zones, fluids,
+   rupture segmentation, strain release, or competing mechanisms that can be tested
+   with the available data and literature.
+9. Keep the main-paper artifact plan focused: normally 2-3 main figures and 1-2
+   tables are enough. Put data quality checks, parameter histograms, column
+   inventories, and generic distribution plots into supplementary notes/tables,
+   not into the main scientific story.
+10. The plan should read like a research design, not a data audit. Each executable
+    analysis step must name the hypothesis it tests.
 """
 
 
@@ -138,11 +150,11 @@ def _fallback_plan() -> List[PlanStep]:
     """Default science workflow when LLM parsing fails."""
     return [
         PlanStep(1, "Inspect project files and infer data schemas", "code", "Data inventory and schema notes"),
-        PlanStep(2, "Assess feasible research directions", "code", "Research direction notes"),
-        PlanStep(3, "Plan scientific questions and hypotheses", "qa", "Question and hypothesis plan"),
-        PlanStep(4, "Plan figures and statistical tests", "code", "Figure/statistics plan"),
-        PlanStep(5, "Compute statistics and generate figures", "code", "Tables and figures"),
-        PlanStep(6, "Verify results for paper synthesis", "code", "Verification notes"),
+        PlanStep(2, "Frame mechanism-oriented research questions", "qa", "Primary question, hypotheses, missing evidence"),
+        PlanStep(3, "Test the primary mechanism hypothesis", "code", "One focused evidence table and one main figure"),
+        PlanStep(4, "Test an alternative or competing hypothesis", "code", "Comparison table or targeted figure"),
+        PlanStep(5, "Prepare paper-ready evidence synthesis", "code", "Main figure/table map and verification notes"),
+        PlanStep(6, "Draft grounded Markdown paper", "qa", "Paper draft outline with evidence status"),
     ]
 
 
