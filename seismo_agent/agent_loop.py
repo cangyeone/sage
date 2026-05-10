@@ -260,6 +260,10 @@ def _write_markdown_paper(
     output_dir: str,
     llm_config: Dict,
     artifact_plan: str = "",
+    evidence_synthesis: str = "",
+    rag_context: str = "",
+    web_context: str = "",
+    followup_questions: Optional[List[str]] = None,
 ) -> str:
     """Use the LLM to synthesize a Markdown paper draft with figure links."""
     output_path = Path(output_dir) / "science_paper_draft.md"
@@ -267,6 +271,7 @@ def _write_markdown_paper(
     file_lines = "\n".join(f"- {Path(f).name}: {f}" for f in output_files) or "(no extra output files)"
     table_summary = _summarize_table_artifacts(output_files)
     step_log = memory.steps_summary()
+    followup_text = "\n\n---\n\n".join(followup_questions or [])
     prompt = f"""
 Research goal:
 {goal}
@@ -276,6 +281,18 @@ Literature/method summary:
 
 LLM-planned paper figures and tables:
 {artifact_plan or '(no explicit artifact plan was generated)'}
+
+Final claim-evidence synthesis brief:
+{evidence_synthesis or '(not available; infer cautiously only from the evidence below)'}
+
+Scientific follow-up questions and tested hypotheses:
+{followup_text or '(none)'}
+
+RAG/local knowledge evidence excerpts:
+{rag_context or '(not available)'}
+
+Online literature evidence excerpts:
+{web_context or '(not available)'}
 
 Executed analysis log:
 {step_log}
@@ -302,13 +319,18 @@ Write a grounded Markdown research paper draft in Chinese. Use this structure:
 ## References and Evidence
 
 Rules:
-- The paper must be figure/table driven: organize Results around Figure 1, Figure 2, Table 1, Table 2, etc.
+- The Results section is the scientific core. It must not read like a data-quality report or a list of figure captions.
+- Organize Results by mechanism-oriented claims, then use Figure 1, Figure 2, Table 1, Table 2 as evidence for those claims.
+- Each Results subsection must follow: claim -> data/statistical evidence -> literature/web evidence -> mechanism interpretation -> uncertainty/counter-evidence.
+- Every main claim must cite at least one generated data/table/figure artifact; if local literature or web evidence is available, connect it explicitly by title/DOI/URL/source name.
+- Prefer strong scientific headings such as "Shallow weak zones modulate reverse faulting" over descriptive headings such as "data quality and feature statistics".
 - Use only the figures that directly support the core scientific question as main figures; do not center the paper on QC/diagnostic plots. Extra diagnostic plots may be mentioned as supplementary artifacts without embedding them all.
 - Include Markdown tables for the most important statistical artifacts. If a table file is listed, summarize its key columns/values and cite the file path.
 - If no figure or table was generated, explicitly state that the analysis is incomplete and do not pretend a result is supported.
-- Distinguish verified results from hypotheses.
+- Distinguish observations, interpretations, hypotheses, and missing evidence. Use labels such as 已验证 / 部分支持 / 待验证.
 - Do not invent citations, numbers, or conclusions. If evidence is missing, say so.
 - Mention which output files support each main claim.
+- Do not merely write "Figure X shows"; explain what scientific question the figure tests and what alternative explanation remains possible.
 {_SCIENCE_FIGURE_POLICY}
 """
 
@@ -555,6 +577,314 @@ def _no_followup_needed(text: str) -> bool:
     return not text.strip() or text.strip().upper().startswith("NO_FOLLOWUP_NEEDED")
 
 
+def _synthesize_scientific_claims(
+    goal: str,
+    method_summary: str,
+    artifact_plan: str,
+    memory_context: str,
+    figures: List[str],
+    output_files: List[str],
+    rag_context: str,
+    web_context: str,
+    followup_questions: List[str],
+    llm_config: Dict,
+) -> str:
+    """Build a claim-evidence-warrant brief before final paper writing."""
+    fig_lines = "\n".join(f"- {Path(f).name}: {f}" for f in figures) or "(no generated figures)"
+    file_lines = "\n".join(f"- {Path(f).name}: {f}" for f in output_files) or "(no generated files)"
+    table_summary = _summarize_table_artifacts(output_files)
+    followup_text = "\n\n---\n\n".join(followup_questions) or "(none)"
+    prompt = f"""
+你是地震学论文的科学主编。你的任务不是润色，而是在写论文前把数据、图表、
+本地文献/RAG、在线文献线索和追问验证结果综合成“科学结论-证据-反证”简报。
+
+请输出中文 Markdown raw text，不要输出 JSON。
+
+研究目标：
+{goal}
+
+文献/方法摘要：
+{method_summary or '(not available)'}
+
+LLM 原始图表规划：
+{artifact_plan or '(not available)'}
+
+已完成计算与日志：
+{memory_context or '(none)'}
+
+生成图件：
+{fig_lines}
+
+生成文件：
+{file_lines}
+
+统计表格预览：
+{table_summary or '(none)'}
+
+科学追问与验证：
+{followup_text}
+
+RAG/本地知识库证据：
+{rag_context or '(not available)'}
+
+在线文献线索（需要谨慎引用，只能作为线索或已核验证据）：
+{web_context or '(not available)'}
+
+请严格按下面结构输出：
+
+## Core Scientific Question
+用一句话写出这篇文章真正想回答的机制问题。
+
+## Main Claim-Evidence Matrix
+| Claim | Data/statistical evidence | Local literature/RAG evidence | Web evidence | Counter-evidence or missing information | Status |
+|---|---|---|---|---|---|
+
+## Results Blueprint
+为 Results 设计 3-5 个小节。每个小节必须包含：
+- 机制型小节标题
+- 要证明/反证的具体 claim
+- 需要引用的图、表、统计文件
+- 需要连接的本地论文或在线文献证据
+- 仍然不能证明的部分
+
+## Discussion Logic
+说明这些结果怎样共同支持一个新的科学解释，而不是只描述数据质量。
+
+约束：
+- 不要把“Figure X shows...”当作结论；图件只是证据。
+- 每个 claim 必须至少有一个数据/统计/图件来源；没有就标记“待验证”。
+- 本地文献证据请尽量写出论文标题、DOI、文件名或 paper 编号。
+- 在线证据请写出标题/DOI/URL；如果只是线索，明确写“线索，待核验”。
+- 不要编造数值、引用或结论；证据不足要写缺失信息。
+- 优先挖掘类似“浅部弱层、断层几何、分段破裂、局部应力释放模式、流体/低速层控制”等机制问题。
+"""
+    try:
+        return _llm_text(prompt, llm_config, timeout=120, max_tokens=3200, temperature=0.2)
+    except Exception as exc:
+        return f"证据综合失败：{exc}"
+
+
+def _plan_artifact_refinement(
+    goal: str,
+    artifact_plan: str,
+    evidence_synthesis: str,
+    figures: List[str],
+    output_files: List[str],
+    llm_config: Dict,
+) -> str:
+    """Review figures/tables after conclusions emerge and plan add/drop/refine actions."""
+    fig_lines = "\n".join(f"- {Path(f).name}: {f}" for f in figures) or "(no generated figures)"
+    file_lines = "\n".join(f"- {Path(f).name}: {f}" for f in output_files) or "(no generated files)"
+    table_summary = _summarize_table_artifacts(output_files)
+    prompt = f"""
+你是科学论文的图表审稿人。现在已经形成了初步科学结论，请反过来审查图件和表格：
+哪些应该保留为主文图表，哪些应该降为补充/QC，哪些还缺少、需要补充生成，哪些会削弱论证。
+
+输出 raw text，不要 JSON。若不需要任何调整，请只输出：
+NO_ARTIFACT_CHANGE: 原因
+
+研究目标：
+{goal}
+
+原始图表规划：
+{artifact_plan or '(not available)'}
+
+科学结论与证据综合：
+{evidence_synthesis or '(not available)'}
+
+已有图件：
+{fig_lines}
+
+已有文件：
+{file_lines}
+
+表格/统计预览：
+{table_summary or '(none)'}
+
+请按以下结构输出：
+
+## Main-paper artifact decision
+- KEEP_MAIN: 列出应作为主文 Figure/Table 的文件名和原因。
+- DEMOTE_SUPPLEMENT: 列出应降为补充或 QC 的文件名和原因。
+- REMOVE_FROM_ARGUMENT: 列出不应在论文论证中使用的文件名和原因。
+
+## Missing artifact plan
+只列出真正能加强核心科学结论的缺失图件/表格。每项必须写：
+- artifact name
+- scientific claim it tests
+- input files/statistics
+- expected computation
+- why existing artifacts are insufficient
+
+## Caption/argument repair
+指出哪些图表 caption 或正文引用需要从“描述图”改成“证明 claim”。
+
+约束：
+- 不要为了好看而加图；只为证明或反证核心科学结论加图。
+- 不要建议删除磁盘文件；只决定主文/补充/不引用。
+- 缺失图表最多 2 个，缺失主表最多 1 个。
+- 如果证据不足，建议生成 missing_information.md，而不是编造图件。
+"""
+    try:
+        return _llm_text(prompt, llm_config, timeout=90, max_tokens=2200, temperature=0.2)
+    except Exception as exc:
+        return f"NO_ARTIFACT_CHANGE: artifact refinement planning failed: {exc}"
+
+
+def _no_artifact_change_needed(text: str) -> bool:
+    return not text.strip() or text.strip().upper().startswith("NO_ARTIFACT_CHANGE")
+
+
+def _three_reviewer_review(
+    goal: str,
+    draft_text: str,
+    evidence_synthesis: str,
+    artifact_refinement_plan: str,
+    figures: List[str],
+    output_files: List[str],
+    rag_context: str,
+    web_context: str,
+    llm_config: Dict,
+    round_no: int,
+) -> str:
+    """Simulate three strict reviewers and return raw review text."""
+    fig_lines = "\n".join(f"- {Path(f).name}: {f}" for f in figures) or "(no generated figures)"
+    file_lines = "\n".join(f"- {Path(f).name}: {f}" for f in output_files) or "(no generated files)"
+    table_summary = _summarize_table_artifacts(output_files, max_chars=5000)
+    prompt = f"""
+你是一个严格的期刊内部审稿委员会，请模拟 3 个审稿人审稿。
+目标是让 Scientific Analysis Agent 的论文从“简单描述数据”提升到“可投稿的科学论证”。
+
+输出 raw text，不要 JSON。必须包含下面四行之一的判定格式：
+REVIEWER_1_DECISION: ACCEPT|MINOR|MAJOR|REJECT
+REVIEWER_2_DECISION: ACCEPT|MINOR|MAJOR|REJECT
+REVIEWER_3_DECISION: ACCEPT|MINOR|MAJOR|REJECT
+OVERALL_DECISION: ACCEPT|MINOR|MAJOR|REJECT
+
+审稿人角色：
+1. Reviewer 1 - Science/Mechanism: 是否提出了新的机制性科学问题？结论是否超越数据质量描述？
+2. Reviewer 2 - Data/Statistics/Reproducibility: 数据解析、统计、图表和代码证据是否足够支撑结论？
+3. Reviewer 3 - Literature/Evidence/Writing: 是否充分结合本地论文、RAG、web search，是否避免幻觉，引用是否清楚？
+
+第 {round_no} 轮审稿。
+
+研究目标：
+{goal}
+
+当前论文草稿：
+{draft_text[:18000]}
+
+科学证据综合：
+{evidence_synthesis or '(not available)'}
+
+结论驱动图表复审：
+{artifact_refinement_plan or '(not available)'}
+
+已有图件：
+{fig_lines}
+
+已有文件：
+{file_lines}
+
+表格/统计预览：
+{table_summary or '(none)'}
+
+RAG/本地证据：
+{rag_context or '(not available)'}
+
+Web 证据：
+{web_context or '(not available)'}
+
+每个审稿人请给：
+- Major concern(s)
+- Required revision(s)
+- Suggested figure/table changes
+- Evidence/citation gaps
+- 是否需要新增计算或只是改写
+
+判定标准：
+- ACCEPT/MINOR：科学主张清楚，主要证据链完整，只需措辞、引用、图注或小补充。
+- MAJOR：核心科学结论仍太弱，缺少关键图/表/统计/文献证据，或 Results 仍像数据描述。
+- REJECT：结论无法由现有数据支持，或明显有编造/错误证据。
+"""
+    try:
+        return _llm_text(prompt, llm_config, timeout=120, max_tokens=3500, temperature=0.15)
+    except Exception as exc:
+        return f"OVERALL_DECISION: MINOR\n审稿模拟失败：{exc}"
+
+
+def _review_is_minor_or_better(review_text: str) -> bool:
+    text = (review_text or "").upper()
+    if "REJECT" in text or "MAJOR" in text:
+        return False
+    if "OVERALL_DECISION: ACCEPT" in text or "OVERALL_DECISION: MINOR" in text:
+        return True
+    decisions = re.findall(r"REVIEWER_\d+_DECISION:\s*(ACCEPT|MINOR|MAJOR|REJECT)", text)
+    return bool(decisions) and all(d in {"ACCEPT", "MINOR"} for d in decisions)
+
+
+def _review_requests_more_analysis(review_text: str) -> bool:
+    text = (review_text or "").lower()
+    triggers = (
+        "new computation", "additional computation", "新增计算", "补充计算",
+        "新增图", "补图", "additional figure", "new figure",
+        "新增表", "补表", "additional table", "new table",
+    )
+    return any(t in text for t in triggers)
+
+
+def _revise_markdown_paper_with_reviews(
+    goal: str,
+    draft_text: str,
+    review_text: str,
+    evidence_synthesis: str,
+    artifact_refinement_plan: str,
+    figures: List[str],
+    output_files: List[str],
+    llm_config: Dict,
+) -> str:
+    """Revise the Markdown paper according to the three-reviewer critique."""
+    fig_lines = "\n".join(f"- {Path(f).name}: {f}" for f in figures) or "(no generated figures)"
+    file_lines = "\n".join(f"- {Path(f).name}: {f}" for f in output_files) or "(no generated files)"
+    prompt = f"""
+你是论文第一作者。请根据三位严格审稿人的意见修订 Markdown 论文草稿。
+
+研究目标：
+{goal}
+
+审稿意见：
+{review_text}
+
+科学证据综合：
+{evidence_synthesis or '(not available)'}
+
+结论驱动图表复审：
+{artifact_refinement_plan or '(not available)'}
+
+可用图件：
+{fig_lines}
+
+可用文件：
+{file_lines}
+
+当前草稿：
+{draft_text[:20000]}
+
+修订要求：
+- 保留 Markdown 结构，并输出完整修订稿。
+- Results 必须以科学 claim 为小节核心，而不是图件说明。
+- 对每个核心 claim 明确写出数据/表格/图件证据、文献或 web 证据、反证与缺失信息。
+- 根据审稿意见把不支撑主线的图件降为补充，不要强行嵌入。
+- 不要编造数字、引用或不存在的图表。证据不足就写待验证。
+- 使用 Markdown 图片语法嵌入主文图件，例如 ![caption](figure.png)。
+"""
+    try:
+        text = _llm_text(prompt, llm_config, timeout=120, max_tokens=4200, temperature=0.2)
+        return text.strip() or draft_text
+    except Exception:
+        return draft_text
+
+
 def _is_table_artifact(path: str | Path) -> bool:
     p = Path(path)
     if p.suffix.lower() not in _TABLE_EXTS:
@@ -707,6 +1037,7 @@ class SeismoAgent:
         max_steps: int = 8,
         max_retries: int = 2,
         max_followup_rounds: int = 2,
+        max_review_rounds: int = 3,
         produce_latex: bool = True,
         use_web_search: bool = True,
     ) -> Dict:
@@ -729,6 +1060,8 @@ class SeismoAgent:
             Retries per step on failure.
         max_followup_rounds : int
             Number of mechanism-oriented scientific follow-up rounds to run.
+        max_review_rounds : int
+            Number of three-reviewer manuscript critique/revision rounds.
         produce_latex : bool
             If an article/ LaTeX template exists under the project, ask CodeEngine
             to convert the Markdown paper and artifacts into a LaTeX draft.
@@ -1144,6 +1477,162 @@ class SeismoAgent:
             except Exception as exc:
                 cb(f"   ⚠ 第 {round_no} 轮追问验证失败：{exc}")
 
+        final_rag_context = ""
+        final_web_context = ""
+        evidence_synthesis = ""
+        artifact_refinement_plan = ""
+        try:
+            cb("\n🧠 综合数据、图表、本地论文和在线证据，提炼科学结论...")
+            final_query = "\n".join([
+                goal,
+                artifact_plan[:3000],
+                self.memory.accumulated_context(max_chars=6000),
+                _summarize_table_artifacts(all_output_files, max_chars=3000),
+                "\n\n".join(followup_questions)[-3000:],
+            ])
+            final_rag_context = _build_agent_rag_context(final_query, top_k=8, max_chars=8000)
+            final_web_context = _build_agent_web_context(final_query, max_results=6, max_chars=8000) if use_web_search else ""
+            evidence_synthesis = _synthesize_scientific_claims(
+                goal=goal,
+                method_summary=method_summary or effective_context,
+                artifact_plan=artifact_plan,
+                memory_context=self.memory.accumulated_context(max_chars=12000),
+                figures=all_figures,
+                output_files=all_output_files,
+                rag_context=final_rag_context,
+                web_context=final_web_context,
+                followup_questions=followup_questions,
+                llm_config=self.llm_config,
+            )
+            if evidence_synthesis:
+                synthesis_path = Path(output_dir) / "scientific_evidence_synthesis.md"
+                synthesis_path.write_text(evidence_synthesis, encoding="utf-8")
+                if str(synthesis_path) not in all_output_files:
+                    all_output_files.append(str(synthesis_path))
+                self.memory.notes.append("最终科学证据综合：\n" + evidence_synthesis)
+                cb(f"   ✓ 科学证据综合完成: {synthesis_path}")
+        except Exception as exc:
+            cb(f"   ⚠ 科学证据综合失败：{exc}")
+
+        if evidence_synthesis:
+            try:
+                cb("\n🧪 图表复审：根据已形成结论反向检查需要增加、降级或移除的图表...")
+                artifact_refinement_plan = _plan_artifact_refinement(
+                    goal=goal,
+                    artifact_plan=artifact_plan,
+                    evidence_synthesis=evidence_synthesis,
+                    figures=all_figures,
+                    output_files=all_output_files,
+                    llm_config=self.llm_config,
+                )
+                if artifact_refinement_plan:
+                    refine_path = Path(output_dir) / "artifact_refinement_plan.md"
+                    refine_path.write_text(artifact_refinement_plan, encoding="utf-8")
+                    if str(refine_path) not in all_output_files:
+                        all_output_files.append(str(refine_path))
+                    self.memory.notes.append("结论驱动图表复审：\n" + artifact_refinement_plan)
+                    cb(f"   ✓ 图表复审完成: {refine_path}")
+
+                if artifact_refinement_plan and not _no_artifact_change_needed(artifact_refinement_plan):
+                    cb("   ↪ 图表复审建议调整，调用 CodeEngine 补充关键图表/主文选择清单...")
+                    try:
+                        from seismo_code.code_engine import CodeEngine
+
+                        engine = CodeEngine(
+                            llm_config=self.llm_config,
+                            project_root=self.project_root,
+                            python_executable=self.llm_config.get("python_executable"),
+                        )
+                        refine_request = "\n".join([
+                            "You are refining publication artifacts after the scientific conclusions are known.",
+                            "Do not delete existing files. Demoted figures should be listed as supplementary, not removed from disk.",
+                            "",
+                            "Research goal:",
+                            goal,
+                            "",
+                            "Scientific evidence synthesis:",
+                            evidence_synthesis,
+                            "",
+                            "Artifact refinement plan:",
+                            artifact_refinement_plan,
+                            "",
+                            "Existing analysis memory and artifacts:",
+                            self.memory.accumulated_context(max_chars=14000),
+                            "",
+                            "Table/statistical previews:",
+                            _summarize_table_artifacts(all_output_files) or "(none)",
+                            "",
+                            "Existing figures:",
+                            "\n".join(all_figures) or "(none)",
+                            "",
+                            f"Project root: {self.project_root}",
+                            f"Output directory: {output_dir}",
+                            "",
+                            "Task:",
+                            "- Generate only the ADD_NEEDED artifacts from the refinement plan that can be supported by current data.",
+                            "- Create main_artifact_selection.md listing KEEP_MAIN, DEMOTE_SUPPLEMENT, REMOVE_FROM_ARGUMENT, and ADD_NEEDED outcomes.",
+                            "- If a requested artifact is unsupported, write why in main_artifact_selection.md or missing_information.md.",
+                            "- At most two new figures and one new table. Prefer composite evidence figures over many diagnostic plots.",
+                            "- Print created file paths and the final main-figure/table set.",
+                        ])
+
+                        def _refine_progress(d):
+                            msg = d.get("message", "") if isinstance(d, dict) else str(d)
+                            phase = d.get("phase", "code") if isinstance(d, dict) else "code"
+                            attempt = d.get("attempt", 0) if isinstance(d, dict) else 0
+                            if msg:
+                                cb(f"   [Artifact Review CodeEngine:{phase}/{attempt}] {msg}")
+
+                        refine_run = engine.run(
+                            refine_request,
+                            max_debug_rounds=max_retries + 2,
+                            timeout=180,
+                            run_verify=False,
+                            on_progress=_refine_progress,
+                            output_dir=output_dir,
+                        )
+                        if refine_run.exec_result:
+                            extra_figs = refine_run.exec_result.figures or []
+                            extra_files = refine_run.exec_result.output_files or []
+                            all_figures.extend([f for f in extra_figs if f not in all_figures])
+                            all_output_files.extend([f for f in extra_files if f not in all_output_files])
+                            self.memory.record_step(StepResult(
+                                step_index=len(self.memory.step_results) + 1,
+                                description="结论驱动图表复审：补充缺失图表并生成主文/补充图表选择清单",
+                                code=refine_run.code,
+                                stdout=refine_run.stdout,
+                                figures=extra_figs,
+                                output_files=extra_files,
+                                success=refine_run.success,
+                                error=(refine_run.exec_result.error if not refine_run.success else ""),
+                            ))
+                            cb(f"   ✓ 图表复审执行完成：新增图件 {len(extra_figs)}，文件 {len(extra_files)}")
+                        else:
+                            cb(f"   ⚠ 图表复审没有执行结果：{refine_run.response[:240]}")
+                    except Exception as exc:
+                        cb(f"   ⚠ 图表复审执行失败：{exc}")
+
+                    cb("   ↪ 根据复审后的图表集合重新综合科学证据...")
+                    evidence_synthesis = _synthesize_scientific_claims(
+                        goal=goal,
+                        method_summary=method_summary or effective_context,
+                        artifact_plan=(artifact_plan + "\n\n===== Artifact refinement plan =====\n" + artifact_refinement_plan),
+                        memory_context=self.memory.accumulated_context(max_chars=14000),
+                        figures=all_figures,
+                        output_files=all_output_files,
+                        rag_context=final_rag_context,
+                        web_context=final_web_context,
+                        followup_questions=followup_questions,
+                        llm_config=self.llm_config,
+                    )
+                    if evidence_synthesis:
+                        synthesis_path = Path(output_dir) / "scientific_evidence_synthesis.md"
+                        synthesis_path.write_text(evidence_synthesis, encoding="utf-8")
+                        self.memory.notes.append("图表复审后的最终科学证据综合：\n" + evidence_synthesis)
+                        cb("   ✓ 已完成复审后的科学证据再综合")
+            except Exception as exc:
+                cb(f"   ⚠ 图表复审失败：{exc}")
+
         markdown_paper_path = ""
         try:
             cb("\n📝 基于图件、统计结果和文献摘要撰写 Markdown 论文草稿...")
@@ -1155,12 +1644,157 @@ class SeismoAgent:
                 output_files=all_output_files,
                 output_dir=output_dir,
                 llm_config=self.llm_config,
-                artifact_plan=artifact_plan,
+                artifact_plan=(artifact_plan + "\n\n===== Conclusion-driven artifact refinement =====\n" + artifact_refinement_plan),
+                evidence_synthesis=evidence_synthesis,
+                rag_context=final_rag_context,
+                web_context=final_web_context,
+                followup_questions=followup_questions,
             )
             all_output_files.append(markdown_paper_path)
             cb(f"   ✓ Markdown 论文草稿: {markdown_paper_path}")
         except Exception as e:
             cb(f"   ⚠ Markdown 论文草稿生成失败：{e}")
+
+        review_reports: List[str] = []
+        if markdown_paper_path and max_review_rounds > 0:
+            cb("\n🧐 三审稿人内部评审：循环修改直到小修或达到轮次上限...")
+            for review_round in range(1, max_review_rounds + 1):
+                try:
+                    draft_text = Path(markdown_paper_path).read_text(encoding="utf-8", errors="ignore")
+                    review_text = _three_reviewer_review(
+                        goal=goal,
+                        draft_text=draft_text,
+                        evidence_synthesis=evidence_synthesis,
+                        artifact_refinement_plan=artifact_refinement_plan,
+                        figures=all_figures,
+                        output_files=all_output_files,
+                        rag_context=final_rag_context,
+                        web_context=final_web_context,
+                        llm_config=self.llm_config,
+                        round_no=review_round,
+                    )
+                    review_path = Path(output_dir) / f"peer_review_round_{review_round}.md"
+                    review_path.write_text(review_text, encoding="utf-8")
+                    review_reports.append(str(review_path))
+                    if str(review_path) not in all_output_files:
+                        all_output_files.append(str(review_path))
+                    self.memory.notes.append(f"三审稿人评审第 {review_round} 轮：\n{review_text}")
+                    cb(f"   ✓ 第 {review_round} 轮审稿完成: {review_path}")
+
+                    if _review_is_minor_or_better(review_text):
+                        cb(f"   ✓ 三位审稿人已达到小修/接收状态，停止评审循环。")
+                        break
+
+                    if _review_requests_more_analysis(review_text):
+                        cb("   ↪ 审稿意见要求补充证据，调用 CodeEngine 做最多一轮针对性补充分析...")
+                        try:
+                            from seismo_code.code_engine import CodeEngine
+
+                            engine = CodeEngine(
+                                llm_config=self.llm_config,
+                                project_root=self.project_root,
+                                python_executable=self.llm_config.get("python_executable"),
+                            )
+                            review_code_request = "\n".join([
+                                "You are addressing peer-review comments for Scientific Analysis Agent.",
+                                "Run only targeted additional analyses needed by the review; do not make generic QC plots.",
+                                "",
+                                "Research goal:",
+                                goal,
+                                "",
+                                "Reviewer comments:",
+                                review_text,
+                                "",
+                                "Current evidence synthesis:",
+                                evidence_synthesis,
+                                "",
+                                "Existing artifacts and memory:",
+                                self.memory.accumulated_context(max_chars=14000),
+                                "",
+                                "Table/statistical previews:",
+                                _summarize_table_artifacts(all_output_files) or "(none)",
+                                "",
+                                "Existing figures:",
+                                "\n".join(all_figures) or "(none)",
+                                "",
+                                f"Project root: {self.project_root}",
+                                f"Output directory: {output_dir}",
+                                "",
+                                "Task:",
+                                "- Generate at most one targeted figure and one targeted table/note that directly answers the reviewers.",
+                                "- Create reviewer_response_analysis.md summarizing what was computed, what changed, and what remains unsupported.",
+                                "- If the requested evidence cannot be produced from current data, explain that clearly instead of inventing results.",
+                                "- Print all created file paths.",
+                            ])
+
+                            def _review_code_progress(d):
+                                msg = d.get("message", "") if isinstance(d, dict) else str(d)
+                                phase = d.get("phase", "code") if isinstance(d, dict) else "code"
+                                attempt = d.get("attempt", 0) if isinstance(d, dict) else 0
+                                if msg:
+                                    cb(f"   [Peer Review CodeEngine:{phase}/{attempt}] {msg}")
+
+                            review_run = engine.run(
+                                review_code_request,
+                                max_debug_rounds=max_retries + 2,
+                                timeout=180,
+                                run_verify=False,
+                                on_progress=_review_code_progress,
+                                output_dir=output_dir,
+                            )
+                            if review_run.exec_result:
+                                extra_figs = review_run.exec_result.figures or []
+                                extra_files = review_run.exec_result.output_files or []
+                                all_figures.extend([f for f in extra_figs if f not in all_figures])
+                                all_output_files.extend([f for f in extra_files if f not in all_output_files])
+                                self.memory.record_step(StepResult(
+                                    step_index=len(self.memory.step_results) + 1,
+                                    description=f"三审稿人第 {review_round} 轮：按审稿意见补充针对性分析",
+                                    code=review_run.code,
+                                    stdout=review_run.stdout,
+                                    figures=extra_figs,
+                                    output_files=extra_files,
+                                    success=review_run.success,
+                                    error=(review_run.exec_result.error if not review_run.success else ""),
+                                ))
+                                cb(f"   ✓ 审稿补充分析完成：新增图件 {len(extra_figs)}，文件 {len(extra_files)}")
+                        except Exception as exc:
+                            cb(f"   ⚠ 审稿补充分析失败：{exc}")
+
+                        evidence_synthesis = _synthesize_scientific_claims(
+                            goal=goal,
+                            method_summary=method_summary or effective_context,
+                            artifact_plan=(artifact_plan + "\n\n===== Artifact refinement plan =====\n" + artifact_refinement_plan),
+                            memory_context=self.memory.accumulated_context(max_chars=14000),
+                            figures=all_figures,
+                            output_files=all_output_files,
+                            rag_context=final_rag_context,
+                            web_context=final_web_context,
+                            followup_questions=followup_questions,
+                            llm_config=self.llm_config,
+                        )
+                        synthesis_path = Path(output_dir) / "scientific_evidence_synthesis.md"
+                        synthesis_path.write_text(evidence_synthesis, encoding="utf-8")
+
+                    revised_text = _revise_markdown_paper_with_reviews(
+                        goal=goal,
+                        draft_text=Path(markdown_paper_path).read_text(encoding="utf-8", errors="ignore"),
+                        review_text=review_text,
+                        evidence_synthesis=evidence_synthesis,
+                        artifact_refinement_plan=artifact_refinement_plan,
+                        figures=all_figures,
+                        output_files=all_output_files,
+                        llm_config=self.llm_config,
+                    )
+                    revision_path = Path(output_dir) / f"science_paper_revision_round_{review_round}.md"
+                    revision_path.write_text(revised_text, encoding="utf-8")
+                    Path(markdown_paper_path).write_text(revised_text, encoding="utf-8")
+                    if str(revision_path) not in all_output_files:
+                        all_output_files.append(str(revision_path))
+                    cb(f"   ✓ 已按第 {review_round} 轮审稿意见修订论文: {revision_path}")
+                except Exception as exc:
+                    cb(f"   ⚠ 第 {review_round} 轮审稿/修订失败：{exc}")
+                    break
 
         if produce_latex:
             article_dir = Path(self.project_root) / "article"
@@ -1201,8 +1835,23 @@ class SeismoAgent:
                         "LLM-planned paper figures and tables:",
                         artifact_plan or "(not available)",
                         "",
+                        "Conclusion-driven artifact refinement plan:",
+                        artifact_refinement_plan or "(not available)",
+                        "",
                         "Scientific follow-up questions and tested hypotheses:",
                         "\n\n---\n\n".join(followup_questions) or "(none)",
+                        "",
+                        "Final claim-evidence synthesis brief:",
+                        evidence_synthesis or "(not available)",
+                        "",
+                        "RAG/local evidence excerpts:",
+                        final_rag_context or "(not available)",
+                        "",
+                        "Online literature evidence excerpts:",
+                        final_web_context or "(not available)",
+                        "",
+                        "Internal peer-review reports:",
+                        "\n".join(review_reports) or "(none)",
                         "",
                         "Step memory and evidence summary:",
                         self.memory.accumulated_context(max_chars=14000),
@@ -1304,10 +1953,16 @@ class SeismoAgent:
             "output_dir": output_dir,
             "method_summary": method_summary,
             "paper_artifact_plan": artifact_plan,
+            "scientific_evidence_synthesis": evidence_synthesis,
+            "artifact_refinement_plan": artifact_refinement_plan,
+            "peer_review_reports": review_reports,
             "scientific_questions": followup_questions,
             "table_artifacts": _table_artifacts(all_output_files),
             "statistical_results": [
                 {"title": "论文图表规划", "content": artifact_plan},
+                {"title": "科学证据综合", "content": evidence_synthesis},
+                {"title": "结论驱动图表复审", "content": artifact_refinement_plan},
+                {"title": "三审稿人内部评审", "content": "\n".join(review_reports)},
                 {"title": "科学追问", "content": "\n\n---\n\n".join(followup_questions)},
                 {"title": "表格/统计产物", "content": _summarize_table_artifacts(all_output_files)},
             ],
