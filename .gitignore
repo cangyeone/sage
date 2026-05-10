@@ -14,3 +14,36 @@ seismo_skill/docs/GMT_docs-6.5
 seismo_rag/*
 !seismo_rag/.gitkeep
 /deliverables
+
+# User test / runtime artifacts
+/web_app/results/
+/seismo_skill/skills/pnsn_phase_detection/pnsn/
+.aider.tags.cache.v4/
+/sci-agent-article
+# Large model files generated or downloaded during local tests
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.jit
+
+# Local run logs and transient GMT grids
+*.log
+*.err
+*.grd
+gmt.history
+
+# Local proposal / investor document drafts
+SAGE_SeismicX_投资人介绍.docx
+SAGE_SeismicX_投资人介绍.pdf
+
+# Auto-generated skills from seismo_skill/docs or Knowledge Builder
+/seismo_skill/skills/_gen_*/
+/seismo_skill/skills/_gen_*.md
+
+# Project-local user/imported skills
+/seismo_skill/user_skills/
+seismo_skill/skills/gmt6/references/manifest.md
+/seismo_skill/skills/gmt6
+/seismo_skill/skills/gmt6_chinese_manual
+/web_app/examples/science_analysis_agent

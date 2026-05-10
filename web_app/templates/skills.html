@@ -160,7 +160,8 @@ body { background:#f5f7fa; min-height:100vh; }
     <div class="collapse navbar-collapse">
       <ul class="navbar-nav ms-auto gap-1">
         <li class="nav-item"><a class="nav-link" href="/chat"><i class="bi bi-chat-dots"></i> <span data-i18n="nav_chat">对话</span></a></li>
-        <li class="nav-item"><a class="nav-link" href="/evidence-geo-agent"><i class="bi bi-geo-alt-fill"></i> <span data-i18n="nav_geo">地学解译</span> <span class="badge text-bg-warning fw-normal" style="font-size:.62rem;vertical-align:middle;">alpha</span></a></li>
+        <li class="nav-item"><a class="nav-link" href="/parameter-optimization-agent"><i class="bi bi-diagram-3-fill"></i> <span data-i18n="nav_opt">参数优化</span> <span class="badge text-bg-warning fw-normal" style="font-size:.62rem;vertical-align:middle;">alpha</span></a></li>
+        <li class="nav-item"><a class="nav-link" href="/science-analysis-agent"><i class="bi bi-beaker"></i> <span data-i18n="nav_science">科学分析</span> <span class="badge text-bg-warning fw-normal" style="font-size:.62rem;vertical-align:middle;">alpha</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/knowledge"><i class="bi bi-journal-bookmark-fill"></i> <span data-i18n="nav_knowledge">知识库</span></a></li>
         <li class="nav-item"><a class="nav-link active fw-bold" href="/skills"><i class="bi bi-lightning-charge"></i> <span data-i18n="nav_skills">技能</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/llm-settings"><i class="bi bi-sliders"></i> Config</a></li>
@@ -209,7 +210,7 @@ body { background:#f5f7fa; min-height:100vh; }
         <div id="skillList"></div>
         <div class="skill-dir-hint mt-2">
           <i class="bi bi-folder2 me-1"></i><span data-i18n="hint_skill_dir">自定义技能存储于：</span>
-          <br><code>~/.seismicx/skills/</code>
+          <br><code>seismo_skill/user_skills/</code>
         </div>
       </div>
 
@@ -417,7 +418,7 @@ body { background:#f5f7fa; min-height:100vh; }
 <script>
 const I18N = {
   zh: {
-    nav_chat: '对话', nav_geo: '地学解译', nav_knowledge: '知识库', nav_skills: '技能',
+    nav_chat: '对话', nav_opt:'参数优化', nav_science: '科学分析', nav_knowledge: '知识库', nav_skills: '技能',
     page_title: '技能管理', page_sub: '查看内置技能，创建和编辑自定义技能',
     section_user: '自定义', section_generated: 'RAG 生成', section_builtin: '内置',
     label_user: '自定义', label_builtin: '内置',
@@ -426,7 +427,7 @@ const I18N = {
     empty_state: '选择左侧技能查看详情，或点击「新建技能」创建'
   },
   en: {
-    nav_chat: 'Chat', nav_geo: 'Geo Agent', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
+    nav_chat: 'Chat', nav_opt:'Param Optimizer', nav_science: 'Science Agent', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
     page_title: 'Skill Manager', page_sub: 'View built-in skills, create and edit custom skills',
     section_user: 'Custom', section_generated: 'RAG Generated', section_builtin: 'Built-in',
     label_user: 'Custom', label_builtin: 'Built-in',
@@ -546,15 +547,23 @@ function skillCardHtml(s, catIcons) {
   const isGen   = s.source === 'generated';
   const isUser  = s.source === 'user';
   const srcClass = isGen ? 'src-generated' : isUser ? 'src-user' : 'src-builtin';
-  const srcLabel = isGen ? 'RAG·生成' : isUser ? T('label_user') : T('label_builtin');
+  const isOpenAI = s.format === 'openai_folder_skill';
+  const srcLabel = isGen ? 'SKILL·生成' : isUser ? T('label_user') : T('label_builtin');
   const isActive = currentSkill && currentSkill.name === s.name ? 'active' : '';
   const ragBadge = (s.rag_sources && s.rag_sources.length)
     ? `<span class="rag-badge ms-1">RAG</span>` : '';
+  const openaiBadge = isOpenAI ? `<span class="rag-badge ms-1" title="OpenAI-style folder SKILL">OpenAI</span>` : '';
+  const refCount = Number(s.ref_count || 0);
+  const resCount = Array.isArray(s.resource_manifest) ? s.resource_manifest.length : 0;
+  const metaBits = [];
+  if (s.category) metaBits.push(s.category);
+  if (refCount) metaBits.push(`${refCount} refs`);
+  if (resCount) metaBits.push(`${resCount} resources`);
   return `<div class="skill-card ${isActive}" data-name="${s.name}" onclick="openSkill('${s.name}')">
     <span class="skill-icon">${icon}</span>
     <div class="skill-info">
-      <div class="skill-name">${s.name}${ragBadge}</div>
-      <div class="skill-cat">${s.category || '—'}</div>
+      <div class="skill-name">${s.display_name || s.name}${ragBadge}${openaiBadge}</div>
+      <div class="skill-cat">${metaBits.join(' · ') || '—'}</div>
     </div>
     <span class="skill-src ${srcClass}">${srcLabel}</span>
   </div>`;
@@ -588,9 +597,9 @@ async function openSkill(name) {
   document.getElementById('emptyState').style.display = 'none';
   document.getElementById('editorPanel').style.display = '';
 
-  document.getElementById('editorTitle').textContent = name;
+  document.getElementById('editorTitle').textContent = skill.display_name || name;
   const badge = document.getElementById('editorSrcBadge');
-  const srcMap = { user: ['src-user', T('label_user')], generated: ['src-generated', 'RAG·生成'], builtin: ['src-builtin', T('label_builtin')] };
+  const srcMap = { user: ['src-user', T('label_user')], generated: ['src-generated', 'SKILL·生成'], builtin: ['src-builtin', T('label_builtin')] };
   const [srcCls, srcLbl] = srcMap[skill.source] || srcMap.builtin;
   badge.className = 'skill-src ' + srcCls;
   badge.textContent = srcLbl;
@@ -608,6 +617,25 @@ async function openSkill(name) {
     hintEl.style.display = 'block';
   } else {
     hintEl.style.display = 'none';
+  }
+
+  let resourceEl = document.getElementById('skillResourceHint');
+  if (!resourceEl) {
+    resourceEl = document.createElement('div');
+    resourceEl.id = 'skillResourceHint';
+    resourceEl.style.cssText = 'font-size:.76rem;color:#3949ab;padding:.25rem .4rem;background:#eef0ff;border-radius:6px;margin-bottom:.4rem;';
+    document.getElementById('editorPanel').insertBefore(resourceEl, document.getElementById('editorPanel').querySelector('.editor-tabs'));
+  }
+  const refCount = Number(skill.ref_count || 0);
+  const resources = Array.isArray(skill.resource_manifest) ? skill.resource_manifest : [];
+  if (skill.format === 'openai_folder_skill' || refCount || resources.length) {
+    const resourceText = resources.length
+      ? `，${resources.length} 个 bundled resources`
+      : '';
+    resourceEl.innerHTML = `<i class="bi bi-folder-check me-1"></i>OpenAI-style SKILL：${refCount} 个 references${resourceText}`;
+    resourceEl.style.display = 'block';
+  } else {
+    resourceEl.style.display = 'none';
   }
 
   // Edit / delete buttons — user and generated can both be edited/deleted
@@ -703,7 +731,9 @@ async function saveSkill() {
 // ── Delete skill ──────────────────────────────────────────────────────────
 async function deleteSkill() {
   if (!currentSkill || !['user', 'generated'].includes(currentSkill.source)) return;
-  const typeLabel = currentSkill.source === 'generated' ? '自动生成的 RAG 技能' : '自定义技能';
+  const typeLabel = currentSkill.format === 'openai_folder_skill'
+    ? 'OpenAI-style SKILL'
+    : (currentSkill.source === 'generated' ? '自动生成的 SKILL' : '自定义技能');
   if (!confirm(`确认删除${typeLabel}「${currentSkill.name}」？`)) return;
   try {
     const r = await fetch(`/api/skills/${encodeURIComponent(currentSkill.name)}`, {method:'DELETE'});

@@ -6,6 +6,7 @@ from .skills     import bp as skills_bp
 from .knowledge  import bp as knowledge_bp
 from .code       import bp as code_bp
 from .chat       import bp as chat_bp
+from .parameter_optimization import bp as parameter_optimization_bp
 from .records    import bp as records_bp
 from .smoke      import bp as smoke_bp
 
@@ -18,5 +19,6 @@ def register_blueprints(app):
     app.register_blueprint(knowledge_bp)
     app.register_blueprint(code_bp)
     app.register_blueprint(chat_bp)
+    app.register_blueprint(parameter_optimization_bp)
     app.register_blueprint(records_bp)
     app.register_blueprint(smoke_bp)

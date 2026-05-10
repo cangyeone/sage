@@ -5,7 +5,7 @@ description: Use this skill for seismic phase picking, earthquake monitoring, Pg
 
 # PNSN Phase Detection and Earthquake Monitoring
 
-This skill wraps the external `pnsn/` project cloned at the SAGE repo root for automatic seismic phase picking and event monitoring. Use it when a task involves:
+This skill wraps the skill-local `pnsn/` project stored at `seismo_skill/skills/pnsn_phase_detection/pnsn/` for automatic seismic phase picking and event monitoring. Use it when a task involves:
 
 - detecting or picking Pg, Sg, Pn, Sn, P, or S arrivals;
 - running deep-learning pickers on continuous 3-component waveforms;
@@ -16,15 +16,15 @@ This skill wraps the external `pnsn/` project cloned at the SAGE repo root for a
 Project root assumptions:
 
 - Run commands from the SAGE repo root.
-- The pnsn code is not vendored in this skill; it must exist at repo-root `pnsn/`.
-- If `pnsn/picker.py` is missing, instruct the user to run `git clone https://github.com/cangyeone/pnsn.git` from the SAGE repo root.
-- Default model files live at `pnsn/pickers/`.
-- Picker configuration lives at `pnsn/config/picker.py`.
-- Define `PNSN_ROOT = Path("pnsn")` in generated code and build all model/script paths from it.
+- The pnsn code and model files are managed inside this skill folder, not at the repository root.
+- If `seismo_skill/skills/pnsn_phase_detection/pnsn/picker.py` is missing, instruct the user to run `git clone https://github.com/cangyeone/pnsn.git seismo_skill/skills/pnsn_phase_detection/pnsn` from the SAGE repo root.
+- Default model files live at `seismo_skill/skills/pnsn_phase_detection/pnsn/pickers/`.
+- Picker configuration lives at `seismo_skill/skills/pnsn_phase_detection/pnsn/config/picker.py`.
+- Define `PNSN_ROOT = Path("seismo_skill/skills/pnsn_phase_detection/pnsn")` in generated code and build all model/script paths from it.
 
 ## Autonomous Programming Mode
 
-This skill is not limited to calling `pnsn/picker.py`. When the user asks to "自己编程", "写代码实现拾取", "检测这几条波形", "画出拾取结果", "调试检测流程", or when the waveform organization does not match `pnsn/config/picker.py`, write a custom Python program instead of only giving a CLI command.
+This skill is not limited to calling `seismo_skill/skills/pnsn_phase_detection/pnsn/picker.py`. When the user asks to "自己编程", "写代码实现拾取", "检测这几条波形", "画出拾取结果", "调试检测流程", or when the waveform organization does not match `seismo_skill/skills/pnsn_phase_detection/pnsn/config/picker.py`, write a custom Python program instead of only giving a CLI command.
 
 Use custom code for:
 
@@ -63,9 +63,12 @@ from pathlib import Path
 
 OUTDIR = Path(os.environ.get("SAGE_OUTDIR", "outputs/pnsn_phase_detection"))
 OUTDIR.mkdir(parents=True, exist_ok=True)
-PNSN_ROOT = Path("pnsn")
+PNSN_ROOT = Path("seismo_skill/skills/pnsn_phase_detection/pnsn")
 if not (PNSN_ROOT / "picker.py").exists():
-    raise FileNotFoundError("Missing repo-root pnsn/. Run: git clone https://github.com/cangyeone/pnsn.git")
+    raise FileNotFoundError(
+        "Missing skill-local pnsn/. Run: git clone https://github.com/cangyeone/pnsn.git "
+        "seismo_skill/skills/pnsn_phase_detection/pnsn"
+    )
 ```
 
 ## Component Discovery Pattern
@@ -107,7 +110,7 @@ def group_three_components(files):
     return {k: v for k, v in groups.items() if {"E", "N", "Z"} <= set(v)}
 ```
 
-If no 3-component group is found, print a clear diagnostic with example filenames and recommend updating grouping logic or `pnsn/config/picker.py`.
+If no 3-component group is found, print a clear diagnostic with example filenames and recommend updating grouping logic or `seismo_skill/skills/pnsn_phase_detection/pnsn/config/picker.py`.
 
 ## Robust Custom Picker Template
 
@@ -125,9 +128,12 @@ import matplotlib.pyplot as plt
 OUTDIR = Path(os.environ.get("SAGE_OUTDIR", "outputs/pnsn_phase_detection"))
 OUTDIR.mkdir(parents=True, exist_ok=True)
 DATA_ROOT = Path("/path/to/waveforms")
-PNSN_ROOT = Path("pnsn")
+PNSN_ROOT = Path("seismo_skill/skills/pnsn_phase_detection/pnsn")
 if not (PNSN_ROOT / "picker.py").exists():
-    raise FileNotFoundError("Missing repo-root pnsn/. Run: git clone https://github.com/cangyeone/pnsn.git")
+    raise FileNotFoundError(
+        "Missing skill-local pnsn/. Run: git clone https://github.com/cangyeone/pnsn.git "
+        "seismo_skill/skills/pnsn_phase_detection/pnsn"
+    )
 MODEL_PATH = PNSN_ROOT / "pickers" / "pnsn.v3.jit"
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 PHASE_NAMES = {0: "Pg", 1: "Sg", 2: "Pn", 3: "Sn"}
@@ -254,14 +260,14 @@ Also check:
 Prefer the TorchScript pnsn v3 picker for most tasks:
 
 ```bash
-python pnsn/picker.py \
+python seismo_skill/skills/pnsn_phase_detection/pnsn/picker.py \
   -i /path/to/waveforms \
   -o outputs/picks/pnsn_picks \
-  -m pnsn/pickers/pnsn.v3.jit \
+  -m seismo_skill/skills/pnsn_phase_detection/pnsn/pickers/pnsn.v3.jit \
   -d cpu
 ```
 
-Use `pnsn/pickers/pnsn.v3.diff.jit` when the user wants the paper differential-input model or when high-frequency transients are important. Use `pnsn/pickers/pnsn.v1.jit` only for legacy engineering compatibility.
+Use `seismo_skill/skills/pnsn_phase_detection/pnsn/pickers/pnsn.v3.diff.jit` when the user wants the paper differential-input model or when high-frequency transients are important. Use `seismo_skill/skills/pnsn_phase_detection/pnsn/pickers/pnsn.v1.jit` only for legacy engineering compatibility.
 
 For GPU, set `-d cuda:0`; otherwise use `-d cpu` for safer local execution.
 
@@ -276,7 +282,7 @@ Typical assumptions:
 - waveform extensions: usually `.sac`, `.mseed`, `.seed`;
 - one station group should not mix many time segments in the same directory unless `config/picker.py` has been adapted.
 
-Before running, inspect a few filenames and update `pnsn/config/picker.py` if needed:
+Before running, inspect a few filenames and update `seismo_skill/skills/pnsn_phase_detection/pnsn/config/picker.py` if needed:
 
 ```python
 class Parameter:
@@ -302,7 +308,7 @@ Critical checks:
 
 ## Output Format
 
-`pnsn/picker.py` writes three files using the `-o` prefix:
+`seismo_skill/skills/pnsn_phase_detection/pnsn/picker.py` writes three files using the `-o` prefix:
 
 - `<output>.txt`: phase picks;
 - `<output>.log`: processed data log;
@@ -341,9 +347,12 @@ import torch
 import obspy
 import matplotlib.pyplot as plt
 
-PNSN_ROOT = Path("pnsn")
+PNSN_ROOT = Path("seismo_skill/skills/pnsn_phase_detection/pnsn")
 if not (PNSN_ROOT / "picker.py").exists():
-    raise FileNotFoundError("Missing repo-root pnsn/. Run: git clone https://github.com/cangyeone/pnsn.git")
+    raise FileNotFoundError(
+        "Missing skill-local pnsn/. Run: git clone https://github.com/cangyeone/pnsn.git "
+        "seismo_skill/skills/pnsn_phase_detection/pnsn"
+    )
 model_path = PNSN_ROOT / "pickers" / "pnsn.v3.jit"
 device = torch.device("cpu")
 model = torch.jit.load(str(model_path), map_location=device).eval()
@@ -406,16 +415,16 @@ Use this when the user asks to monitor a directory or process many stations.
 find /path/to/waveforms -maxdepth 2 -type f | head
 ```
 
-2. Adjust `pnsn/config/picker.py` if suffix, channel names, or filename token indices differ.
+2. Adjust `seismo_skill/skills/pnsn_phase_detection/pnsn/config/picker.py` if suffix, channel names, or filename token indices differ.
 
 3. Run picker:
 
 ```bash
 mkdir -p outputs/pnsn
-python pnsn/picker.py \
+python seismo_skill/skills/pnsn_phase_detection/pnsn/picker.py \
   -i /path/to/waveforms \
   -o outputs/pnsn/picks \
-  -m pnsn/pickers/pnsn.v3.jit \
+  -m seismo_skill/skills/pnsn_phase_detection/pnsn/pickers/pnsn.v3.jit \
   -d cpu
 ```
 
@@ -443,7 +452,7 @@ SC AXX 00 110.00 38.00 1000.00
 FastLink:
 
 ```bash
-python pnsn/fastlinker.py \
+python seismo_skill/skills/pnsn_phase_detection/pnsn/fastlinker.py \
   -i outputs/pnsn/picks.txt \
   -o outputs/pnsn/events_fastlink.txt \
   -s /path/to/stations.txt \
@@ -453,7 +462,7 @@ python pnsn/fastlinker.py \
 REAL:
 
 ```bash
-python pnsn/reallinker.py \
+python seismo_skill/skills/pnsn_phase_detection/pnsn/reallinker.py \
   -i outputs/pnsn/picks.txt \
   -o outputs/pnsn/events_real \
   -s /path/to/stations.txt
@@ -462,7 +471,7 @@ python pnsn/reallinker.py \
 GaMMA:
 
 ```bash
-python pnsn/gammalink.py \
+python seismo_skill/skills/pnsn_phase_detection/pnsn/gammalink.py \
   -i outputs/pnsn/picks.txt \
   -o outputs/pnsn/events_gamma.txt \
   -s /path/to/stations.txt \
@@ -473,13 +482,13 @@ Prefer FastLink for quick monitoring workflows, REAL for classical association/l
 
 ## Model Selection
 
-- `pnsn/pickers/pnsn.v3.jit`: default Pg/Sg/Pn/Sn picker.
-- `pnsn/pickers/pnsn.v3.diff.jit`: differential-input pnsn v3 model.
-- `pnsn/pickers/pnsn.v1.jit`: legacy engineering model.
-- `pnsn/pickers/phasenet.jit`: fast Pg/Sg-style PhaseNet picker.
-- `pnsn/pickers/eqtransformer.stead.jit`: EQTransformer-style picker.
-- `pnsn/pickers/rnn.jit`: RNN picker, useful for high-recall Pg/Sg workflows.
-- `pnsn/pickers/lppnt.jit`, `lppnm.jit`, `lppnl.jit`: lightweight LPPN variants.
+- `seismo_skill/skills/pnsn_phase_detection/pnsn/pickers/pnsn.v3.jit`: default Pg/Sg/Pn/Sn picker.
+- `seismo_skill/skills/pnsn_phase_detection/pnsn/pickers/pnsn.v3.diff.jit`: differential-input pnsn v3 model.
+- `seismo_skill/skills/pnsn_phase_detection/pnsn/pickers/pnsn.v1.jit`: legacy engineering model.
+- `seismo_skill/skills/pnsn_phase_detection/pnsn/pickers/phasenet.jit`: fast Pg/Sg-style PhaseNet picker.
+- `seismo_skill/skills/pnsn_phase_detection/pnsn/pickers/eqtransformer.stead.jit`: EQTransformer-style picker.
+- `seismo_skill/skills/pnsn_phase_detection/pnsn/pickers/rnn.jit`: RNN picker, useful for high-recall Pg/Sg workflows.
+- `seismo_skill/skills/pnsn_phase_detection/pnsn/pickers/lppnt.jit`, `lppnm.jit`, `lppnl.jit`: lightweight LPPN variants.
 
 Do not use `tele.jit` as the default teleseismic picker. Prefer the pnsn family for a unified local/regional/distant workflow unless the user explicitly asks for the tele model.
 
@@ -498,7 +507,7 @@ When using this skill, the assistant should provide:
 
 - the exact model path used;
 - the waveform directory or files processed;
-- any configuration changes made to `pnsn/config/picker.py`;
+- any configuration changes made to `seismo_skill/skills/pnsn_phase_detection/pnsn/config/picker.py`;
 - command or Python script executed;
 - number of picks/events generated;
 - paths to `.txt`, `.log`, `.err`, figures, and associated event catalogs;

@@ -30,7 +30,7 @@ SAGE 是集**自然语言交互**、**智能震相拾取**、**统计分析**、
 - [安装](#安装)
   - [系统要求](#系统要求)
   - [基础安装](#基础安装)
-  - [pnsn 震相拾取模块](#pnsn-震相拾取模块安装)
+  - [pnsn 震相拾取模块](#pnsn-震相拾取模块位置)
   - [RAG 功能依赖](#rag-功能依赖)
 - [配置 LLM 后端](#配置-llm-后端)
 - [Web 界面](#web-界面)
@@ -39,21 +39,6 @@ SAGE 是集**自然语言交互**、**智能震相拾取**、**统计分析**、
 - [seismo_skill 技能系统](#seismo_skill-技能系统)
 - [seismo_script 工作流系统](#seismo_script-工作流系统)
 - [GMT 地图绘制](#gmt-地图绘制)
-- [EvidenceDrivenGeoAgent — 地学解译 Agent](#evidencedrivengeoagent--地学解译-agent)
-  - [设计原则](#设计原则)
-  - [架构](#架构)
-  - [Agent 推理循环](#agent-推理循环)
-  - [证据记录结构](#证据记录结构)
-  - [九个内置工具](#九个内置工具)
-  - [数据源优先级](#数据源优先级)
-  - [收敛条件](#收敛条件)
-  - [Web UI](#地学解译-web-ui)
-  - [研究数据文件上传](#研究数据文件上传)
-  - [内嵌 Web 文献检索](#内嵌-web-文献检索)
-  - [CLI 命令](#地学解译-cli-命令)
-  - [Flask API](#地学解译-flask-api)
-  - [Python 编程接口](#python-编程接口)
-  - [输出结构](#输出结构)
 - [核心模块详解](#核心模块详解)
 - [目录结构](#目录结构)
 - [配置文件](#配置文件)
@@ -70,15 +55,15 @@ SAGE 是集**自然语言交互**、**智能震相拾取**、**统计分析**、
 | 🔗 **震相关联** | FastLink / REAL / Gamma 多方法，将台站拾取结果自动关联为地震事件 |
 | 🧭 **极性分析** | P 波初动极性自动判断 |
 | 📊 **地震统计** | b 值估算（MLE/LSQ）、F-M 分布图、时序与空间分布分析 |
-| 🧑‍💻 **代码生成执行** | LLM 生成 Python 代码 + 沙箱安全执行 + 内置地震学工具包，串联多个技能步骤 |
+| 🧑‍💻 **代码生成执行** | 内置 CodeEngine 负责沙箱 Python/GMT 科学脚本；Aider 作为仓库级代码后端用于修 bug、重构和多文件协同修改；OpenHands 可作为实验后端 |
 | 🗺️ **GMT 地图绘制** | 调用 GMT6 绘制震中图、台站图、地形图、震源机制球，图像与脚本均可下载 |
-| 🤖 **自主 Agent** | 读入论文 → 理解方法 → 自主规划 → 逐步编程实现，每步自动重试 |
+| 🤖 **科学分析 Agent** | 读入数据、本地论文、Web 证据、RAG 和多个 SKILL → 规划科学问题 → 编程生成图表 → 迭代撰写 Markdown/LaTeX 论文 |
 | 📚 **知识库 RAG** | BGE-M3 向量化 + FAISS 检索，持久化存储，批量 PDF 入库与文献问答 |
-| 🌍 **地学解译 Agent** | 证据驱动的自主地球科学解译；自动检索数据、提取证据、生成竞争假设、撰写可追溯报告 |
 | 📖 **文献解读** | 临时上传 PDF → 深度解读方法/公式/结论，多轮追问 |
 | 🗂 **本地文件访问** | 授权指定目录后，LLM 可直接读取文件列表辅助分析 |
-| ⚡ **技能系统** | Markdown 格式技能文档（7 个内置 + 无限自定义），对话和代码生成时自动检索注入 |
+| ⚡ **技能系统** | OpenAI-style 文件夹技能、内置领域技能、文档生成技能和内置学术研究技能；Chat、科学分析和 CodeEngine 可联合调用多个技能与 RAG |
 | 🔄 **工作流系统** | 声明式多步分析流水线（`.md` + YAML frontmatter）；Agent 按步 DAG 调度 Code Engine 逐步执行，共享工作目录，每步独立 debug 循环 |
+| 🎛 **参数优化 Agent** | Alpha 界面用于定义流程模块、输入输出、待优化参数和优化目标；CodeEngine 自动实现、调试、监控并保存优化过程，供科学分析写作使用 |
 | 📈 **波形可视化** | 对话窗口内嵌波形图（震相标注叠加），图像可点击放大或下载 |
 
 ---
@@ -88,7 +73,8 @@ SAGE 是集**自然语言交互**、**智能震相拾取**、**统计分析**、
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                     Web UI (Flask + JS)                          │
-│   /chat  ·  /knowledge  ·  /skills  ·  /llm-settings            │
+│   /chat · /science-analysis-agent · /parameter-optimization-agent│
+│   /knowledge · /skills · /config                                 │
 └──────────────┬──────────────────────────────────────────────────┘
                │ HTTP REST API
 ┌──────────────▼───────────────────────────────────────────────────┐
@@ -132,24 +118,24 @@ SAGE 是集**自然语言交互**、**智能震相拾取**、**统计分析**、
 ## 快速开始
 
 ```bash
-# 1. 克隆主仓库
-git clone https://github.com/cangyeone/sage.git
+# 1. 克隆主仓库和内置子模块
+git clone --recurse-submodules https://github.com/cangyeone/sage.git
 cd sage
 
-# 2. 克隆 pnsn 震相拾取模块（必须放在 sage/ 目录下）
-git clone https://github.com/cangyeone/pnsn.git
+# 如果已经普通 clone 过，补拉子模块：
+# git submodule update --init --recursive
 
-# 3. 安装 SAGE 依赖
+# 2. 安装 SAGE 依赖
 pip install -r requirements.txt
 
-# 4. 启动 Ollama 并拉取模型（选一个）
+# 3. 启动 Ollama 并拉取模型（选一个）
 ollama serve &
 ollama pull qwen3:8b          # 轻量，约 6 GB
 
-# 5. 启动 Web 服务
+# 4. 启动 Web 服务
 python web_app/app.py --port 5010
 
-# 6. 浏览器访问
+# 5. 浏览器访问
 open http://localhost:5010
 ```
 
@@ -185,27 +171,32 @@ pip install matplotlib plotly                         # 可视化
 pip install FlagEmbedding faiss-cpu pdfminer.six PyMuPDF  # RAG 知识库
 ```
 
-### pnsn 震相拾取模块安装
+### pnsn 震相拾取模块位置
 
-pnsn 是专门用于震相拾取的深度学习模型库，由 [cangyeone](https://github.com/cangyeone) 开发。**必须将其克隆到 `sage/` 主目录下**，因为 SAGE 通过相对路径调用其中的脚本和模型文件。
+pnsn 是专门用于震相拾取的深度学习模型库，由 [cangyeone](https://github.com/cangyeone) 开发。在 SAGE 中，pnsn 作为 OpenAI-style 技能 `pnsn_phase_detection` 的组成部分管理，推荐位置为 `seismo_skill/skills/pnsn_phase_detection/pnsn/`，这样代码、配置和模型文件都跟随技能统一管理。
 
 ```bash
-# 在 sage/ 目录下执行
-git clone https://github.com/cangyeone/pnsn.git
+# 仅当技能目录下缺少 pnsn 时需要执行
+git clone https://github.com/cangyeone/pnsn.git \
+  seismo_skill/skills/pnsn_phase_detection/pnsn
 ```
 
-当前 pnsn 仓库没有单独的 `requirements.txt`，用于 SAGE 时也不需要把 pnsn 安装成 Python 包。只需安装 SAGE 顶层依赖 `pip install -r requirements.txt`；SAGE 会直接调用 `pnsn/picker.py`、`pnsn/fastlinker.py`、`pnsn/pickers/*.jit` 等文件。
+当前 pnsn 仓库没有单独的 `requirements.txt`，用于 SAGE 时也不需要把 pnsn 安装成 Python 包。只需安装 SAGE 顶层依赖 `pip install -r requirements.txt`；SAGE 会直接调用 `seismo_skill/skills/pnsn_phase_detection/pnsn/picker.py`、`fastlinker.py`、`pickers/*.jit` 等文件。
 
 **目录结构确认：**
 
 ```
 sage/
-├── pnsn/               ← 必须在此位置
-│   ├── picker.py
-│   ├── fastlinker.py
-│   ├── gammalink.py
-│   ├── pickers/        ← JIT / ONNX 模型文件
-│   └── config/
+├── seismo_skill/
+│   └── skills/
+│       └── pnsn_phase_detection/
+│           ├── SKILL.md
+│           └── pnsn/       ← 技能内置 pnsn 代码和模型
+│               ├── picker.py
+│               ├── fastlinker.py
+│               ├── gammalink.py
+│               ├── pickers/  ← JIT / ONNX 模型文件
+│               └── config/
 ├── web_app/
 └── ...
 ```
@@ -426,7 +417,7 @@ python seismic_cli.py chat
 # 单台拾取
 python seismic_cli.py pick \
     -i /data/station/ \
-    -m pnsn/pickers/pnsn.v3.jit
+    -m seismo_skill/skills/pnsn_phase_detection/pnsn/pickers/pnsn.v3.jit
 
 # 批量拾取（目录下所有波形文件）
 python seismic_cli.py pick \
@@ -468,6 +459,16 @@ python seismic_cli.py run "对 /data/wave.mseed 做 1-10Hz 带通滤波并画图
 python seismic_cli.py run "计算震源参数，震中距 50km" -d /data/waves/
 python seismic_cli.py run "画走时曲线，距离 0-30°，深度 10km" --show-code
 ```
+
+SAGE 的编程能力分为两个互补后端：
+
+- **内置 CodeEngine**：默认后端，适合科学数据脚本、GMT/Python 绘图、mini test 和可复现中间产物。
+- **Aider 后端**：作为 SAGE 内部仓库级 Coding Backend，用于修复 bug、重构、多文件编辑和 Git 工作流。SAGE 会优先加载项目内置源码 `third_party/aider`，通过 Aider Python scripting API 调用，必要时退回已安装包或 CLI。安装项目依赖 `pip install -r requirements.txt` 后，在 `Config -> Coding Agent` 中选择 **Aider API / CLI**。
+- **OpenHands 后端**：实验性 CLI 后端，适合更重的 agentic development 工作流。
+
+`third_party/aider` 使用 Git submodule 管理。clone 时建议使用 `git clone --recurse-submodules ...`；如果已经普通 clone 过，则运行 `git submodule update --init --recursive`，这样本地才会真正拉下 Aider 源码。
+
+代码后端配置写入项目目录下的 `seismo_rag/project_config.json`，便于检查、选择性纳入版本控制或清理。
 
 ### 自主 Agent
 
@@ -648,6 +649,130 @@ print(result)
 ```
 
 > **覆盖规则：** 自定义技能与内置技能同名时，自定义版本自动优先生效。
+
+### 从文档目录生成 OpenAI-style SKILL
+
+SAGE 可以把外部文档转换为 OpenAI-style 文件夹型 SKILL。常见流程是：把文档目录放到 `seismo_skill/docs/`，在 Web 端知识库页面选择构建方式，然后由 Skill Builder 生成可复用技能到 `seismo_skill/user_skills/`。
+
+#### 示例：从 GMT 中文文档生成 GMT SKILL
+
+1. **下载 GMT 中文文档**
+
+   访问 [gmt-china/GMT_docs releases](https://github.com/gmt-china/GMT_docs/releases)，下载一个 release 压缩包。建议选择包含源码文档、示例和资源文件的 release asset。
+
+   也可以在终端下载，把 `<release-asset-url>` 替换为 release 页面中对应压缩包的下载地址：
+
+   ```bash
+   cd /path/to/sage
+   mkdir -p seismo_skill/docs
+   curl -L "<release-asset-url>" -o /tmp/GMT_docs.zip
+   unzip /tmp/GMT_docs.zip -d seismo_skill/docs/
+   ```
+
+   确认最终目录类似：
+
+   ```text
+   seismo_skill/docs/GMT_docs-6.5/
+     source/
+     README.md
+     ...
+   ```
+
+2. **启动 Web 服务**
+
+   ```bash
+   python web_app/app.py --port 5010
+   ```
+
+   浏览器打开 `http://localhost:5010/knowledge`。
+
+3. **在 Web 端生成 SKILL**
+
+   在 **技能文档目录** 卡片中：
+
+   - 点击刷新，选择 `GMT_docs-6.5`。
+   - 将 **SKILL 结构** 设为 **OpenAI-style 文件夹 SKILL**。
+   - 如果文档很多，勾选 **RAG/向量辅助构建**。这里的 RAG 只用于构建阶段的相似度检索和聚类，最终产物仍然是 SKILL，不会把整个文档永久当作 RAG 文献。
+   - **目标主题簇数** 可以留空，由系统自动建议；也可以手动填入希望的簇数。
+   - 点击 **开始构建**。
+
+4. **生成结果位置**
+
+   构建完成后，生成的技能位于：
+
+   ```text
+   seismo_skill/user_skills/_gen_gmt_docs_zh/
+     SKILL.md
+     subskills/
+     references/
+     workflows/
+     agents/
+   ```
+
+   其中 `SKILL.md` 是入口文件；`subskills/` 保存按功能聚类后的 GMT 子技能；`references/manifest.md` 记录参与构建的源文件，方便追溯。
+
+5. **验证是否能自动调用**
+
+   在 Chat 或 Code 页面直接提问：
+
+   ```text
+   GMT 的 -J 投影选项怎么用？给我几个常见投影示例。
+   ```
+
+   ```text
+   用 GMT grdimage 绘制地形图，并添加 colorbar，解释参数。
+   ```
+
+   通常不需要显式写 `_gen_gmt_docs_zh`。只要问题中包含 `GMT`、`grdimage`、`makecpt`、`coast`、`-J`、`-R`、`-B` 等关键词，系统会自动把生成的 GMT 文档技能和内置 `gmt_plotting` 技能联合注入。
+
+6. **管理和删除**
+
+   生成型 SKILL 会在知识库/技能管理界面作为技能资产显示，可在界面中删除。删除时会同时移除生成的 SKILL 文件夹和构建元数据。
+
+支持的文档输入包括 PDF、Markdown（`.md`）、reStructuredText（`.rst`）、HTML、纯文本、脚本文件，以及包含多种文件的混合文档目录。
+
+#### 学术研究 SKILL
+
+SAGE 已将 [academic-research-skills](https://github.com/Imbad0202/academic-research-skills) 集成到项目目录：
+
+```text
+third_party/academic-research-skills/
+```
+
+其中包含这些 OpenAI-style 技能：
+
+- `deep-research`：面向文献证据的调研规划和证据综合
+- `academic-paper`：学术论文写作、修改和结构化表达
+- `academic-paper-reviewer`：模拟审稿人审查、提出修改意见
+- `academic-pipeline`：端到端科研流程规划
+
+可以通过后端接口安装或刷新到本地技能库：
+
+```bash
+curl -X POST http://localhost:5010/api/skills/install-academic-research \
+  -H "Content-Type: application/json" \
+  -d '{"overwrite": true}'
+```
+
+安装后，Chat、科学分析和 CodeEngine 都可以自动检索这些技能。一般不需要显式写技能名；例如“帮我做文献调研”“审稿式修改这篇论文”“写成 JGR 风格论文草稿”等请求，会自动把学术研究技能、本地地震学技能和 RAG 证据联合注入。
+
+### 参数优化 Agent
+
+旧的解译页面已替换为参数优化 Agent：
+
+```text
+http://localhost:5010/parameter-optimization-agent
+```
+
+旧地址 `/evidence-geo-agent` 会自动跳转到新页面。参数优化 Agent 用于定义流程模块、每个模块的输入/输出、待优化参数和最终目标。Agent 会调用 CodeEngine 遍历项目目录、生成和调试脚本、运行 mini test、执行有边界的优化或 dry-run，并保存：
+
+- `optimization_plan.md`
+- `best_parameters.json`
+- `optimization_history.csv`
+- 图件和日志
+- `optimization_report.md`
+
+所有结果都保存在选择的项目目录内，后续科学分析 Agent 可以直接引用这些优化过程、图件和报告来撰写论文。
 
 ---
 
@@ -899,358 +1024,6 @@ GMT 的 PostScript 引擎不支持 CJK 字符。SAGE 自动处理这一问题：
 
 ---
 
-## EvidenceDrivenGeoAgent — 地学解译 Agent
-
-`EvidenceDrivenGeoAgent` 是一个自主地球科学解译 Agent，遵循"证据优先、防止幻觉"的设计理念。给定一个地质研究问题，它会自主从多个数据源检索信息、提取结构化证据、生成并评分竞争假设，最终输出一份完全可追溯的解译报告。
-
-### 设计原则
-
-| 原则 | 实现方式 |
-|---|---|
-| **证据优先** | 每一个断言都必须引用至少一条证据记录，包含来源、置信度和支持极性 |
-| **防止幻觉** | 不能主张任何未经检索证据支持的结论 |
-| **收敛检测** | 当新证据不再改变假设评分（Δ < 0.05）时自动停止 |
-| **竞争假设** | 始终维护 ≥ 2 个竞争假设，直到证据明确排除其中之一 |
-| **完全可追溯** | 推理链的每一步都记录在工具调用历史中 |
-
-### 架构
-
-```
-EvidenceDrivenGeoAgent
-├── AgentConfig              # 所有参数：工作区、LLM、循环限制、能力开关
-├── EvidenceRecord           # 结构化证据：内容 / 来源 / 置信度 / 极性 / 数据类型
-├── GeoHypothesis            # 假设：描述 / 支持评分 / 证据ID列表 / 状态
-├── AgentState               # 运行状态：问题 / 证据列表 / 假设 / 迭代计数器
-└── 工具注册表（9 个工具）
-    ├── retrieve_local_literature   # FAISS 语义检索本地 PDF 文献
-    ├── retrieve_rag_chunks         # RAG 向量数据库检索
-    ├── web_search                  # DuckDuckGo HTML + Semantic Scholar API
-    ├── read_local_file             # 读取 CSV / GeoJSON / 文本数据文件
-    ├── run_python_analysis         # 沙箱 Python 执行（可选）
-    ├── generate_hypothesis         # 提出新的竞争假设
-    ├── score_hypothesis            # 基于证据对假设评分和排序
-    ├── write_report                # 生成带证据引用的结构化 Markdown 报告
-    └── request_missing_info        # 记录数据缺口和所需补充信息
-```
-
-### Agent 推理循环
-
-```
-问题输入 → 初始化
-     ↓
-┌─── 第 N 轮迭代 ─────────────────────────────────────┐
-│  1. 规划：本轮调用哪些工具                           │
-│  2. 执行工具（≤ max_tool_calls_per_iter 次）         │
-│  3. 提取证据 → 追加到证据列表                       │
-│  4. 更新假设评分                                    │
-│  5. 收敛检测（连续 2 轮 Δscore < 0.05）             │
-└─────────────────────────────────────────────────────┘
-     ↓  （已收敛或达到 max_iterations）
-写入报告 → 返回 AgentOutput
-```
-
-### 证据记录结构
-
-```python
-@dataclass
-class EvidenceRecord:
-    evidence_id:  str    # 唯一ID，例如 "ev_001"
-    content:      str    # 证据文本内容
-    source:       str    # 来源：文件名 / URL / "user_upload"
-    source_type:  str    # "literature" | "rag" | "web" | "data" | "user_upload"
-    confidence:   float  # 0.0 – 1.0
-    polarity:     str    # "support"（支持）| "contradict"（反驳）| "neutral"（中性）
-    data_type:    str    # "text" | "numeric" | "geospatial" | "figure"
-    timestamp:    str    # ISO 8601 时间戳
-```
-
-### 九个内置工具
-
-| 工具 | 说明 | 需要的配置 |
-|---|---|---|
-| `retrieve_local_literature` | 在本地 PDF 文献目录中进行语义检索 | 设置 `literature_root`，安装 PyPDF2 |
-| `retrieve_rag_chunks` | 检索 FAISS / ChromaDB 向量数据库 | `use_rag=True`，RAG 引擎已初始化 |
-| `web_search` | DuckDuckGo 网络搜索 + Semantic Scholar 学术搜索 | `allow_web_search=True` |
-| `read_local_file` | 读取 CSV / GeoJSON / TXT 数据文件 | `use_local_files=True`，设置 `workspace_root` |
-| `run_python_analysis` | 在沙箱中执行 Python 代码进行数据处理 | `allow_python=True` |
-| `generate_hypothesis` | 为问题提出 ≥ 2 个竞争解释 | 始终可用 |
-| `score_hypothesis` | 基于当前证据对假设评分 | 始终可用 |
-| `write_report` | 生成带证据引用的结构化 Markdown 报告 | 始终可用 |
-| `request_missing_info` | 记录数据缺口和所需补充信息 | 始终可用 |
-
-### 数据源优先级
-
-Agent 按以下优先级顺序检索数据源：
-
-1. **用户上传文件**（当前会话通过 Web UI 上传）— 最高优先级，与当前任务最相关
-2. **本地工作区文件**（`workspace_root`）— 项目数据文件
-3. **本地文献目录**（`literature_root`）— 本地存储的 PDF 论文
-4. **RAG 向量数据库** — 已索引的知识库（所有历史上传文档）
-5. **Web 搜索** — DuckDuckGo + Semantic Scholar（仅当 `allow_web_search=True` 时）
-
-### 收敛条件
-
-满足以下**任意**条件时，Agent 停止推理循环：
-
-- 达到 `max_iterations`（默认：3）
-- 连续两轮迭代的假设评分变化均 < 0.05（收敛）
-- 已调用 `write_report` 工具
-- 所有必要工具已调用且证据充分
-
-### 地学解译 Web UI
-
-访问 `http://localhost:5000/evidence-geo-agent` 打开 Web 界面。
-
-**左侧边栏 — 配置面板：**
-
-| 区域 | 控件 |
-|---|---|
-| 工作区 | 工作区路径 / 文献目录 / 输出目录 |
-| 循环参数 | 最大迭代次数 / 最大工具调用次数 / RAG top-k / 评分阈值 |
-| 能力开关 | Python 执行 / RAG 检索 / 本地文件 / 多模态 / Web 搜索 |
-| 文件上传 | 拖放上传图片、PDF、CSV（自动分类） |
-| Web 检索 | 关键词搜索 DuckDuckGo + Semantic Scholar |
-
-**主区域 — 解译任务：**
-
-| 字段 | 说明 |
-|---|---|
-| 研究问题 | 待解译的地质问题，例如"2023 年土耳其 M7.8 地震的发震构造是什么？" |
-| 研究区域 | 地理位置（可选），例如"土耳其卡赫拉曼马拉什" |
-| 示例按钮 | 点击自动填入典型问题 |
-
-**结果标签页：**
-
-| 标签 | 内容 |
-|---|---|
-| 报告 | 完整 Markdown 解译报告，渲染为 HTML |
-| 证据表 | 所有证据记录，含来源、置信度、极性，可折叠展开 |
-| 假设 | 所有竞争假设及最终评分与排名 |
-| 图件 | Agent 输出的所有图件，以缩略图网格展示 |
-| 工具日志 | 每轮迭代的完整工具调用历史，可折叠 |
-| 缺失信息 | Agent 未能获取的数据缺口和补充需求 |
-
-**双语支持：** 点击右上角 `中/EN` 按钮可在中英文之间切换。偏好保存在 `localStorage` 中，跨会话持久化。
-
-### 研究数据文件上传
-
-Web UI 支持拖放或点击选择同时上传多个文件：
-
-```
-支持格式：
-  PDF              → 自动归入 literature/
-  PNG / JPG / SVG  → 自动归入 figures/
-  CSV              → 自动归入 data/
-  TXT / JSON / XML → 自动归入 misc/
-```
-
-每个上传会话获得独立的工作区目录：
-
-```
-uploads/geo_workspaces/<session_id>/
-├── literature/   ← 上传的 PDF 论文
-├── figures/      ← 上传的图像 / 图表
-├── data/         ← 上传的 CSV / 数据文件
-└── misc/         ← 其他文件类型
-```
-
-Agent 自动发现并读取此工作区中的文件，用户上传文件在数据源优先级中最高。
-
-**API 端点：**
-
-```
-POST /api/evidence_geo_agent/upload
-Content-Type: multipart/form-data
-
-字段：
-  files[]     — 一个或多个文件
-  session_id  — 会话标识符（前端未提供时自动生成）
-
-响应：
-  { "ok": true, "uploaded": [...], "session_id": "...", "workspace": "..." }
-```
-
-### 内嵌 Web 文献检索
-
-Web UI 左侧边栏包含即时 Web 检索面板。无需启动完整 Agent 运行，即可直接检索相关论文和网络资源：
-
-```
-检索模式：
-  scholar_search  — Semantic Scholar API，返回标题 / 作者 / 年份 / 摘要 / 引用数
-  web_search      — DuckDuckGo HTML 抓取，返回标题 / URL / 摘要片段
-```
-
-**API 端点：**
-
-```
-POST /api/evidence_geo_agent/web_search
-Content-Type: application/json
-
-请求体：
-  { "query": "东安纳托利亚断层地震活动性", "search_type": "scholar_search" }
-
-响应：
-  { "ok": true, "results": [ { "title": "...", "url": "...", "snippet": "..." }, ... ] }
-```
-
-### 地学解译 CLI 命令
-
-```bash
-# 基本用法
-sage-geo "2021 年玛多地震的发震机制是什么？"
-
-# 完整选项
-sage-geo "分析四川盆地地震构造" \
-  --workspace /path/to/project \
-  --literature /path/to/papers \
-  --output outputs/my_report \
-  --max-iter 5 \
-  --web-search \
-  --rag \
-  --multimodal
-
-# 可用选项
-  --workspace       项目工作区根目录
-  --literature      本地 PDF 文献目录
-  --output          结果输出目录
-  --max-iter        最大推理迭代次数（默认：3）
-  --max-tools       每次迭代最大工具调用次数（默认：8）
-  --rag-k           RAG 检索 top-k（默认：8）
-  --web-search      启用 Web 搜索（DuckDuckGo + Semantic Scholar）
-  --no-rag          禁用 RAG 向量数据库检索
-  --no-local-files  禁用本地文件读取
-  --multimodal      启用多模态分析（需要支持视觉的 LLM）
-  --allow-shell     允许执行 Shell 命令
-  --provider        LLM 提供商（ollama/openai/custom）
-  --model           模型名称
-  --api-key         API Key（在线提供商需要）
-  --api-base        API 基础 URL（自定义/兼容提供商）
-```
-
-**输出文件：**
-
-```
-outputs/evidence_driven_geo_agent/
-├── report_<timestamp>.md           # 完整 Markdown 解译报告
-├── evidence_table_<timestamp>.json # 所有结构化证据记录
-├── hypotheses_<timestamp>.json     # 所有假设及评分
-└── agent_state_<timestamp>.json    # 完整 Agent 状态快照
-```
-
-### 地学解译 Flask API
-
-**启动解译任务：**
-
-```
-POST /api/evidence_geo_agent
-Content-Type: application/json
-
-{
-  "question":                "分析 2023 年土耳其 M7.8 地震的发震构造",
-  "study_area":              "土耳其卡赫拉曼马拉什",
-  "session_id":              "可选会话ID",
-  "workspace_root":          "/path/to/workspace",
-  "literature_root":         "/path/to/papers",
-  "output_dir":              "outputs/evidence_driven_geo_agent",
-  "allow_web_search":        true,
-  "use_rag":                 true,
-  "use_local_files":         true,
-  "use_multimodal":          false,
-  "max_iterations":          3,
-  "max_tool_calls_per_iter": 8,
-  "rag_top_k":               8,
-  "score_threshold":         0.35
-}
-
-响应：{ "job_id": "geo_xxxx", "status": "started" }
-```
-
-**轮询结果：**
-
-```
-GET /api/evidence_geo_agent/poll/<job_id>
-
-响应（运行中）：
-  { "status": "running", "progress": [...日志行...], "result": null }
-
-响应（已完成）：
-  {
-    "status": "completed",
-    "progress": [...],
-    "result": {
-      "report":          "# 解译报告\n...",
-      "evidence_list":   [ { "evidence_id": "ev_001", ... }, ... ],
-      "hypotheses":      [ { "description": "...", "support_score": 0.82, ... }, ... ],
-      "figures":         [ "/api/evidence_geo_agent/figure?path=...", ... ],
-      "tool_log":        [ { "iter": 1, "tool": "web_search", ... }, ... ],
-      "missing_info":    [ "高分辨率震源机制数据", ... ],
-      "iterations_used": 3,
-      "converged":       true
-    }
-  }
-```
-
-**提供图件：**
-
-```
-GET /api/evidence_geo_agent/figure?path=<相对或绝对路径>
-
-返回图像文件（PNG/JPG/SVG），带适当的 Content-Type。
-路径经沙箱检验，必须位于项目根目录或 geo_workspaces 目录内。
-```
-
-### Python 编程接口
-
-```python
-from sage_agents import EvidenceDrivenGeoAgent, AgentConfig
-
-cfg = AgentConfig(
-    workspace_root          = "/path/to/project",
-    literature_root         = "/path/to/papers",
-    output_dir              = "outputs/my_analysis",
-    allow_web_search        = True,
-    use_rag                 = True,
-    use_multimodal          = False,
-    max_iterations          = 5,
-    max_tool_calls_per_iter = 10,
-    rag_top_k               = 8,
-    score_threshold         = 0.35,
-    allow_python            = True,
-    allow_shell             = False,
-    code_timeout_s          = 60,
-)
-
-agent = EvidenceDrivenGeoAgent(config=cfg)
-
-output = agent.run(
-    question   = "2021 年玛多地震的发震构造是什么？",
-    study_area = "青海省玛多县",
-)
-
-print(output.report)
-print(f"经 {output.iterations_used} 轮迭代{'收敛' if output.converged else '达到上限'}")
-print(f"证据记录数：{len(output.evidence_list)}")
-print(f"最优假设：{output.hypotheses[0].description}（评分={output.hypotheses[0].support_score:.2f}）")
-```
-
-### 输出结构
-
-```python
-@dataclass
-class AgentOutput:
-    report:          str                    # 完整 Markdown 解译报告
-    evidence_list:   List[EvidenceRecord]   # 所有结构化证据记录
-    hypotheses:      List[GeoHypothesis]    # 所有假设，按评分降序排列
-    figures:         List[str]              # 输出图件路径列表
-    tool_log:        List[dict]             # 每轮迭代详细工具调用日志
-    missing_info:    List[str]              # Agent 未能填补的数据缺口
-    iterations_used: int                    # 实际完成的迭代次数
-    converged:       bool                   # 是否因收敛而停止
-    error:           Optional[str]          # 运行失败时的错误信息
-```
-
----
-
 ## 核心模块详解
 
 ### `seismo_script/` — 工作流系统
@@ -1417,12 +1190,16 @@ sage/
 ├── seismo_tools/                 # 外部工具注册表
 │   └── tool_registry.py          # HypoDD / VELEST / HASH 等
 │
-├── pnsn/                         # ← 需单独 clone（见安装说明）
-│   ├── picker.py                 # 震相拾取入口
-│   ├── fastlinker.py             # FastLink 震相关联
-│   ├── gammalink.py              # Gamma 震相关联
-│   ├── pickers/                  # JIT / ONNX 模型文件
-│   └── config/                   # 拾取器参数配置
+├── seismo_skill/
+│   └── skills/
+│       └── pnsn_phase_detection/ # OpenAI-style PNSN 震相拾取技能
+│           ├── SKILL.md
+│           └── pnsn/             # 技能内置 pnsn 代码和模型
+│               ├── picker.py
+│               ├── fastlinker.py
+│               ├── gammalink.py
+│               ├── pickers/      # JIT / ONNX 模型文件
+│               └── config/       # 拾取器参数配置
 │
 ├── conversational_agent.py       # 对话 Agent 核心（意图分类 + 技能执行）
 ├── config_manager.py             # LLM 配置管理
@@ -1549,6 +1326,10 @@ pip install FlagEmbedding sentence-transformers
 <p align="center">
   <sub>Built with ❤️ for the seismology community</sub>
 </p>
+
+## 致谢
+
+SAGE 的 Aider 集成后端基于开源项目 [Aider](https://github.com/Aider-AI/aider)，它为终端和 Git 工作流提供 AI 结对编程能力。SAGE 已将 Aider 源码放在 `third_party/aider`，优先通过 Python scripting API 集成，并保留已安装包和 CLI 退路以增强兼容性。实验性的 OpenHands 后端面向 [OpenHands](https://github.com/OpenHands/OpenHands) 的 CLI 工作流。感谢这些开源社区为更强的 coding-agent 能力提供基础。
 
 ## 联系方式
 

@@ -235,7 +235,8 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
     <div class="collapse navbar-collapse">
       <ul class="navbar-nav ms-auto gap-1 align-items-center">
         <li class="nav-item"><a class="nav-link active fw-bold" href="/chat"><i class="bi bi-chat-dots"></i> <span data-i18n="nav_chat">对话</span></a></li>
-        <li class="nav-item"><a class="nav-link" href="/evidence-geo-agent"><i class="bi bi-geo-alt-fill"></i> <span data-i18n="nav_geo">地学解译</span></a></li>
+        <li class="nav-item"><a class="nav-link" href="/parameter-optimization-agent"><i class="bi bi-diagram-3-fill"></i> <span data-i18n="nav_opt">参数优化</span></a></li>
+        <li class="nav-item"><a class="nav-link" href="/science-analysis-agent"><i class="bi bi-beaker"></i> <span data-i18n="nav_science">科学分析</span> <span class="badge text-bg-warning fw-normal" style="font-size:.62rem;vertical-align:middle;">alpha</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/knowledge"><i class="bi bi-journal-bookmark-fill"></i> <span data-i18n="nav_knowledge">知识库</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/skills"><i class="bi bi-lightning-charge"></i> <span data-i18n="nav_skills">技能</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/llm-settings"><i class="bi bi-sliders"></i> Config</a></li>
@@ -466,7 +467,7 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
 <script>
 const I18N = {
   zh: {
-    nav_chat: '对话', nav_geo: '地学解译', nav_knowledge: '知识库', nav_skills: '技能',
+    nav_chat: '对话', nav_opt:'参数优化', nav_science: '科学分析', nav_knowledge: '知识库', nav_skills: '技能',
     proj_title: '项目', proj_new: '新建', proj_default: '默认项目', proj_settings: '设置',
     proj_conv_title: '项目对话', proj_promote_kb: '入库',
     proj_new_tip: '创建一个独立项目工作区',
@@ -506,7 +507,7 @@ const I18N = {
     qbtn_formula: '解读公式', qbtn_pick: '拾取震相', qbtn_clear: '清空',
     web_on: '联网：开', web_off: '联网：关', web_sources: '检索源',
     attach_title: '上传 PDF', img_upload_title: '上传图片（VL 模型）', input_placeholder: '输入问题或指令…',
-    think_tip: '显示或折叠模型思考过程',
+    think_tip: '请求模型输出可折叠的思考摘要',
     llm_tip: '查看或切换当前 LLM 后端',
     // Quick action messages
     quick_qa_msg: '如何获取 IRIS 波形数据？',
@@ -528,7 +529,7 @@ const I18N = {
     think_label: '思考过程',
   },
   en: {
-    nav_chat: 'Chat', nav_geo: 'Geo Agent', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
+    nav_chat: 'Chat', nav_opt:'Param Optimizer', nav_science: 'Science Agent', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
     proj_title: 'Projects', proj_new: 'New', proj_default: 'Default project', proj_settings: 'Settings',
     proj_conv_title: 'Project chats', proj_promote_kb: 'Add',
     proj_new_tip: 'Create an independent project workspace',
@@ -568,7 +569,7 @@ const I18N = {
     qbtn_formula: 'Explain formula', qbtn_pick: 'Phase picking', qbtn_clear: 'Clear',
     web_on: 'Web: On', web_off: 'Web: Off', web_sources: 'Sources',
     attach_title: 'Upload PDF', img_upload_title: 'Upload image (VL model)', input_placeholder: 'Type a question or command…',
-    think_tip: 'Show or collapse model reasoning',
+    think_tip: 'Ask the model for a collapsible reasoning summary',
     llm_tip: 'View or switch the current LLM backend',
     // Quick action messages
     quick_qa_msg: 'How do I fetch waveform data from IRIS?',
@@ -2074,14 +2075,27 @@ function showTyping(text = null) {
 function hideTyping() { typingIndicator.classList.remove('show'); }
 
 // ── LLM 路由判断 ───────────────────────────────────────────────────────────
+function isPaperReadingRequest(text) {
+  const t = String(text || '').trim().toLowerCase();
+  const hasDocContext = sessionDocs.length > 0 || kbHasDocs || lastIntentWasPaper;
+  const hasAny = (words) => words.some((w) => t.includes(w));
+  const mentionsPaper = hasAny(['论文', '文献', '文章', '这篇', '该文', 'paper', 'article', 'pdf']);
+  const asksToRead = hasAny(['解析', '解读', '分析一下', '读一下', '阅读', '总结', '概括', '讲解', '解释', '看一下', '梳理', '提炼', 'summarize', 'summarise', 'explain', 'review', 'interpret']);
+  const asksToCode = hasAny(['写代码', '代码实现', '编程', 'python', '复现', '运行', '执行', '绘制', '画图', '生成图', '计算', '处理数据', '检测', '拾取', '导出', '保存', 'script', 'code', 'plot', 'run', 'execute', 'implement']);
+  return hasDocContext && mentionsPaper && asksToRead && !asksToCode;
+}
+
 async function classifyIntent(text) {
   const t = text.trim();
   const endsQ    = /[?？]\s*$/.test(t);
   const hasPath  = /(?:^|[\s\u4e00-\u9fff，。：、])[/~][\w./\-]{4,}/.test(t);
-  const actionRe = /帮我|请帮|帮忙|执行|运行|处理一下|做一下|跑一下|跑下|计算一下|绘制一下|画一下|下载一下|检测一下|识别一下|拾取|触发/;
+  const actionRe = /执行|运行|处理一下|做一下|跑一下|跑下|计算一下|绘制一下|画一下|下载一下|检测一下|识别一下|拾取|触发/;
   const questionStartRe = /^(如何|怎么|怎样|什么是|什么叫|为什么|为何|哪种|哪些|请解释|能解释|介绍|介绍一下|讲一下|讲讲|请问|有没有什么|有何区别|原理|有什么区别|what is|what are|how to|how does|why |explain|tell me about)/i;
-  const explainRe = /(详细讲|讲一下|讲讲|解释|介绍|原理|机制|怎么回事|是什么|什么是|为什么|为何|区别|优缺点|适用|局限|how does|how .*work|what is|why |explain|tell me about)/i;
+  const explainRe = /(详细讲|讲一下|讲讲|解释|介绍|原理|机制|怎么回事|是什么|什么是|为什么|为何|区别|优缺点|适用|局限|解析|解读|读一下|阅读|总结|概括|看一下|梳理|how does|how .*work|what is|why |explain|tell me about|summari[sz]e|review)/i;
   const concreteCodeRe = /(写代码|写个程序|代码实现|编程实现|实现一下|复现|生成脚本|运行|执行|读取|处理数据|绘制|画图|下载|保存|导出|计算一下|检测一下|检测下|检测上面|识别一下|拾取|触发|plot|run|execute|write.*code|implement|detect|pick|trigger)/i;
+
+  // 文档/论文阅读优先走 QA/RAG，避免“解析一下”被当成编程动作。
+  if (isPaperReadingRequest(t)) return 'qa';
 
   // 快速路径 A：有绝对路径 且 无问号 → code
   if (hasPath && !endsQ) return 'code';
@@ -2479,7 +2493,10 @@ class ThinkParser {
   }
 
   push(chunk) {
-    this._buf += chunk;
+    this._buf += String(chunk || '');
+    this._buf = this._buf
+      .replace(/<\s*(think|thinking|reasoning)\s*>/gi, '<think>')
+      .replace(/<\s*\/\s*(think|thinking|reasoning)\s*>/gi, '</think>');
     const OPEN  = '<think>';
     const CLOSE = '</think>';
     while (true) {
@@ -2511,6 +2528,21 @@ class ThinkParser {
     if (this._inThink) this.thinkText   += this._buf;
     else               this.contentText += this._buf;
     this._buf = '';
+  }
+}
+
+function keepOrPromoteThink(parser, streamer, keepThink) {
+  if (!parser.contentText.trim() && parser.thinkText.trim()) {
+    if (keepThink) {
+      streamer.updateThink && streamer.updateThink(parser.thinkText);
+      parser.contentText = currentLang === 'zh'
+        ? '（模型只返回了思考摘要，未返回最终回答。）'
+        : '(The model returned only a reasoning summary and no final answer.)';
+    } else {
+      parser.contentText = parser.thinkText;
+      parser.thinkText = '';
+      streamer.hideThink && streamer.hideThink();
+    }
   }
 }
 
@@ -2618,6 +2650,7 @@ async function streamToMsg(url, body) {
   function shouldHandoffToCode(userText, generatedText) {
     const u = String(userText || '');
     const g = String(generatedText || '');
+    if (isPaperReadingRequest(u)) return false;
     const executableRequest =
       /(使用|用|通过|基于).{0,30}(算法|方法|模型|STA\/?LTA|stalta|classic_sta_lta|recursive_sta_lta).{0,30}(检测|识别|拾取|触发|处理|分析|计算)/i.test(u) ||
       /(?:检测|识别|拾取).{0,20}(波形|数据|事件|震相)/i.test(u);
@@ -2715,15 +2748,9 @@ async function streamToMsg(url, body) {
     return {answer: handoffMsg, sources, errored: false, handoff};
   }
 
-  // Guard: some models emit the entire reply inside <think>…</think> with nothing
-  // outside (especially when think mode is on but the model ignores the instruction).
-  // In that case promote thinkText → contentText so the user sees the answer.
-  if (!parser.contentText.trim() && parser.thinkText.trim()) {
-    parser.contentText = parser.thinkText;
-    parser.thinkText   = '';
-    // Hide the (now-empty) think block
-    streamer.hideThink && streamer.hideThink();
-  }
+  // Some models emit the entire reply inside <think>…</think>. If the user
+  // explicitly enabled think mode, keep that block visible instead of hiding it.
+  keepOrPromoteThink(parser, streamer, !!(body && body.enable_think));
 
   streamer.finalise(parser.contentText, sources);
 
@@ -2865,11 +2892,7 @@ async function pollChatJobToBubble(jobId, meta={}) {
       const parser = new ThinkParser();
       parser.push(raw);
       parser.flush();
-      if (!parser.contentText.trim() && parser.thinkText.trim()) {
-        parser.contentText = parser.thinkText;
-        parser.thinkText = '';
-        streamer.hideThink && streamer.hideThink();
-      }
+      keepOrPromoteThink(parser, streamer, !!meta.enable_think);
       streamer.updateThink(parser.thinkText);
       streamer.updateContent(parser.contentText);
     }
@@ -2878,11 +2901,7 @@ async function pollChatJobToBubble(jobId, meta={}) {
       const parser = new ThinkParser();
       parser.push(pd.answer || '');
       parser.flush();
-      if (!parser.contentText.trim() && parser.thinkText.trim()) {
-        parser.contentText = parser.thinkText;
-        parser.thinkText = '';
-        streamer.hideThink && streamer.hideThink();
-      }
+      keepOrPromoteThink(parser, streamer, !!meta.enable_think);
       streamer.finalise(parser.contentText || (currentLang === 'zh' ? '（无回复）' : '(No response)'), sources);
       clearPendingJob(meta.session_id || SESSION_ID);
       if (activeChatJobId === jobId) activeChatJobId = '';
@@ -2916,11 +2935,11 @@ async function pollChatJobToBubble(jobId, meta={}) {
 
 function normaliseThinkAnswer(text) {
   const raw = String(text || '');
-  const thinkRe = /<think>([\s\S]*?)<\/think>/i;
+  const thinkRe = /<\s*(think|thinking|reasoning)\s*>([\s\S]*?)<\s*\/\s*\1\s*>/i;
   const m = raw.match(thinkRe);
   if (!m) return raw;
   const outside = raw.replace(thinkRe, '').trim();
-  return outside || m[1].trim();
+  return outside || m[2].trim();
 }
 
 async function sendRag(text) {
@@ -2943,7 +2962,7 @@ async function sendRag(text) {
       ...chatWebSearchPayload(),
     };
     const jobId = await startRecoverableChatJob(body);
-    const ragResult = await pollChatJobToBubble(jobId, {session_id: SESSION_ID});
+    const ragResult = await pollChatJobToBubble(jobId, {session_id: SESSION_ID, enable_think: thinkEnabled});
     if (ragResult.detached) return;
     answer = ragResult.answer || '';
     sources = ragResult.sources || [];
@@ -3019,7 +3038,7 @@ async function sendChainRagCode(originalText) {
       ...chatWebSearchPayload(),
     };
     const jobId = await startRecoverableChatJob(body);
-    const {answer: _ra, sources: _rs} = await pollChatJobToBubble(jobId, {session_id: SESSION_ID});
+    const {answer: _ra, sources: _rs} = await pollChatJobToBubble(jobId, {session_id: SESSION_ID, enable_think: thinkEnabled});
     if (SESSION_ID !== body.session_id) return;
     ragAnswer  = _ra || '';
     ragSources = _rs || [];
@@ -3093,7 +3112,7 @@ async function sendNormal(text, images=[]) {
     };
     if (images && images.length > 0) body.images = images;
     const jobId = await startRecoverableChatJob(body);
-    const result = await pollChatJobToBubble(jobId, {session_id: SESSION_ID});
+    const result = await pollChatJobToBubble(jobId, {session_id: SESSION_ID, enable_think: thinkEnabled});
     if (result.detached) return;
     answer = result.answer || '';
     sources = result.sources || [];
@@ -3647,7 +3666,10 @@ async function _resumePendingJob() {
 
   if (pending.kind === 'chat') {
     hideTyping();
-    const result = await pollChatJobToBubble(job_id, {session_id: SESSION_ID});
+    const result = await pollChatJobToBubble(job_id, {
+      session_id: SESSION_ID,
+      enable_think: !!(pending.body && pending.body.enable_think),
+    });
     if (result.answer) {
       chatHistory.push({role:'assistant', content: result.answer});
       _persistHistory();

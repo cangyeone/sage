@@ -35,7 +35,7 @@ SAGE is an earthquake science AI platform integrating **natural language interac
 - [Installation](#installation)
   - [System Requirements](#system-requirements)
   - [Basic Installation](#basic-installation)
-  - [pnsn Phase Picking Module Installation](#pnsn-phase-picking-module-installation)
+  - [pnsn Phase Picking Module Location](#pnsn-phase-picking-module-location)
   - [RAG Dependencies](#rag-dependencies)
     - [Alternative: Download BGE-M3 via ModelScope (recommended for users in China)](#alternative-download-bge-m3-via-modelscope-recommended-for-users-in-china)
 - [Configuring LLM Backend](#configuring-llm-backend)
@@ -76,21 +76,6 @@ SAGE is an earthquake science AI platform integrating **natural language interac
   - [Usage](#usage)
   - [Automatic Chinese Title Processing](#automatic-chinese-title-processing)
   - [Image and Script Download](#image-and-script-download)
-- [EvidenceDrivenGeoAgent — Geoscience Interpretation Agent](#evidencedrivengeoagent--geoscience-interpretation-agent)
-  - [Design Principles](#design-principles)
-  - [Architecture](#architecture)
-  - [Agent Reasoning Loop](#agent-reasoning-loop)
-  - [Evidence Record Schema](#evidence-record-schema)
-  - [Nine Built-in Tools](#nine-built-in-tools)
-  - [Data Source Priority](#data-source-priority)
-  - [Convergence Conditions](#convergence-conditions)
-  - [Geo Agent Web UI](#geo-agent-web-ui)
-  - [File Upload for Research Data](#file-upload-for-research-data)
-  - [Inline Web Literature Search](#inline-web-literature-search)
-  - [Geo Agent CLI Command](#geo-agent-cli-command)
-  - [Geo Agent Flask API](#geo-agent-flask-api)
-  - [Python Programmatic Usage](#python-programmatic-usage)
-  - [Output Schema](#output-schema)
 - [Core Modules Details](#core-modules-details)
   - [`seismo_script/` — Workflow System](#seismo_script--workflow-system)
   - [`seismo_code/` — Code Generation and Execution Engine](#seismo_code--code-generation-and-execution-engine)
@@ -115,14 +100,15 @@ SAGE is an earthquake science AI platform integrating **natural language interac
 | 🔗 **Event Association** | Multiple methods including FastLink / REAL / Gamma, automatically associating station picking results into earthquake events |
 | 🧭 **Polarity Analysis** | Automatic determination of P-wave first motion polarity |
 | 📊 **Seismic Statistics** | b-value estimation (MLE/LSQ), F-M distribution plots, temporal and spatial distribution analysis |
-| 🧑‍💻 **Code Generation and Execution** | LLM generates Python code + sandbox secure execution + built-in seismology toolkit, connecting multiple skill steps |
+| 🧑‍💻 **Code Generation and Execution** | Built-in CodeEngine handles sandboxed Python/GMT analysis; Aider is integrated as a repository-level coding backend for bug fixes, refactors, and multi-file edits; OpenHands is available as an experimental backend |
 | 🗺️ **GMT Map Drawing** | Calls GMT6 to draw epicenter maps, station maps, topographic maps, focal mechanism diagrams, with downloadable images and scripts |
-| 🤖 **Autonomous Agent** | Reads papers → understands methods → autonomous planning → progressive programming implementation, with automatic retries at each step |
+| 🤖 **Scientific Analysis Agent** | Reads data, local papers, web evidence, RAG and multiple SKILLs → plans scientific questions → codes figures/tables → drafts Markdown/LaTeX papers with reviewer-style iteration |
 | 📚 **Knowledge Base RAG** | BGE-M3 vectorization + FAISS retrieval, persistent storage, batch PDF ingestion and literature Q&A |
 | 📖 **Literature Interpretation** | Temporary PDF upload → deep interpretation of methods/formulas/conclusions, multi-round questioning |
 | 🗂 **Local File Access** | After authorizing specified directory, LLM can directly read file lists to assist analysis |
-| ⚡ **Skill System** | Markdown format skill documents (7 built-in + unlimited custom), automatically retrieved and injected during conversation and code generation |
+| ⚡ **Skill System** | OpenAI-style folder skills, built-in domain skills, generated documentation skills, and vendored academic research skills; Chat, Science Analysis and CodeEngine can combine multiple skills with RAG |
 | 🔄 **Workflow System** | Declarative multi-step analysis pipelines (`.md` + YAML frontmatter); agent dispatches workflows to Code Engine step-by-step with shared execution directory and per-step debug loop |
+| 🎛 **Parameter Optimization Agent** | Alpha UI for defining workflow modules, inputs/outputs, tunable parameters and objectives; CodeEngine implements, debugs, monitors and saves optimization traces for later scientific writing |
 | 📈 **Waveform Visualization** | Waveform diagrams embedded in conversation window (with phase annotation overlay), images can be clicked to enlarge or download |
 
 ---
@@ -132,7 +118,8 @@ SAGE is an earthquake science AI platform integrating **natural language interac
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                     Web UI (Flask + JS)                          │
-│   /chat  ·  /knowledge  ·  /skills  ·  /llm-settings            │
+│   /chat · /science-analysis-agent · /parameter-optimization-agent│
+│   /knowledge · /skills · /config                                 │
 └──────────────┬──────────────────────────────────────────────────┘
                │ HTTP REST API
 ┌──────────────▼──────────────────────────────────────────────────┐
@@ -155,8 +142,7 @@ SAGE is an earthquake science AI platform integrating **natural language interac
                            │
   ┌────────────────────────▼──────────────────────────────────────┐
   │            seismo_skill Skill Retrieval                        │
-  │    7 Built-in Skills  +  User Custom Skills                    │
-  │    (~/.seismicx/skills/)                                       │
+  │    Built-in + seismo_skill/user_skills + third_party skills    │
   └────────────────────────┬──────────────────────────────────────┘
                            │ Automatic injection of function descriptions + code examples
   ┌────────────────────────▼──────────────────────────────────────┐
@@ -176,24 +162,24 @@ SAGE is an earthquake science AI platform integrating **natural language interac
 ## Quick Start
 
 ```bash
-# 1. Clone the main repository
-git clone https://github.com/cangyeone/sage.git
+# 1. Clone the main repository and bundled submodules
+git clone --recurse-submodules https://github.com/cangyeone/sage.git
 cd sage
 
-# 2. Clone the pnsn phase picking module (must be placed under sage/ directory)
-git clone https://github.com/cangyeone/pnsn.git
+# If you already cloned without submodules, run:
+# git submodule update --init --recursive
 
-# 3. Install SAGE dependencies
+# 2. Install SAGE dependencies
 pip install -r requirements.txt
 
-# 4. Start Ollama and pull model (choose one)
+# 3. Start Ollama and pull model (choose one)
 ollama serve &
 ollama pull qwen3:8b          # Lightweight, ~6 GB
 
-# 5. Start Web service
+# 4. Start Web service
 python web_app/app.py --port 5010
 
-# 6. Access via browser
+# 5. Access via browser
 open http://localhost:5010
 ```
 
@@ -229,27 +215,32 @@ pip install matplotlib plotly                         # Visualization
 pip install FlagEmbedding faiss-cpu pdfminer.six PyMuPDF  # RAG Knowledge Base
 ```
 
-### pnsn Phase Picking Module Installation
+### pnsn Phase Picking Module Location
 
-pnsn is a deep learning model library specifically for phase picking, developed by [cangyeone](https://github.com/cangyeone). **Must clone it to the `sage/` main directory**, because SAGE calls its scripts and model files through relative paths.
+pnsn is a deep learning model library specifically for phase picking, developed by [cangyeone](https://github.com/cangyeone). In SAGE, pnsn is managed as part of the OpenAI-style skill `pnsn_phase_detection`; the expected location is `seismo_skill/skills/pnsn_phase_detection/pnsn/`, so the code, configuration, and model files stay with the skill.
 
 ```bash
-# Execute in sage/ directory
-git clone https://github.com/cangyeone/pnsn.git
+# Only needed if the skill-local pnsn folder is missing
+git clone https://github.com/cangyeone/pnsn.git \
+  seismo_skill/skills/pnsn_phase_detection/pnsn
 ```
 
-The current pnsn repository does not provide a separate `requirements.txt` and does not need to be installed as a Python package for SAGE usage. Install SAGE's top-level dependencies with `pip install -r requirements.txt`; SAGE then directly calls files such as `pnsn/picker.py`, `pnsn/fastlinker.py`, and `pnsn/pickers/*.jit`.
+The current pnsn repository does not provide a separate `requirements.txt` and does not need to be installed as a Python package for SAGE usage. Install SAGE's top-level dependencies with `pip install -r requirements.txt`; SAGE then directly calls files such as `seismo_skill/skills/pnsn_phase_detection/pnsn/picker.py`, `fastlinker.py`, and `pickers/*.jit`.
 
 **Directory Structure Confirmation:**
 
 ```
 sage/
-├── pnsn/               ← Must be in this location
-│   ├── picker.py
-│   ├── fastlinker.py
-│   ├── gammalink.py
-│   ├── pickers/        ← JIT / ONNX model files
-│   └── config/
+├── seismo_skill/
+│   └── skills/
+│       └── pnsn_phase_detection/
+│           ├── SKILL.md
+│           └── pnsn/       ← Skill-local pnsn code and models
+│               ├── picker.py
+│               ├── fastlinker.py
+│               ├── gammalink.py
+│               ├── pickers/  ← JIT / ONNX model files
+│               └── config/
 ├── web_app/
 └── ...
 ```
@@ -470,7 +461,7 @@ python seismic_cli.py chat
 # Single station picking
 python seismic_cli.py pick \
     -i /data/station/ \
-    -m pnsn/pickers/pnsn.v3.jit
+    -m seismo_skill/skills/pnsn_phase_detection/pnsn/pickers/pnsn.v3.jit
 
 # Batch picking (all waveform files in directory)
 python seismic_cli.py pick \
@@ -512,6 +503,16 @@ python seismic_cli.py run "do 1-10Hz bandpass filtering on /data/wave.mseed and 
 python seismic_cli.py run "calculate source parameters, epicentral distance 50km" -d /data/waves/
 python seismic_cli.py run "draw travel time curve, distance 0-30°, depth 10km" --show-code
 ```
+
+SAGE now separates coding into complementary backends:
+
+- **Built-in CodeEngine**: the default sandboxed runner for scientific scripts, GMT/Python plotting, mini tests, and reproducible artifacts.
+- **Aider backend**: an integrated repository-level coding backend for bug fixes, refactors, and coordinated multi-file edits. SAGE first loads the vendored Aider source at `third_party/aider`, uses Aider's Python scripting API, and falls back to the installed package or CLI if needed. Install project dependencies with `pip install -r requirements.txt`, then select **Aider API / CLI** in `Config -> Coding Agent`.
+- **OpenHands backend**: an experimental CLI-compatible option for heavier agentic development workflows.
+
+`third_party/aider` is tracked as a Git submodule. Clone with `git clone --recurse-submodules ...`, or run `git submodule update --init --recursive` after cloning, so the Aider source is available locally.
+
+Coding backend settings are stored in the project file `seismo_rag/project_config.json`, so they are easy to inspect, version-control selectively, or remove.
 
 ### Autonomous Agent
 
@@ -695,37 +696,127 @@ print(result)
 
 ### Building Documentation and Skills
 
-SAGE supports automatic building of documentation and skills from external repositories. You can integrate third-party documentation into the knowledge base and generate corresponding skills.
+SAGE can convert external documentation into OpenAI-style folder skills. The typical workflow is: put a documentation folder under `seismo_skill/docs/`, open the web Knowledge page, choose a skill structure, and let the Skill Builder create a reusable skill under `seismo_skill/user_skills/`.
 
-#### Building from GitHub Repositories
+#### Example: Build a GMT Documentation Skill
 
-1. **Clone Repository to Local Directory**
+1. **Download GMT Chinese documentation**
+
+   Download a release archive from [gmt-china/GMT_docs releases](https://github.com/gmt-china/GMT_docs/releases). Prefer a release archive that contains the built source files, examples, and documentation assets.
+
+   You can also download from the terminal, replacing `<release-asset-url>` with the asset URL from the release page:
+
    ```bash
-   # Example: Clone GMT Chinese documentation
-   git clone https://github.com/gmt-china/GMT_docs.git
+   cd /path/to/sage
+   mkdir -p seismo_skill/docs
+   curl -L "<release-asset-url>" -o /tmp/GMT_docs.zip
+   unzip /tmp/GMT_docs.zip -d seismo_skill/docs/
    ```
 
-2. **Place in seismo_skill/docs Directory**
-   ```bash
-   # Move to SAGE project directory
-   mv GMT_docs ~/path/to/sage/seismo_skill/docs/
+   Make sure the final layout is a single documentation folder, for example:
+
+   ```text
+   seismo_skill/docs/GMT_docs-6.5/
+     source/
+     README.md
+     ...
    ```
 
-3. **Access Knowledge Base Page**
-   - Open web interface: `http://localhost:5000/knowledge`
-   - Click the "Build Skills" button in the main knowledge base card
-   - The system will automatically:
-     - Scan `seismo_skill/docs/` directory
-     - Index all documentation files (PDF, MD, RST, HTML, etc.)
-     - Generate FAISS vector index for RAG retrieval
-     - Create corresponding skill documents based on documentation content
+2. **Start SAGE Web**
 
-4. **Supported Documentation Formats**
-   - PDF documents
-   - Markdown files (.md)
-   - reStructuredText files (.rst)
-   - HTML files (.html, .htm)
-   - Text files (.txt)
+   ```bash
+   python web_app/app.py --port 5010
+   ```
+
+   Open `http://localhost:5010/knowledge`.
+
+3. **Generate the SKILL in the web UI**
+
+   In the **Skill Docs Directory** card:
+
+   - Click refresh and select `GMT_docs-6.5`.
+   - Set **SKILL structure** to **OpenAI-style folder SKILL**.
+   - Enable **RAG/vector-assisted build** if the folder has many files. This uses retrieval and clustering only as build assistance; the final result is still a SKILL, not a permanent RAG index.
+   - Optionally set the target topic cluster count. Leave it blank to let SAGE suggest one automatically.
+   - Click **Start Build**.
+
+4. **Generated output**
+
+   The generated skill is written to:
+
+   ```text
+   seismo_skill/user_skills/_gen_gmt_docs_zh/
+     SKILL.md
+     subskills/
+     references/
+     workflows/
+     agents/
+   ```
+
+   The top-level `SKILL.md` is the entry point. The `subskills/` directory contains clustered reusable GMT subskills, and `references/manifest.md` records the source files used during construction.
+
+5. **Verify the generated SKILL is used**
+
+   Ask in Chat or Code mode:
+
+   ```text
+   GMT 的 -J 投影选项怎么用？给我几个常见投影示例。
+   ```
+
+   ```text
+   用 GMT grdimage 绘制地形图，并添加 colorbar，解释参数。
+   ```
+
+   You do not need to explicitly mention `_gen_gmt_docs_zh`; GMT-related keywords such as `GMT`, `grdimage`, `makecpt`, `coast`, `-J`, `-R`, and `-B` should automatically retrieve the generated documentation skill together with the built-in `gmt_plotting` skill.
+
+6. **Manage or delete generated skills**
+
+   Generated skills appear in the Knowledge/Skill management UI as skill assets and can be deleted from there. Deletion removes both the generated SKILL folder and its build metadata.
+
+Supported documentation formats include PDF, Markdown (`.md`), reStructuredText (`.rst`), HTML, plain text, scripts, and mixed documentation folders.
+
+#### Academic Research Skills
+
+SAGE vendors [academic-research-skills](https://github.com/Imbad0202/academic-research-skills) under:
+
+```text
+third_party/academic-research-skills/
+```
+
+The bundled OpenAI-style skills include:
+
+- `deep-research` — literature-grounded research planning and evidence synthesis
+- `academic-paper` — academic manuscript drafting and revision
+- `academic-paper-reviewer` — reviewer-style critique and revision guidance
+- `academic-pipeline` — end-to-end research workflow planning
+
+Install or refresh them from the web backend:
+
+```bash
+curl -X POST http://localhost:5010/api/skills/install-academic-research \
+  -H "Content-Type: application/json" \
+  -d '{"overwrite": true}'
+```
+
+After installation, Chat, Science Analysis, and CodeEngine can retrieve these skills automatically. You usually do not need to name a skill explicitly; research-oriented prompts such as "review this paper", "design a literature-backed study", or "write a JGR-style draft" should retrieve the relevant academic skills and combine them with local seismology skills and RAG.
+
+### Parameter Optimization Agent
+
+The old interpretation page has been replaced by the Parameter Optimization Agent at:
+
+```text
+http://localhost:5010/parameter-optimization-agent
+```
+
+The legacy `/evidence-geo-agent` URL redirects to this page. The optimizer is meant for workflows where the user defines modules, module inputs/outputs, tunable parameters, and the final objective. The agent then asks CodeEngine to inspect the project folder, generate and debug scripts, run smoke tests, perform a bounded optimization or dry run, and save:
+
+- `optimization_plan.md`
+- `best_parameters.json`
+- `optimization_history.csv`
+- figures and logs
+- `optimization_report.md`
+
+All outputs stay inside the selected project directory, so Science Analysis can later reuse the optimization trace, figures, and report when drafting a paper.
 
 #### Automatic Skill Generation
 
@@ -1031,358 +1122,6 @@ Toolbar below each GMT image provides:
 
 ---
 
-## EvidenceDrivenGeoAgent — Geoscience Interpretation Agent
-
-`EvidenceDrivenGeoAgent` is an autonomous geoscience interpretation agent that follows an evidence-first, anti-hallucination design philosophy. Given a geological research question, it autonomously retrieves data from multiple sources, extracts structured evidence, generates and scores competing hypotheses, and finally produces a fully traceable interpretation report.
-
-### Design Principles
-
-| Principle | Implementation |
-|---|---|
-| **Evidence-first** | Every claim must reference at least one evidence record with source, confidence, and polarity |
-| **Anti-hallucination** | Cannot assert any conclusion not supported by retrieved evidence |
-| **Convergence detection** | Stops automatically when new evidence no longer changes hypothesis scores (Δ < 0.05) |
-| **Competing hypotheses** | Always maintains ≥ 2 competing hypotheses until evidence definitively rules one out |
-| **Full traceability** | Every step of the reasoning chain is logged in the tool call history |
-
-### Architecture
-
-```
-EvidenceDrivenGeoAgent
-├── AgentConfig              # All parameters: workspace, LLM, loop limits, capability flags
-├── EvidenceRecord           # Structured evidence: content / source / confidence / polarity / data_type
-├── GeoHypothesis            # Hypothesis: description / support_score / evidence_ids / status
-├── AgentState               # Running state: question / evidence list / hypotheses / iteration counter
-└── Tool Registry (9 tools)
-    ├── retrieve_local_literature   # FAISS semantic search in local PDFs
-    ├── retrieve_rag_chunks         # RAG vector database search
-    ├── web_search                  # DuckDuckGo HTML + Semantic Scholar API
-    ├── read_local_file             # Read CSV / GeoJSON / text data files
-    ├── run_python_analysis         # Sandboxed Python execution (optional)
-    ├── generate_hypothesis         # Propose new competing hypotheses
-    ├── score_hypothesis            # Score and rank hypotheses based on evidence
-    ├── write_report                # Generate structured Markdown interpretation report
-    └── request_missing_info        # Document data gaps and additional information needed
-```
-
-### Agent Reasoning Loop
-
-```
-Question → Initialization
-     ↓
-┌─── Iteration N ────────────────────────────────────┐
-│  1. Plan: which tools to call this round           │
-│  2. Execute tools (≤ max_tool_calls_per_iter)      │
-│  3. Extract evidence → append to evidence list     │
-│  4. Update hypothesis scores                       │
-│  5. Convergence check (Δscore < 0.05 for 2 iters) │
-└─────────────────────────────────────────────────────┘
-     ↓  (converged or max_iterations reached)
-Write Report → Return AgentOutput
-```
-
-### Evidence Record Schema
-
-```python
-@dataclass
-class EvidenceRecord:
-    evidence_id:  str    # Unique ID, e.g. "ev_001"
-    content:      str    # Evidence text content
-    source:       str    # Source: filename / URL / "user_upload"
-    source_type:  str    # "literature" | "rag" | "web" | "data" | "user_upload"
-    confidence:   float  # 0.0 – 1.0
-    polarity:     str    # "support" | "contradict" | "neutral"
-    data_type:    str    # "text" | "numeric" | "geospatial" | "figure"
-    timestamp:    str    # ISO 8601
-```
-
-### Nine Built-in Tools
-
-| Tool | Description | Required Config |
-|---|---|---|
-| `retrieve_local_literature` | Semantic search in local PDF literature directory | `literature_root` set, PyPDF2 installed |
-| `retrieve_rag_chunks` | Search FAISS / ChromaDB vector database | `use_rag=True`, RAG engine initialized |
-| `web_search` | DuckDuckGo web search + Semantic Scholar academic search | `allow_web_search=True` |
-| `read_local_file` | Read CSV / GeoJSON / TXT data files | `use_local_files=True`, `workspace_root` set |
-| `run_python_analysis` | Execute Python code in a sandbox for data processing | `allow_python=True` |
-| `generate_hypothesis` | Propose ≥ 2 competing interpretations for the question | Always available |
-| `score_hypothesis` | Score hypotheses based on current evidence | Always available |
-| `write_report` | Generate structured Markdown report with evidence citations | Always available |
-| `request_missing_info` | Document data gaps and additional information needed | Always available |
-
-### Data Source Priority
-
-The agent searches data sources in the following priority order:
-
-1. **User-uploaded files** (uploaded via the web UI in the current session) — highest priority, most relevant to the current task
-2. **Local workspace files** (`workspace_root`) — project data files
-3. **Local literature directory** (`literature_root`) — locally stored PDF papers
-4. **RAG vector database** — indexed knowledge base (all uploaded historical documents)
-5. **Web search** — DuckDuckGo + Semantic Scholar (only when `allow_web_search=True`)
-
-### Convergence Conditions
-
-The agent stops the reasoning loop when **any** of the following conditions is met:
-
-- `max_iterations` reached (default: 3)
-- Hypothesis score changes across two consecutive iterations all < 0.05 (convergence)
-- A `write_report` tool call has been made
-- All required tools have been called and evidence is sufficient
-
-### Geo Agent Web UI
-
-Access the web interface at `http://localhost:5000/evidence-geo-agent`.
-
-**Left sidebar — Configuration panel:**
-
-| Section | Controls |
-|---|---|
-| Workspace | Workspace path / Literature directory / Output directory |
-| Loop Parameters | Max iterations / Max tool calls / RAG top-k / Score threshold |
-| Capabilities | Python execution / RAG search / Local files / Multimodal / Web search |
-| File Upload | Drag-and-drop upload of images, PDFs, CSVs (auto-classified) |
-| Web Search | Keyword search across DuckDuckGo + Semantic Scholar |
-
-**Main area — Interpretation task:**
-
-| Field | Description |
-|---|---|
-| Research Question | The geological question to interpret, e.g. "What is the seismogenic structure of the 2023 M7.8 Turkey earthquake?" |
-| Study Area | Geographic location (optional), e.g. "Kahramanmaraş, Turkey" |
-| Example buttons | Click to auto-fill a typical question |
-
-**Results tabs:**
-
-| Tab | Content |
-|---|---|
-| Report | Full Markdown interpretation report, rendered to HTML |
-| Evidence Table | All evidence records with source, confidence, polarity, collapsible |
-| Hypotheses | All competing hypotheses with final scores and ranking |
-| Figures | All figures output by the agent, displayed as a thumbnail grid |
-| Tool Log | Complete tool call history per iteration, collapsible |
-| Missing Info | Data gaps and additional information the agent could not obtain |
-
-**Bilingual support:** Click the `中/EN` button in the top-right to toggle between Chinese and English. The preference is saved in `localStorage` and persists across sessions.
-
-### File Upload for Research Data
-
-The web UI supports drag-and-drop or click-to-select upload of multiple files simultaneously:
-
-```
-Supported formats:
-  PDF              → auto-classified to literature/
-  PNG / JPG / SVG  → auto-classified to figures/
-  CSV              → auto-classified to data/
-  TXT / JSON / XML → auto-classified to misc/
-```
-
-Each upload session gets an isolated workspace directory:
-
-```
-uploads/geo_workspaces/<session_id>/
-├── literature/   ← uploaded PDF papers
-├── figures/      ← uploaded images / diagrams
-├── data/         ← uploaded CSV / data files
-└── misc/         ← other file types
-```
-
-The agent automatically discovers and reads files from this workspace, with user uploads taking highest priority in the data source hierarchy.
-
-**API endpoint:**
-
-```
-POST /api/evidence_geo_agent/upload
-Content-Type: multipart/form-data
-
-Fields:
-  files[]     — one or more files
-  session_id  — session identifier (generated by frontend if not provided)
-
-Response:
-  { "ok": true, "uploaded": [...], "session_id": "...", "workspace": "..." }
-```
-
-### Inline Web Literature Search
-
-The web UI includes an instant web search panel in the left sidebar. Without starting a full agent run, you can directly search for relevant papers and web resources:
-
-```
-Search modes:
-  scholar_search  — Semantic Scholar API, returns title / authors / year / abstract / citation count
-  web_search      — DuckDuckGo HTML scraping, returns title / URL / snippet
-```
-
-**API endpoint:**
-
-```
-POST /api/evidence_geo_agent/web_search
-Content-Type: application/json
-
-Body:
-  { "query": "East Anatolian Fault seismicity", "search_type": "scholar_search" }
-
-Response:
-  { "ok": true, "results": [ { "title": "...", "url": "...", "snippet": "..." }, ... ] }
-```
-
-### Geo Agent CLI Command
-
-```bash
-# Basic usage
-sage-geo "What is the seismogenic mechanism of the 2021 Maduo earthquake?"
-
-# Full options
-sage-geo "Analyze the seismotectonics of Sichuan Basin" \
-  --workspace /path/to/project \
-  --literature /path/to/papers \
-  --output outputs/my_report \
-  --max-iter 5 \
-  --web-search \
-  --rag \
-  --multimodal
-
-# Available options
-  --workspace       Project workspace root directory
-  --literature      Local PDF literature directory
-  --output          Output directory for results
-  --max-iter        Maximum reasoning iterations (default: 3)
-  --max-tools       Maximum tool calls per iteration (default: 8)
-  --rag-k           RAG retrieval top-k (default: 8)
-  --web-search      Enable web search (DuckDuckGo + Semantic Scholar)
-  --no-rag          Disable RAG vector database search
-  --no-local-files  Disable local file reading
-  --multimodal      Enable multimodal analysis (requires vision-capable LLM)
-  --allow-shell     Allow shell command execution
-  --provider        LLM provider (ollama/openai/custom)
-  --model           Model name
-  --api-key         API key (for online providers)
-  --api-base        API base URL (for custom/compatible providers)
-```
-
-**Output files:**
-
-```
-outputs/evidence_driven_geo_agent/
-├── report_<timestamp>.md           # Full Markdown interpretation report
-├── evidence_table_<timestamp>.json # All structured evidence records
-├── hypotheses_<timestamp>.json     # All hypotheses with scores
-└── agent_state_<timestamp>.json    # Complete agent state snapshot
-```
-
-### Geo Agent Flask API
-
-**Start an interpretation task:**
-
-```
-POST /api/evidence_geo_agent
-Content-Type: application/json
-
-{
-  "question":                "Analyze the seismogenic structure of the 2023 M7.8 Turkey earthquake",
-  "study_area":              "Kahramanmaraş, Turkey",
-  "session_id":              "optional-session-id",
-  "workspace_root":          "/path/to/workspace",
-  "literature_root":         "/path/to/papers",
-  "output_dir":              "outputs/evidence_driven_geo_agent",
-  "allow_web_search":        true,
-  "use_rag":                 true,
-  "use_local_files":         true,
-  "use_multimodal":          false,
-  "max_iterations":          3,
-  "max_tool_calls_per_iter": 8,
-  "rag_top_k":               8,
-  "score_threshold":         0.35
-}
-
-Response: { "job_id": "geo_xxxx", "status": "started" }
-```
-
-**Poll for results:**
-
-```
-GET /api/evidence_geo_agent/poll/<job_id>
-
-Response (running):
-  { "status": "running", "progress": [...log lines...], "result": null }
-
-Response (completed):
-  {
-    "status": "completed",
-    "progress": [...],
-    "result": {
-      "report":          "# Interpretation Report\n...",
-      "evidence_list":   [ { "evidence_id": "ev_001", ... }, ... ],
-      "hypotheses":      [ { "description": "...", "support_score": 0.82, ... }, ... ],
-      "figures":         [ "/api/evidence_geo_agent/figure?path=...", ... ],
-      "tool_log":        [ { "iter": 1, "tool": "web_search", ... }, ... ],
-      "missing_info":    [ "High-resolution focal mechanism data", ... ],
-      "iterations_used": 3,
-      "converged":       true
-    }
-  }
-```
-
-**Serve a figure:**
-
-```
-GET /api/evidence_geo_agent/figure?path=<relative-or-absolute-path>
-
-Returns the image file (PNG/JPG/SVG) with appropriate Content-Type.
-Path is sandbox-checked to stay within the project root or geo_workspaces directory.
-```
-
-### Python Programmatic Usage
-
-```python
-from sage_agents import EvidenceDrivenGeoAgent, AgentConfig
-
-cfg = AgentConfig(
-    workspace_root          = "/path/to/project",
-    literature_root         = "/path/to/papers",
-    output_dir              = "outputs/my_analysis",
-    allow_web_search        = True,
-    use_rag                 = True,
-    use_multimodal          = False,
-    max_iterations          = 5,
-    max_tool_calls_per_iter = 10,
-    rag_top_k               = 8,
-    score_threshold         = 0.35,
-    allow_python            = True,
-    allow_shell             = False,
-    code_timeout_s          = 60,
-)
-
-agent = EvidenceDrivenGeoAgent(config=cfg)
-
-output = agent.run(
-    question   = "What is the seismogenic structure of the 2021 Maduo earthquake?",
-    study_area = "Maduo County, Qinghai Province, China",
-)
-
-print(output.report)
-print(f"Converged in {output.iterations_used} iterations")
-print(f"Evidence records: {len(output.evidence_list)}")
-print(f"Top hypothesis: {output.hypotheses[0].description} (score={output.hypotheses[0].support_score:.2f})")
-```
-
-### Output Schema
-
-```python
-@dataclass
-class AgentOutput:
-    report:          str                    # Full Markdown interpretation report
-    evidence_list:   List[EvidenceRecord]   # All structured evidence records
-    hypotheses:      List[GeoHypothesis]    # All hypotheses, sorted by score descending
-    figures:         List[str]              # Paths to output figures
-    tool_log:        List[dict]             # Detailed tool call log per iteration
-    missing_info:    List[str]              # Data gaps the agent could not fill
-    iterations_used: int                    # Actual iterations completed
-    converged:       bool                   # Whether stopped due to convergence
-    error:           Optional[str]          # Error message if run failed
-```
-
----
-
 ## Core Modules Details
 
 ### `seismo_script/` — Workflow System
@@ -1549,12 +1288,16 @@ sage/
 ├── seismo_tools/                 # External tool registry
 │   └── tool_registry.py          # HypoDD / VELEST / HASH etc.
 │
-├── pnsn/                         # ← Needs separate clone (see installation instructions)
-│   ├── picker.py                 # Phase picking entry point
-│   ├── fastlinker.py             # FastLink event association
-│   ├── gammalink.py              # Gamma event association
-│   ├── pickers/                  # JIT / ONNX model files
-│   └── config/                   # Picker parameter configuration
+├── seismo_skill/
+│   └── skills/
+│       └── pnsn_phase_detection/ # OpenAI-style PNSN phase picking skill
+│           ├── SKILL.md
+│           └── pnsn/             # Skill-local pnsn code and models
+│               ├── picker.py
+│               ├── fastlinker.py
+│               ├── gammalink.py
+│               ├── pickers/      # JIT / ONNX model files
+│               └── config/       # Picker parameter configuration
 │
 ├── conversational_agent.py       # Conversation Agent core (intent classification + skill execution)
 ├── config_manager.py             # LLM configuration management
@@ -1671,6 +1414,12 @@ pip install FlagEmbedding sentence-transformers
 ```
 
 If none of the above methods can solve, the project's built-in lightweight TF-IDF vector database will automatically serve as fallback solution, basic RAG functionality still available.
+
+---
+
+## Acknowledgements
+
+SAGE's integrated Aider backend builds on [Aider](https://github.com/Aider-AI/aider), an open-source AI pair programming tool for terminal and Git workflows. SAGE vendors the Aider source under `third_party/aider` and integrates it through its Python scripting API where available, with installed-package and CLI fallbacks for compatibility. The experimental OpenHands backend is designed to interoperate with [OpenHands](https://github.com/OpenHands/OpenHands). We thank these open-source communities for making stronger coding-agent workflows possible.
 
 ---
 

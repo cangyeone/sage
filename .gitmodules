@@ -1,0 +1,3 @@
+[submodule "third_party/aider"]
+	path = third_party/aider
+	url = https://github.com/Aider-AI/aider.git

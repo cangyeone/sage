@@ -153,6 +153,7 @@ def llm_config_get():
         'config': _mask_api_key(llm_config),
         'search': _public_search_config(cfg_mgr.get_search_config()),
         'app_paths': cfg_mgr.get_app_paths(),
+        'coding_agent': cfg_mgr.get_coding_agent_config(),
         'online_providers': _public_online_providers(),
         'first_run': cfg_mgr.is_first_run(),
         'ollama_available': cfg_mgr.check_ollama_available()
@@ -264,7 +265,7 @@ def search_config():
 
 @bp.route('/api/config/app_paths', methods=['GET', 'POST'])
 def app_paths_config():
-    """Get/update shared Chat and Geo Agent path defaults."""
+    """Get/update shared Chat and Parameter Optimizer path defaults."""
     from config_manager import get_config_manager
     mgr = get_config_manager()
     project_cfg = mgr.get_project_config()
@@ -290,6 +291,46 @@ def app_paths_config():
             paths[key] = str(data.get(key) or '').strip()
     mgr.save_project_config(project_cfg)
     return jsonify({'ok': True, 'app_paths': paths})
+
+
+@bp.route('/api/config/coding_agent', methods=['GET', 'POST'])
+def coding_agent_config():
+    """Get/update the project-scoped coding backend configuration."""
+    from config_manager import get_config_manager
+    mgr = get_config_manager()
+    project_cfg = mgr.get_project_config()
+    cfg = project_cfg.setdefault('coding_agent', mgr.get_coding_agent_config())
+
+    if request.method == 'GET':
+        status = {}
+        try:
+            from seismo_code.external_coding_agent import external_agent_status
+            status = external_agent_status(cfg)
+        except Exception as exc:
+            status = {'available': False, 'error': str(exc)}
+        return jsonify({'ok': True, 'coding_agent': cfg, 'status': status})
+
+    data = request.get_json(silent=True) or {}
+    backend = str(data.get('backend') or cfg.get('backend') or 'builtin').strip()
+    if backend not in {'builtin', 'aider', 'openhands'}:
+        return jsonify({'ok': False, 'error': f'Invalid coding agent backend: {backend}'}), 400
+    cfg['backend'] = backend
+    # Backend selection is the source of truth. Keep `enabled` only for older clients.
+    cfg['enabled'] = backend != 'builtin'
+    for key in ('command', 'model', 'extra_args'):
+        if key in data:
+            cfg[key] = str(data.get(key) or '').strip()
+    if 'timeout_s' in data:
+        try:
+            cfg['timeout_s'] = max(30, min(7200, int(data.get('timeout_s') or 900)))
+        except Exception:
+            cfg['timeout_s'] = 900
+    if 'auto_approve' in data:
+        cfg['auto_approve'] = bool(data.get('auto_approve'))
+    if 'use_current_llm_env' in data:
+        cfg['use_current_llm_env'] = bool(data.get('use_current_llm_env'))
+    mgr.save_project_config(project_cfg)
+    return jsonify({'ok': True, 'coding_agent': cfg})
 
 
 @bp.route('/api/llm/ollama/models', methods=['GET'])

@@ -1,11 +1,14 @@
 """技能和工作流管理路由
 
 v2 新增接口：
-  POST /api/skills/install          从本地目录安装文件夹技能
+  POST /api/skills/install          从本地目录/skills repo 安装文件夹技能
   GET  /api/skills/<name>/references 获取技能的 references 内容
   GET  /api/skills/folder-template  获取文件夹技能的初始模板文件集
 """
 from flask import Blueprint, request, jsonify
+from pathlib import Path
+import shutil
+import subprocess
 from helpers import get_skill_loader, get_workflow_runner
 
 bp = Blueprint('skills', __name__)
@@ -86,11 +89,16 @@ def skills_save():
 @bp.route('/api/skills/install', methods=['POST'])
 def skills_install():
     """
-    从本地目录安装文件夹技能到 ~/.seismicx/skills/<name>/。
+    从本地目录安装文件夹技能到 seismo_skill/user_skills/<name>/。
+
+    兼容 OpenAI/Codex skills repo：
+      - /path/to/skill/SKILL.md
+      - /path/to/repo/skills/<skill>/SKILL.md
+      - /path/to/root/<skill>/SKILL.md
 
     请求体（JSON）：
       {
-        "path": "/absolute/or/relative/path/to/skill-folder",
+        "path": "/absolute/or/relative/path/to/skill-folder-or-repo",
         "overwrite": true   // 可选，默认 true
       }
 
@@ -109,14 +117,30 @@ def skills_install():
         return jsonify({'ok': False, 'error': '请提供 path 字段（技能源目录路径）'}), 400
 
     try:
-        entry = sl.skill_loader.install_skill_from_dir(src_path, overwrite=overwrite)
+        if hasattr(sl.skill_loader, 'install_skills_from_dir'):
+            entries = sl.skill_loader.install_skills_from_dir(src_path, overwrite=overwrite)
+        else:
+            entries = [sl.skill_loader.install_skill_from_dir(src_path, overwrite=overwrite)]
+        public_entries = [{
+            'name': entry['name'],
+            'display_name': entry.get('display_name', entry['name']),
+            'path': entry['path'],
+            'is_folder': entry.get('is_folder', True),
+            'format': entry.get('format', ''),
+            'ref_names': list(entry.get('references', {}).keys()),
+            'resource_manifest': entry.get('resource_manifest', []),
+            'agent_config': entry.get('agent_config', {}),
+        } for entry in entries]
+        first = public_entries[0]
         return jsonify({
             'ok':       True,
-            'name':     entry['name'],
-            'path':     entry['path'],
-            'is_folder': entry.get('is_folder', True),
-            'ref_names': list(entry.get('references', {}).keys()),
-            'agent_config': entry.get('agent_config', {}),
+            'count':    len(public_entries),
+            'name':     first['name'],
+            'path':     first['path'],
+            'is_folder': first['is_folder'],
+            'ref_names': first['ref_names'],
+            'agent_config': first['agent_config'],
+            'skills':   public_entries,
         })
     except FileNotFoundError as e:
         return jsonify({'ok': False, 'error': str(e)}), 404
@@ -126,6 +150,62 @@ def skills_install():
         return jsonify({'ok': False, 'error': str(e)}), 400
     except Exception as e:
         return jsonify({'ok': False, 'error': f'安装失败：{e}'}), 500
+
+
+@bp.route('/api/skills/install-academic-research', methods=['POST'])
+def skills_install_academic_research():
+    """
+    Install bundled academic research skills.
+
+    The source repo is kept project-locally under
+    third_party/academic-research-skills, then OpenAI/Codex-style folders
+    with SKILL.md are installed into seismo_skill/user_skills.
+    """
+    sl = get_skill_loader()
+    if sl is None:
+        return jsonify({'ok': False, 'error': '技能模块未安装'}), 500
+
+    data = request.get_json(silent=True) or {}
+    overwrite = data.get('overwrite', True)
+    root = Path(__file__).resolve().parents[2]
+    repo_dir = root / 'third_party' / 'academic-research-skills'
+    repo_url = 'https://github.com/Imbad0202/academic-research-skills.git'
+
+    try:
+        if not repo_dir.exists():
+            repo_dir.parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run(
+                ['git', 'clone', '--depth', '1', repo_url, str(repo_dir)],
+                cwd=str(root),
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+            shutil.rmtree(repo_dir / '.git', ignore_errors=True)
+        if not repo_dir.exists():
+            return jsonify({'ok': False, 'error': f'未找到：{repo_dir}'}), 404
+        entries = sl.skill_loader.install_skills_from_dir(str(repo_dir), overwrite=overwrite)
+        sl.invalidate_cache()
+        public_entries = [{
+            'name': entry['name'],
+            'display_name': entry.get('display_name', entry['name']),
+            'path': entry['path'],
+            'format': entry.get('format', ''),
+            'ref_names': list(entry.get('references', {}).keys()),
+            'agent_config': entry.get('agent_config', {}),
+        } for entry in entries]
+        return jsonify({
+            'ok': True,
+            'source_path': str(repo_dir),
+            'count': len(public_entries),
+            'skills': public_entries,
+        })
+    except subprocess.CalledProcessError as e:
+        err = e.stderr or e.stdout or str(e)
+        return jsonify({'ok': False, 'error': f'下载 academic research skills 失败：{err}'}), 500
+    except Exception as e:
+        return jsonify({'ok': False, 'error': f'安装 academic research skills 失败：{e}'}), 500
 
 
 @bp.route('/api/skills/<name>', methods=['DELETE'])

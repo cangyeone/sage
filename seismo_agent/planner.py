@@ -61,11 +61,30 @@ step_type values:
 - "search" Search literature for specific information
 
 Planning principles:
-1. If paper is provided, start with 1-2 steps to extract key methods/formulas
-2. Data preparation steps (read, preprocess) come first
-3. Each step does one thing; keep granularity moderate
-4. Final step is result visualization or verification
-5. Aim for 3-8 total steps — avoid over-splitting
+1. For scientific analysis projects, follow this pipeline:
+   data discovery -> research-direction assessment -> scientific-question planning ->
+   figure/statistics plan -> coding/statistical analysis -> markdown paper synthesis.
+2. The first executable step must inspect real files and infer data formats/columns
+   before assuming a schema.
+3. If papers or web-search context are provided, include a literature-evidence step
+   before final interpretation.
+4. Figure/statistics planning should happen before plotting so the code has a target.
+5. Each code step should leave reproducible artifacts in the output directory:
+   scripts, tables, figures, logs, or markdown notes.
+6. Final step is result verification and Markdown paper/report drafting.
+7. Aim for 5-8 total steps — avoid over-splitting.
+8. Scientific questions must be mechanism-oriented, not data-description-oriented.
+   Avoid plans/titles that merely analyze "data quality", "catalog characteristics",
+   or "basic statistics" unless the user explicitly asks for QC. Prefer hypotheses
+   about physical process, fault geometry, stress transfer, weak zones, fluids,
+   rupture segmentation, strain release, or competing mechanisms that can be tested
+   with the available data and literature.
+9. Keep the main-paper artifact plan focused: normally 2-3 main figures and 1-2
+   tables are enough. Put data quality checks, parameter histograms, column
+   inventories, and generic distribution plots into supplementary notes/tables,
+   not into the main scientific story.
+10. The plan should read like a research design, not a data audit. Each executable
+    analysis step must name the hypothesis it tests.
 """
 
 
@@ -128,11 +147,14 @@ def _parse_plan(raw: str) -> List[PlanStep]:
 
 
 def _fallback_plan() -> List[PlanStep]:
-    """Default 3-step plan when LLM parsing fails."""
+    """Default science workflow when LLM parsing fails."""
     return [
-        PlanStep(1, "Prepare data and verify format", "code", "Data loaded"),
-        PlanStep(2, "Implement core processing", "code", "Processing result"),
-        PlanStep(3, "Visualize and output results", "code", "Result figures"),
+        PlanStep(1, "Inspect project files and infer data schemas", "code", "Data inventory and schema notes"),
+        PlanStep(2, "Frame mechanism-oriented research questions", "qa", "Primary question, hypotheses, missing evidence"),
+        PlanStep(3, "Test the primary mechanism hypothesis", "code", "One focused evidence table and one main figure"),
+        PlanStep(4, "Test an alternative or competing hypothesis", "code", "Comparison table or targeted figure"),
+        PlanStep(5, "Prepare paper-ready evidence synthesis", "code", "Main figure/table map and verification notes"),
+        PlanStep(6, "Draft grounded Markdown paper", "qa", "Paper draft outline with evidence status"),
     ]
 
 

@@ -9,12 +9,13 @@ Public API
 extract_text(path)                → List[Tuple[int, str]]
 chunk_text(text, size, overlap)   → List[str]
 
-Supported formats: .pdf  .docx  .md  .txt  .rst  .html  .htm
+Supported formats: .pdf  .doc  .docx  .md  .txt  .rst  .html  .htm
 """
 
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 from typing import List, Tuple
 
@@ -94,6 +95,24 @@ def _extract_pdf(path: str) -> List[Tuple[int, str]]:
 # ---------------------------------------------------------------------------
 # DOCX
 # ---------------------------------------------------------------------------
+
+def _extract_doc(path: str) -> List[Tuple[int, str]]:
+    """Extract legacy .doc text via macOS textutil when available."""
+    try:
+        proc = subprocess.run(
+            ["textutil", "-convert", "txt", "-stdout", path],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"DOC parsing requires macOS textutil or conversion to DOCX/TXT: {exc}")
+    text = proc.stdout.strip()
+    if not text and proc.stderr.strip():
+        raise RuntimeError(f"DOC parsing failed: {proc.stderr.strip()}")
+    return [(0, text)] if text else []
+
 
 def _extract_docx(path: str) -> List[Tuple[int, str]]:
     """
@@ -322,6 +341,7 @@ def _extract_html(path: str) -> List[Tuple[int, str]]:
 
 _EXTRACTORS = {
     ".pdf":  _extract_pdf,
+    ".doc":  _extract_doc,
     ".docx": _extract_docx,
     ".md":   _extract_md,
     ".txt":  _extract_txt,

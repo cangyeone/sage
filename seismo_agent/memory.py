@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import csv
 
 from .paper_reader import Paper, PaperStore
 
@@ -78,11 +79,46 @@ class AgentMemory:
             return "（尚无执行记录）"
         return "\n".join(r.brief() for r in self.step_results)
 
+    def artifacts_summary(self, max_files: int = 20) -> str:
+        """Summarize generated artifacts so later LLM steps can reuse them."""
+        if not self.output_files and not self.figures:
+            return ""
+        lines = ["=== 已生成/可复用中间产物 ==="]
+        seen = set()
+        for path_str in list(self.output_files) + list(self.figures):
+            if not path_str or path_str in seen:
+                continue
+            seen.add(path_str)
+            path = Path(path_str)
+            desc = f"- {path.name}: {path_str}"
+            if path.suffix.lower() == ".csv" and path.exists():
+                try:
+                    with path.open(newline="", encoding="utf-8", errors="ignore") as f:
+                        reader = csv.reader(f)
+                        header = next(reader, [])
+                        row_count = sum(1 for _ in reader)
+                    desc += f" | CSV rows={row_count}, columns={header[:16]}"
+                except Exception as exc:
+                    desc += f" | CSV metadata unavailable: {exc}"
+            elif path.exists():
+                try:
+                    desc += f" | size={path.stat().st_size} bytes"
+                except Exception:
+                    pass
+            lines.append(desc)
+            if len(lines) > max_files:
+                lines.append(f"- ... 还有 {len(seen) - max_files + 1} 个文件")
+                break
+        return "\n".join(lines)
+
     def accumulated_context(self, max_chars: int = 3000) -> str:
         """
         返回给 LLM 的积累上下文：各步骤输出摘要 + 变量列表。
         """
         parts = []
+        artifacts = self.artifacts_summary()
+        if artifacts:
+            parts.append(artifacts)
         if self.step_results:
             parts.append("=== 已执行步骤 ===")
             for r in self.step_results[-5:]:  # 只传最近 5 步

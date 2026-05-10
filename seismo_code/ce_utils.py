@@ -197,21 +197,35 @@ def _call_llm(
 # Code / response parsers
 # ---------------------------------------------------------------------------
 
+def _strip_code_fence_lines(code: str) -> str:
+    """Remove stray Markdown fence lines from an already selected code block."""
+    lines = str(code or "").strip().splitlines()
+    while lines and re.match(r"^\s*```(?:\w+)?\s*$", lines[0]):
+        lines = lines[1:]
+    while lines and re.match(r"^\s*```\s*$", lines[-1]):
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
 def _extract_code(text: str) -> str:
     """
     Extract Python or bash source from LLM response.
     Preference: ```python > ```bash/sh > bare ``` > raw text.
     """
-    m = re.search(r"```python\s*(.*?)```", text, re.DOTALL)
+    raw = str(text or "").strip()
+
+    # Prefer complete fenced blocks, but tolerate the common local-model failure
+    # where the opening fence is emitted without a closing fence.
+    m = re.search(r"```(?:python|py)\s*(.*?)(?:```|\Z)", raw, re.DOTALL | re.IGNORECASE)
     if m:
-        return "# lang:python\n" + m.group(1).strip()
-    m = re.search(r"```(?:bash|sh)\s*(.*?)```", text, re.DOTALL)
+        return "# lang:python\n" + _strip_code_fence_lines(m.group(1))
+    m = re.search(r"```(?:bash|sh)\s*(.*?)(?:```|\Z)", raw, re.DOTALL | re.IGNORECASE)
     if m:
-        return "# lang:bash\n" + m.group(1).strip()
-    m = re.search(r"```\s*(.*?)```", text, re.DOTALL)
+        return "# lang:bash\n" + _strip_code_fence_lines(m.group(1))
+    m = re.search(r"```\s*(.*?)(?:```|\Z)", raw, re.DOTALL)
     if m:
-        return m.group(1).strip()
-    return text.strip()
+        return _strip_code_fence_lines(m.group(1))
+    return _strip_code_fence_lines(raw)
 
 
 def _is_bash_code(code: str) -> bool:

@@ -2,10 +2,11 @@
 rag_backends.py — Embedding model and FAISS vector index for the RAG pipeline.
 
 EmbeddingModel
-    Lazy-loads BGE-M3 with a three-step fallback chain:
-      1. FlagEmbedding  (BGEM3FlagModel)
-      2. sentence-transformers  (SentenceTransformer)
-      3. transformers + safetensors  (for environments where torch < 2.6
+    Lazy-loads BGE-M3 with a fallback chain:
+      1. local ONNX model  (onnxruntime + tokenizers, no transformers needed)
+      2. FlagEmbedding  (BGEM3FlagModel)
+      3. sentence-transformers  (SentenceTransformer)
+      4. transformers + safetensors  (for environments where torch < 2.6
          blocks torch.load due to CVE-2025-32434)
     Call EmbeddingModel.get().encode(texts) to use.
 
@@ -15,7 +16,8 @@ FaissIndex
 
 get_embedding_model_path()
     Reads ~/.seismicx/config.json → embedding.model_path.
-    Defaults to "BAAI/bge-m3" (HuggingFace hub).
+    Defaults to project-local "open_models/bge-m3" when present, otherwise
+    "BAAI/bge-m3" (HuggingFace hub).
 """
 
 from __future__ import annotations
@@ -32,7 +34,8 @@ from typing import List, Optional, Tuple
 def get_embedding_model_path() -> str:
     """
     Read the embedding model path from ~/.seismicx/config.json.
-    Falls back to "BAAI/bge-m3" if the config is absent or the key is missing.
+    Falls back to project-local open_models/bge-m3 if present; otherwise
+    "BAAI/bge-m3" if the config is absent or the key is missing.
     """
     try:
         cfg_file = Path.home() / ".seismicx" / "config.json"
@@ -41,6 +44,12 @@ def get_embedding_model_path() -> str:
             path = cfg.get("embedding", {}).get("model_path", "").strip()
             if path:
                 return path
+    except Exception:
+        pass
+    try:
+        project_model = Path(__file__).resolve().parents[1] / "open_models" / "bge-m3"
+        if project_model.exists():
+            return str(project_model)
     except Exception:
         pass
     return "BAAI/bge-m3"
@@ -87,8 +96,25 @@ class EmbeddingModel:
             return
 
         model_path = get_embedding_model_path()
+        onnx_err: Optional[str] = None
         flag_err: Optional[str] = None
         st_err:   Optional[str] = None
+
+        # --- Attempt 0: local ONNX BGE-M3 --------------------------------
+        # ModelScope/HuggingFace snapshots often include onnx/model.onnx.
+        # This path avoids transformers + huggingface_hub version conflicts.
+        try:
+            local_root = Path(model_path).expanduser()
+            if local_root.exists():
+                wrapper = _load_local_onnx_bge_m3(local_root)
+                if wrapper is not None:
+                    self._model = wrapper
+                    self._backend = "onnx"
+                    return
+        except ImportError as e:
+            onnx_err = f"ImportError: {e}"
+        except Exception as e:
+            onnx_err = f"{type(e).__name__}: {e}"
 
         # --- Attempt 1: FlagEmbedding -----------------------------------
         try:
@@ -172,6 +198,13 @@ class EmbeddingModel:
         import sys
         python = sys.executable
         diag = ["Could not load the embedding model. Diagnostics:"]
+        diag.append(f"  model_path             → {model_path}")
+        if onnx_err:
+            diag.append(f"  local ONNX             → {onnx_err}")
+        elif Path(str(model_path)).expanduser().exists():
+            diag.append("  local ONNX             → onnx/model.onnx or tokenizer.json not found")
+        else:
+            diag.append("  local ONNX             → skipped; model_path is not a local directory")
         if flag_err:
             diag.append(f"  FlagEmbedding          → {flag_err}")
         else:
@@ -181,6 +214,7 @@ class EmbeddingModel:
         else:
             diag.append("  sentence-transformers  → not installed")
 
+        _is_hub_conflict = lambda msg: "huggingface-hub" in str(msg) and ("<1.0" in str(msg) or "found huggingface-hub" in str(msg))
         if _is_cve(flag_err) or _is_cve(st_err):
             diag += [
                 "",
@@ -188,8 +222,20 @@ class EmbeddingModel:
                 "Fix: upgrade torch:",
                 f"  {python} -m pip install 'torch>=2.6'",
             ]
+        elif _is_hub_conflict(flag_err) or _is_hub_conflict(st_err):
+            diag += [
+                "",
+                "Cause: dependency version conflict in the current Python environment.",
+                "Fix one of:",
+                f"  {python} -m pip install 'huggingface-hub>=0.34,<1.0'",
+                "  Or download a local BGE-M3 directory containing onnx/model.onnx and tokenizer.json:",
+                "    modelscope download --model BAAI/bge-m3 --local_dir open_models/bge-m3",
+            ]
         else:
             diag += [
+                "",
+                "Recommended local download:",
+                "  modelscope download --model BAAI/bge-m3 --local_dir open_models/bge-m3",
                 "",
                 "Install one of:",
                 f"  {python} -m pip install FlagEmbedding",
@@ -222,7 +268,7 @@ class EmbeddingModel:
                 return_colbert_vecs=False,
             )
             vecs = result["dense_vecs"]
-        elif self._backend == "transformers-safetensors":
+        elif self._backend in {"transformers-safetensors", "onnx"}:
             vecs = self._model.encode(texts)          # already L2-normalised
         else:
             vecs = self._model.encode(
@@ -238,6 +284,68 @@ class EmbeddingModel:
     @property
     def backend(self) -> Optional[str]:
         return self._backend
+
+
+def _load_local_onnx_bge_m3(model_root: Path):
+    """Return an ONNX wrapper when a local BGE-M3 snapshot has ONNX assets."""
+    model_root = model_root.expanduser().resolve()
+    onnx_path = model_root / "onnx" / "model.onnx"
+    tokenizer_path = model_root / "tokenizer.json"
+    if not tokenizer_path.exists():
+        tokenizer_path = model_root / "onnx" / "tokenizer.json"
+    if not onnx_path.exists() or not tokenizer_path.exists():
+        return None
+
+    import numpy as np  # type: ignore
+    import onnxruntime as ort  # type: ignore
+    from tokenizers import Tokenizer  # type: ignore
+
+    class _OnnxBgeM3Wrapper:
+        def __init__(self, root: Path, model_file: Path, tok_file: Path):
+            self.root = root
+            self.tokenizer = Tokenizer.from_file(str(tok_file))
+            self.session = ort.InferenceSession(
+                str(model_file),
+                providers=["CPUExecutionProvider"],
+            )
+            self.input_names = {i.name for i in self.session.get_inputs()}
+            self.output_names = [o.name for o in self.session.get_outputs()]
+
+        def encode(self, texts: List[str], batch_size: int = 32, max_length: int = 512):
+            all_vecs = []
+            clean_texts = [str(t or "") for t in texts]
+            for start in range(0, len(clean_texts), max(1, batch_size)):
+                batch = clean_texts[start:start + max(1, batch_size)]
+                encs = self.tokenizer.encode_batch(batch)
+                ids = [list(enc.ids)[:max_length] for enc in encs]
+                if not ids:
+                    continue
+                max_len = max(1, max(len(x) for x in ids))
+                input_ids = np.zeros((len(ids), max_len), dtype=np.int64)
+                attention_mask = np.zeros((len(ids), max_len), dtype=np.int64)
+                for row, row_ids in enumerate(ids):
+                    if not row_ids:
+                        row_ids = [0]
+                    n = min(len(row_ids), max_len)
+                    input_ids[row, :n] = np.asarray(row_ids[:n], dtype=np.int64)
+                    attention_mask[row, :n] = 1
+
+                feed = {"input_ids": input_ids, "attention_mask": attention_mask}
+                feed = {k: v for k, v in feed.items() if k in self.input_names}
+                if "sentence_embedding" in self.output_names:
+                    vec = self.session.run(["sentence_embedding"], feed)[0]
+                else:
+                    token_embeddings = self.session.run(None, feed)[0]
+                    mask = attention_mask[..., None].astype("float32")
+                    vec = (token_embeddings * mask).sum(axis=1) / np.maximum(mask.sum(axis=1), 1e-9)
+                all_vecs.append(vec.astype("float32"))
+            if not all_vecs:
+                return np.zeros((0, 1024), dtype="float32")
+            vecs = np.vstack(all_vecs).astype("float32")
+            norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+            return vecs / np.maximum(norms, 1e-9)
+
+    return _OnnxBgeM3Wrapper(model_root, onnx_path, tokenizer_path)
 
 
 # ---------------------------------------------------------------------------

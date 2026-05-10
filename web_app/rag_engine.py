@@ -89,6 +89,45 @@ _STOPWORDS = {
 _WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9_+\-/.]*|\d+(?:\.\d+)?|[\u4e00-\u9fff]+")
 
 
+_RAG_CONTEXT_COMPLETE_ONLY_NOTE = (
+    "Important citation rule: the passages below may be retrieval chunks. "
+    "Use them as evidence only when the relevant sentence, paragraph, list item, "
+    "table row, or code block is complete. Do not quote, reproduce, or rely on "
+    "truncated tails, partial code fences, or half sentences; treat incomplete "
+    "text only as a search clue.\n"
+)
+
+
+def _drop_incomplete_fenced_tail(text: str) -> str:
+    """Avoid injecting an unterminated Markdown code fence into LLM context."""
+    lines = str(text or "").splitlines()
+    in_fence = False
+    fence_char = ""
+    fence_len = 0
+    open_idx = -1
+    for i, line in enumerate(lines):
+        m = re.match(r"^\s*([`~]{3,})", line)
+        if not m:
+            continue
+        marker = m.group(1)
+        char = marker[0]
+        if any(ch != char for ch in marker):
+            continue
+        if not in_fence:
+            in_fence = True
+            fence_char = char
+            fence_len = len(marker)
+            open_idx = i
+        elif char == fence_char and len(marker) >= fence_len:
+            in_fence = False
+            fence_char = ""
+            fence_len = 0
+            open_idx = -1
+    if in_fence and open_idx >= 0:
+        return "\n".join(lines[:open_idx]).rstrip()
+    return str(text or "").rstrip()
+
+
 try:
     import jieba as _jieba  # type: ignore
 except Exception:  # pragma: no cover - optional dependency fallback
@@ -264,7 +303,7 @@ class KnowledgeBase:
         """
         Index any supported file format into the knowledge base.
 
-        Supported: .pdf  .docx  .md  .txt  .rst  .html  .htm
+        Supported: .pdf  .doc  .docx  .md  .txt  .rst  .html  .htm
 
         Parameters
         ----------
@@ -362,6 +401,7 @@ class KnowledgeBase:
             model  = EmbeddingModel.get()
             texts  = [c.text for c in chunks]
             vecs   = model.encode(texts)
+            log(f"  embedding backend: {model.backend or 'unknown'}")
             log(f"  embedding dim: {vecs.shape[1]}")
 
             if self._faiss is None:
@@ -737,12 +777,18 @@ class KnowledgeBase:
         if not hits:
             return ""
 
-        lines = ["The following passages were retrieved from the knowledge base:\n"]
+        lines = [
+            "The following passages were retrieved from the knowledge base:\n",
+            _RAG_CONTEXT_COMPLETE_ONLY_NOTE,
+        ]
         total = 0
         for chunk, score in hits:
+            chunk_text = _drop_incomplete_fenced_tail(chunk.text)
+            if not chunk_text.strip():
+                continue
             entry = (
                 f"[Source: {chunk.doc_name}, section {chunk.page + 1}, "
-                f"relevance {score:.2f}]\n{chunk.text}\n"
+                f"relevance {score:.2f}]\n{chunk_text}\n"
             )
             if total + len(entry) > max_chars:
                 break
@@ -776,7 +822,9 @@ class KnowledgeBase:
         count = len(self._chunks)
         if not (self._faiss and self._faiss.n_vectors > 0):
             try:
-                count = max(count, _get_simple_rag().db.count_items())
+                sr = _get_simple_rag()
+                if getattr(sr, "_docs", {}):
+                    count = max(count, sr.db.count_items())
             except Exception:
                 pass
         return count
@@ -789,12 +837,18 @@ class KnowledgeBase:
         n_vecs = self._faiss.n_vectors if self._faiss else 0
         if n_vecs == 0:
             try:
-                n_vecs = _get_simple_rag().db.count_items()
+                sr = _get_simple_rag()
+                if getattr(sr, "_docs", {}):
+                    n_vecs = sr.db.count_items()
             except Exception:
                 pass
+        n_docs = self.n_docs
+        n_chunks = self.n_chunks
+        if n_docs == 0 and n_chunks == 0:
+            n_vecs = 0
         return {
-            "n_docs":    self.n_docs,
-            "n_chunks":  self.n_chunks,
+            "n_docs":    n_docs,
+            "n_chunks":  n_chunks,
             "n_vectors": n_vecs,
             "kb_dir":    str(KB_DIR),
         }

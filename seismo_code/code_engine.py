@@ -33,6 +33,7 @@ CLI:
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 import textwrap
 import urllib.request
@@ -150,7 +151,10 @@ class CodeEngine:
         self._raise_if_cancelled(cancel_event)
         if _is_bash_code(code):
             clean = re.sub(r"^#\s*lang:bash\s*\n", "", code, count=1)
-            extra_env = {"SAGE_OUTDIR": shared_dir} if shared_dir else None
+            extra_env = (
+                {"SAGE_OUTDIR": shared_dir, "SAGE_WORKSPACE_ROOT": self.project_root}
+                if shared_dir else None
+            )
             return execute_bash(clean, project_root=self.project_root,
                                 timeout=timeout, keep_dir=True,
                                 extra_env=extra_env,
@@ -159,10 +163,13 @@ class CodeEngine:
         extra_env = None
         if shared_dir:
             preamble = (f"import os as _wf_os\n"
-                        f"_wf_os.chdir({shared_dir!r})\n"
+                        f"_wf_os.makedirs({shared_dir!r}, exist_ok=True)\n"
                         f"_wf_os.environ['SAGE_OUTDIR'] = {shared_dir!r}\n")
             clean     = preamble + clean
-            extra_env = {"SAGE_OUTDIR": shared_dir}
+            extra_env = {
+                "SAGE_OUTDIR": shared_dir,
+                "SAGE_WORKSPACE_ROOT": self.project_root,
+            }
         return execute_code(clean, project_root=self.project_root,
                             timeout=timeout, keep_dir=True,
                             extra_env=extra_env,
@@ -184,6 +191,120 @@ class CodeEngine:
             if re.search(pat, code, re.I):
                 return f"generated code contains placeholder path matching `{pat}`"
         return ""
+
+    # ── Repository context helpers ───────────────────────────────────────────
+
+    @staticmethod
+    def _looks_like_repo_task(text: str) -> bool:
+        """Heuristic for repository-editing requests."""
+        t = (text or "").lower()
+        keywords = [
+            "bug", "fix", "refactor", "implement", "integrate", "route", "api",
+            "frontend", "backend", "readme", "gitignore", "config", "ui",
+            "修复", "报错", "优化", "实现", "集成", "接口", "页面", "后端",
+            "前端", "配置", "代码", "更新", "删除", "添加",
+        ]
+        file_hints = [".py", ".js", ".ts", ".html", ".css", ".md", ".json", ".toml"]
+        return any(k in t for k in keywords) or any(h in t for h in file_hints)
+
+    def _repo_file_list(self, limit: int = 260) -> List[str]:
+        """Return tracked/worktree files for repository context."""
+        try:
+            proc = subprocess.run(
+                ["rg", "--files"],
+                cwd=self.project_root,
+                capture_output=True,
+                text=True,
+                timeout=8,
+                check=False,
+            )
+            files = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
+        except Exception:
+            files = []
+        skip_parts = {
+            ".git", "__pycache__", ".pytest_cache", "node_modules", ".venv", "venv",
+            "third_party/aider", "web_app/outputs", "web_app/uploads", "seismo_rag",
+            ".aider.tags.cache.v4",
+        }
+        filtered = []
+        for fp in files:
+            if any(part in fp for part in skip_parts):
+                continue
+            filtered.append(fp)
+        return filtered[:limit]
+
+    @staticmethod
+    def _score_repo_file(path: str, request: str) -> int:
+        text = (request or "").lower()
+        p = path.lower()
+        score = 0
+        if Path(path).name.lower() in text:
+            score += 8
+        for part in p.replace("/", " ").replace("_", " ").replace("-", " ").split():
+            if len(part) >= 3 and part in text:
+                score += 2
+        for hint, bonus in [
+            ("config", 3), ("llm", 3), ("code", 3), ("agent", 3), ("chat", 3),
+            ("skill", 3), ("knowledge", 3), ("readme", 4), ("route", 3),
+        ]:
+            if hint in text and hint in p:
+                score += bonus
+        return score
+
+    def _build_repo_context(self, request: str, max_files: int = 10, max_chars: int = 18000) -> str:
+        """Aider-inspired compact repository map plus relevant snippets."""
+        files = self._repo_file_list()
+        if not files:
+            return ""
+        ranked = sorted(files, key=lambda f: self._score_repo_file(f, request), reverse=True)
+        selected = [f for f in ranked if self._score_repo_file(f, request) > 0][:max_files]
+        if not selected:
+            selected = ranked[:min(6, len(ranked))]
+
+        parts = [
+            "## Repository Context",
+            "Project root: " + self.project_root,
+            "Relevant files selected from `rg --files` (not exhaustive):",
+            "\n".join(f"- {f}" for f in ranked[:80]),
+            "\n## Relevant File Snippets",
+        ]
+        used = sum(len(p) for p in parts)
+        for rel in selected:
+            path = Path(self.project_root) / rel
+            if not path.is_file() or path.stat().st_size > 220_000:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+            snippet = "\n".join(text.splitlines()[:140])
+            block = f"\n### {rel}\n```text\n{snippet}\n```"
+            if used + len(block) > max_chars:
+                break
+            parts.append(block)
+            used += len(block)
+        parts.append(
+            "\n## Repository Editing Rules\n"
+            "- If the task is to change the SAGE codebase, generate a Python script that edits files under the project root.\n"
+            "- Prefer structured file edits with pathlib and small helper functions; do not rewrite unrelated files.\n"
+            "- Print changed file paths and include `[SAGE_TEST]` checks such as py_compile, syntax checks, or targeted API checks.\n"
+            "- Do not modify files under `third_party/aider` unless the user explicitly asks."
+        )
+        return "\n\n".join(parts)
+
+    def _git_diff_summary(self) -> str:
+        try:
+            proc = subprocess.run(
+                ["git", "diff", "--stat"],
+                cwd=self.project_root,
+                capture_output=True,
+                text=True,
+                timeout=8,
+                check=False,
+            )
+            return (proc.stdout or "").strip()
+        except Exception:
+            return ""
 
     # ── Output checkers ───────────────────────────────────────────────────────
 
@@ -524,11 +645,14 @@ class CodeEngine:
         timeout: int = 120,
         run_verify: bool = False,
         on_progress: Optional[Callable[[Dict], None]] = None,
+        output_dir: Optional[str] = None,
         cancel_event=None,
     ) -> CodeRunResult:
         """Generate, execute, debug, and optionally verify Python or bash code."""
         try:
             self._raise_if_cancelled(cancel_event)
+            if output_dir:
+                Path(output_dir).mkdir(parents=True, exist_ok=True)
 
             # 1. Profile files mentioned in the request
             file_contexts: List[str] = []
@@ -546,6 +670,12 @@ class CodeEngine:
                 msg += f"\n\nData path: {data_hint}"
             if file_contexts:
                 msg += "\n\n" + "\n\n".join(file_contexts)
+            repo_ctx = ""
+            if self._looks_like_repo_task(user_request):
+                self._emit(on_progress, "analyzing", 0, "Building repository context…")
+                repo_ctx = self._build_repo_context(user_request)
+                if repo_ctx:
+                    msg += "\n\n" + repo_ctx
             self._history.append({"role": "user", "content": msg})
 
             # 3. Build skill + RAG context (queried once; forwarded to debug loop)
@@ -569,6 +699,14 @@ class CodeEngine:
             if rag_ctx:
                 system += ("\n\n## Knowledge Base (RAG)\n" + rag_ctx
                            + "\n\nUse the above to verify correct API usage before writing code.")
+            if repo_ctx:
+                system += (
+                    "\n\n## Built-in Coding Agent Mode\n"
+                    "You are working as SAGE's built-in repository coding agent. "
+                    "Use the repository context to make minimal, coherent codebase edits. "
+                    "Borrow Aider-style discipline: inspect relevant files, edit only what is needed, "
+                    "run a focused check, and print a concise diff summary."
+                )
 
             messages = [{"role": "system", "content": system}] + \
                        [m for m in self._history if m["role"] != "system"]
@@ -620,7 +758,11 @@ class CodeEngine:
 
             # 6. First execution
             self._emit(on_progress, "executing", 0, "Executing code…")
-            exec_res = self._run_code(code, timeout, cancel_event=cancel_event)
+            if output_dir:
+                exec_res = self._run_code_in_dir(
+                    code, timeout, shared_dir=output_dir, cancel_event=cancel_event)
+            else:
+                exec_res = self._run_code(code, timeout, cancel_event=cancel_event)
             self._raise_if_cancelled(cancel_event)
         except CodeExecutionCancelled:
             self._emit(on_progress, "cancelled", 0, "Execution cancelled.")
@@ -671,7 +813,7 @@ class CodeEngine:
                 exec_res=exec_res, attempt=attempt, timeout=timeout,
                 on_progress=on_progress, file_contexts=file_contexts,
                 skill_ctx=skill_ctx, extra_rag_ctx=dbg_rag,
-                # exec_dir=None → run in fresh temp dir (single-request mode)
+                exec_dir=output_dir,
                 cancel_event=cancel_event,
             )
             self._raise_if_cancelled(cancel_event)
@@ -718,6 +860,9 @@ class CodeEngine:
                               if not l.startswith("[FIGURE]")).strip()
             if clean:
                 summary += f"\nOutput (truncated):\n{clean[:400]}"
+        diff_stat = self._git_diff_summary() if self._looks_like_repo_task(user_request) else ""
+        if diff_stat:
+            summary += "\nGit diff stat:\n" + diff_stat[:1200]
         if exec_res and not final_success:
             err = (exec_res.stderr or exec_res.error or "").strip()
             if err:

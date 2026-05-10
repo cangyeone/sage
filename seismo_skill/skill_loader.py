@@ -1,17 +1,21 @@
 """
 skill_loader.py — seismo_skill 技能引擎 v2
 
-支持两种技能格式：
+支持三种技能格式：
   A. 单文件技能：skills/<name>.md
-  B. 文件夹技能：skills/<name>/SKILL.md + agents/*.yaml + 目录内递归 *.md
+  B. 文件夹技能：skills/<name>/SKILL.md + agents/*.yaml + references/scripts/assets
+  C. OpenAI/Codex skills repo：<repo>/skills/<name>/SKILL.md（可一次导入多个技能）
 
-从两个目录加载技能：
+从三个目录加载技能：
   1. seismo_skill/skills/         内置技能（随项目发布）
-  2. ~/.seismicx/skills/          用户自定义技能（同名时覆盖内置）
+  2. seismo_skill/user_skills/    项目内用户自定义技能（同名时覆盖内置）
+  3. ~/.seismicx/skills/          旧版兼容读取目录（不再作为新写入位置）
 
 v2 新特性
 ---------
-- 文件夹技能完整解析：SKILL.md + 目录内递归 Markdown 资料 + agents/
+- 文件夹技能完整解析：SKILL.md + 目录内 references/scripts/assets + agents/
+- OpenAI/Codex skill repo 兼容：识别 skills/<name>/SKILL.md、大小写 skill.md
+- 辅助资料支持 Markdown/RST/TXT/YAML/JSON/Python/Shell 等文本资源
 - folder references 按查询语义选择性注入（不超预算，不乱注全部）
 - agents/*.yaml 配置解析（display_name / default_prompt / short_description）
 - YAML 多行字段（>- 折叠块、| 原始块）正确解析（PyYAML 优先）
@@ -40,143 +44,34 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 # ── 目录定义 ─────────────────────────────────────────────────────────────────
 
 _BUILTIN_SKILL_DIR = Path(__file__).parent / "skills"
+_PROJECT_USER_SKILL_DIR = Path(__file__).parent / "user_skills"
+_LEGACY_USER_SKILL_DIR = Path.home() / ".seismicx" / "skills"
 
-_QUERY_EXPANSIONS: Dict[str, str] = {
-    "画图": "plot draw visualization map scatter matplotlib cartopy",
-    "绘图": "plot draw visualization map scatter matplotlib cartopy",
-    "可视化": "plot visualization map matplotlib cartopy",
-    "三维": "3D terrain topography surface relief plotly three.js threejs webgl pyvista elevation DEM camera",
-    "3d": "3D terrain topography surface relief plotly three.js threejs webgl pyvista elevation DEM camera",
-    "3D": "3D terrain topography surface relief plotly three.js threejs webgl pyvista elevation DEM camera",
-    "俯视角": "camera eye 45 degree oblique view 3D terrain surface",
-    "45度": "45 degree oblique camera 3D terrain",
-    "地图": "map cartopy gmt seismicity epicenter station geographic",
-    "地形": "terrain topography relief map DEM elevation 3D surface",
-    "四川": "Sichuan Chengdu Longmenshan Tibetan Plateau terrain topography earthquake",
-    "震中": "epicenter seismicity catalog map longitude latitude depth magnitude",
-    "目录": "catalog earthquake catalog csv table pandas b-value seismicity",
-    "地震目录": "earthquake catalog seismicity csv pandas b-value",
-    "台站": "station station map inventory station list",
-    "波形": "waveform stream obspy sac mseed miniseed read_stream plot_stream",
-    "震相": "phase picking phase picker Pg Sg Pn Sn P-wave S-wave arrival pnsn phasenet eqtransformer",
-    "拾取": "phase picking arrival picking picker pnsn Pg Sg Pn Sn detect picks",
-    "检测": "detection phase detection earthquake detection monitoring trigger picker pnsn",
-    "地震监测": "earthquake monitoring continuous waveform phase picking event association pnsn FastLink REAL GaMMA",
-    "地震检测": "earthquake detection phase picking event association pnsn FastLink REAL GaMMA",
-    "事件关联": "phase association event association FastLink REAL GaMMA picks catalog",
-    "震相关联": "phase association event association FastLink REAL GaMMA picks catalog",
-    "Pg": "Pg Sg Pn Sn phase picking pnsn",
-    "Pn": "Pg Sg Pn Sn phase picking pnsn",
-    "PNSN": "pnsn phase picker Pg Sg Pn Sn deep learning seismic monitoring",
-    "pnsn": "pnsn phase picker Pg Sg Pn Sn deep learning seismic monitoring",
-    "滤波": "filter bandpass lowpass highpass detrend taper waveform processing",
-    "频谱": "spectrum fft psd spectral hvsr frequency",
-    "震级": "magnitude ml mw seismic moment source parameters",
-    "b值": "b-value Gutenberg-Richter FMD Mc seismic statistics",
-    "读取": "read load io pandas csv waveform stream",
-    "csv": "pandas read_csv table tabular catalog",
-    "txt": "pandas read_csv read_table whitespace tabular",
-    "debug": "error traceback fix self-check test",
-    "报错": "error traceback debug fix",
-}
-
-_TASK_FALLBACK_RULES: List[Tuple[str, List[str]]] = [
-    (r"三维|3d|3D|俯视角|45度|terrain\s*surface|3D terrain|三维地形|三维地图", ["terrain_3d_plotting", "cartopy_plotting", "tabular_io"]),
-    (r"gmt|地形|terrain|topography|grdimage|海岸线|震源机制", ["gmt_plotting", "cartopy_plotting", "tabular_io"]),
-    (r"地图|map|震中|台站|经纬度|location|epicenter|scatter", ["cartopy_plotting", "tabular_io"]),
-    (r"csv|txt|表格|目录|catalog|pandas|read_csv|读取", ["tabular_io", "cartopy_plotting", "b_value_analysis"]),
-    (r"pnsn|PNSN|震相|拾取|phase\s*pick|arrival|Pg|Sg|Pn|Sn|地震监测|地震检测|事件关联|震相关联|FastLink|REAL|GaMMA", ["pnsn_phase_detection", "waveform_io", "waveform_processing"]),
-    (r"波形|waveform|sac|mseed|miniseed|seed", ["waveform_io", "waveform_processing", "waveform_visualization"]),
-    (r"滤波|bandpass|lowpass|highpass|detrend|taper|预处理", ["waveform_processing", "waveform_io", "waveform_visualization"]),
-    (r"频谱|spectrum|fft|psd|hvsr|谱", ["spectral_analysis", "waveform_io", "waveform_visualization"]),
-    (r"震级|矩震级|地震矩|应力降|corner|stress|magnitude", ["source_parameters", "waveform_io", "spectral_analysis"]),
-    (r"b值|b-value|gutenberg|richter|mc|完整性震级", ["b_value_analysis", "tabular_io"]),
-    (r"论文图|发表图|期刊图|publication[- ]ready|paper figure|manuscript figure|多面板|multi-panel|排版|配色", ["nature-figure", "tabular_io"]),
-]
+_SKILL_MATCH_CACHE: Dict[Tuple[str, int, Tuple[str, ...]], List[str]] = {}
 
 
 def _expand_query(query: str) -> str:
-    """Add common Chinese/English task synonyms before lexical retrieval."""
-    expanded = [query]
-    q_lower = query.lower()
-    for trigger, addition in _QUERY_EXPANSIONS.items():
-        if trigger.lower() in q_lower:
-            expanded.append(addition)
-    if re.search(r"\.(csv|txt|dat|xlsx|xls)\b", q_lower):
-        expanded.append("tabular_io pandas read_csv table catalog columns")
-    if re.search(r"\.(sac|mseed|seed|miniseed)\b", q_lower):
-        expanded.append("waveform_io read_stream stream_info obspy")
-    if re.search(r"\.(png|jpg|jpeg|svg|pdf)\b", q_lower) and re.search(r"图|plot|figure|visual", q_lower):
-        expanded.append("nature-figure matplotlib savefig publication figure")
-    return "\n".join(dict.fromkeys(expanded))
-
-
-def _has_nature_family_intent(query: str) -> bool:
-    """是否明确在问 Nature/论文发表相关任务。"""
-    return bool(re.search(
-        r"nature|springer|论文|稿件|manuscript|paper|journal|publication|发表|期刊|投稿|润色|polish|data availability|数据可用",
-        query,
-        re.I,
-    ))
-
-
-def _has_publication_figure_intent(query: str) -> bool:
-    """是否明确在问发表级论文图，而不是普通 EDA/地震绘图。"""
-    return bool(re.search(
-        r"nature.*(图|figure|plot|chart|panel|heatmap)|"
-        r"(论文图|发表图|期刊图|图版|多面板|multi-panel|publication[- ]ready|paper figure|manuscript figure|scientific figure|排版|配色)|"
-        r"(figure|plot|chart|heatmap).*(nature|publication|paper|journal|manuscript)",
-        query,
-        re.I,
-    ))
-
-
-def _has_data_availability_intent(query: str) -> bool:
-    """是否明确在问 Nature 数据可用性/数据共享声明。"""
-    return bool(re.search(
-        r"data availability|数据可用|数据共享|数据获取|数据声明|repository|doi|accession|fair|原始数据|源数据",
-        query,
-        re.I,
-    ))
-
-
-def _has_manuscript_polish_intent(query: str) -> bool:
-    """是否明确在问论文文本润色/投稿语体。"""
-    return bool(re.search(
-        r"润色|polish|语言|改写|摘要|cover letter|response letter|审稿|manuscript text|academic writing",
-        query,
-        re.I,
-    ))
-
-
-def _fallback_skills(query: str, max_count: int = 3) -> List[Dict]:
-    """Return deterministic baseline skills for common task/file patterns."""
-    skill_map = {s["name"]: s for s in _get_skills()}
-    q = query.lower()
-    names: List[str] = []
-    for pattern, candidates in _TASK_FALLBACK_RULES:
-        if re.search(pattern, q, re.I):
-            for name in candidates:
-                if name in skill_map and name not in names:
-                    names.append(name)
-                if len(names) >= max_count:
-                    break
-        if len(names) >= max_count:
-            break
-    return [skill_map[n] for n in names[:max_count]]
+    """Compatibility hook: query expansion now comes from SKILL metadata."""
+    return str(query or "")
 
 
 def get_user_skill_dir() -> Path:
-    """返回用户自定义技能目录（~/.seismicx/skills/），不存在则自动创建。"""
-    d = Path.home() / ".seismicx" / "skills"
+    """返回项目内用户自定义技能目录（seismo_skill/user_skills/）。"""
+    d = _PROJECT_USER_SKILL_DIR
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def get_legacy_user_skill_dir() -> Path:
+    """返回旧版全局技能目录，仅用于兼容读取/删除旧数据。"""
+    return _LEGACY_USER_SKILL_DIR
 
 
 # ── YAML / Frontmatter 解析 ───────────────────────────────────────────────────
@@ -345,6 +240,28 @@ _IGNORED_REF_DIRS = {
     "build",
 }
 
+_SKILL_ENTRY_FILENAMES = ("SKILL.md", "skill.md", "Skill.md")
+
+_TEXT_REFERENCE_EXTS = {
+    ".md",
+    ".markdown",
+    ".txt",
+    ".rst",
+    ".py",
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".csv",
+    ".tsv",
+}
+
+_REFERENCE_MAX_BYTES = 256_000
+_REFERENCE_MAX_CHARS = 80_000
+
 
 def _is_hidden_or_ignored(path: Path, root: Path) -> bool:
     """判断 path 是否位于隐藏/缓存目录中。"""
@@ -368,41 +285,179 @@ def _reference_key(md_file: Path, folder: Path) -> str:
     return rel.as_posix()
 
 
-def _extract_markdown_headings(text: str, limit: int = 12) -> List[str]:
-    """提取少量 Markdown 标题，用于 manifest 和关键词推断。"""
-    headings: List[str] = []
+def _find_skill_entry_file(folder: Path) -> Optional[Path]:
+    """
+    返回文件夹技能入口文件。
+
+    OpenAI/Codex skill repo 约定使用 SKILL.md；这里同时兼容 skill.md/Skill.md，
+    便于导入来自不同系统或人工整理的技能目录。
+    """
+    try:
+        children = list(folder.iterdir())
+    except Exception:
+        return None
+    for filename in _SKILL_ENTRY_FILENAMES:
+        for candidate in children:
+            if candidate.is_file() and candidate.name == filename:
+                return candidate
+    try:
+        for candidate in folder.iterdir():
+            if candidate.is_file() and candidate.name.lower() == "skill.md":
+                return candidate
+    except Exception:
+        return None
+    return None
+
+
+def _as_list(value) -> List[str]:
+    """把 YAML 字段规整为字符串列表。"""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, tuple):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, dict):
+        return [str(v).strip() for v in value.values() if str(v).strip()]
+    return [s.strip() for s in re.split(r"[,，;\n]+", str(value)) if s.strip()]
+
+
+def _first_heading(text: str) -> str:
     for line in text.splitlines():
-        m = re.match(r"^\s{0,3}#{1,4}\s+(.+?)\s*$", line)
-        if not m:
+        m = re.match(r"^\s{0,3}#\s+(.+?)\s*$", line)
+        if m:
+            return m.group(1).strip()
+    return ""
+
+
+def _first_paragraph(text: str, max_chars: int = 260) -> str:
+    """从正文推断短描述，避免没有 frontmatter 的技能完全不可检索。"""
+    paragraphs: List[str] = []
+    current: List[str] = []
+    in_code = False
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if line.startswith("```") or line.startswith("~~~"):
+            in_code = not in_code
             continue
-        heading = m.group(1).strip()
+        if in_code or not line or line.startswith("#"):
+            if current:
+                paragraphs.append(" ".join(current))
+                current = []
+            continue
+        if line.startswith(("-", "*", "|", ">")):
+            continue
+        current.append(line)
+        if len(" ".join(current)) >= max_chars:
+            break
+    if current:
+        paragraphs.append(" ".join(current))
+    if not paragraphs:
+        return ""
+    return " ".join(paragraphs[0].split())[:max_chars]
+
+
+def _normalize_skill_meta(meta: dict, body: str, fallback_name: str, source: str) -> dict:
+    """
+    兼容 OpenAI/Codex skills repo 与 SAGE 旧格式的元数据。
+
+    OpenAI skill 的触发主要依赖 name/description；SAGE 还会使用 category、
+    keywords、related_skills、rag_sources 等字段。这里把 tags/aliases/triggers 等
+    常见字段也并入关键词，减少技能“文不对题”的概率。
+    """
+    display_name = (
+        str(meta.get("display_name") or meta.get("title") or _first_heading(body) or fallback_name).strip()
+    )
+    name = str(meta.get("name") or meta.get("id") or fallback_name).strip() or fallback_name
+    description = str(meta.get("description") or meta.get("summary") or _first_paragraph(body)).strip()
+    description = " ".join(description.split())
+    category = str(meta.get("category") or meta.get("domain") or ("custom" if source == "user" else "")).strip()
+
+    keywords: List[str] = []
+    for key in (
+        "keywords",
+        "tags",
+        "aliases",
+        "triggers",
+        "trigger_phrases",
+        "use_cases",
+        "when_to_use",
+        "prefer_when",
+    ):
+        keywords.extend(_as_list(meta.get(key)))
+    if display_name and display_name != name:
+        keywords.append(display_name)
+
+    return {
+        "name": name,
+        "display_name": display_name,
+        "description": description,
+        "category": category,
+        "keywords": keywords,
+        "rag_sources": _as_list(meta.get("rag_sources")),
+        "related_skills": _as_list(meta.get("related_skills") or meta.get("related")),
+        "prefer_when": _as_list(meta.get("prefer_when")),
+        "avoid_when": _as_list(meta.get("avoid_when") or meta.get("do_not_use_when")),
+        "workflow": meta.get("workflow", ""),
+        "generated_from": meta.get("generated_from", ""),
+        "source": meta.get("source", source),
+    }
+
+
+def _extract_markdown_headings(text: str, limit: int = 12) -> List[str]:
+    """提取少量 Markdown/RST 标题，用于 manifest 和关键词推断。"""
+    headings: List[str] = []
+    lines = text.splitlines()
+    for idx, line in enumerate(lines):
+        m = re.match(r"^\s{0,3}#{1,4}\s+(.+?)\s*$", line)
+        heading = m.group(1).strip() if m else ""
+        if not heading and idx + 1 < len(lines):
+            marker = lines[idx + 1].strip()
+            candidate = line.strip()
+            if candidate and len(marker) >= max(3, min(len(candidate), 12)) and set(marker) <= set("=-~^\"'`"):
+                heading = candidate
         if heading:
             headings.append(heading)
         if len(headings) >= limit:
             break
     return headings
 
-def _load_references(folder: Path) -> Dict[str, str]:
+def _load_references(folder: Path, entry_file: Optional[Path] = None) -> Dict[str, str]:
     """
-    递归加载文件夹技能目录内的辅助 Markdown 文件。
+    递归加载文件夹技能目录内的辅助文本文件。
 
     约定：
       - skills/<name>/SKILL.md 是该文件夹技能的主入口，不作为 reference。
-      - 目录内其他 *.md（README、references、docs、嵌套 SKILL.md 等）都作为
-        该技能的内部资料加载。
+      - OpenAI/Codex skill 的 references/scripts/assets 中，文本型资料会进入
+        references，便于检索和按需注入上下文。
+      - 二进制资源不进全文 references，但会进入 resource_manifest。
       - 不把嵌套目录里的 SKILL.md 注册成独立顶层技能；它只是父技能的一份资料。
 
     返回 {ref_name: content_str}，文件读取失败则跳过。
     """
     refs: Dict[str, str] = {}
-    for md_file in sorted(folder.rglob("*.md")):
-        if md_file == folder / "SKILL.md":
+    entry_resolved = entry_file.resolve() if entry_file else None
+    for ref_file in sorted(folder.rglob("*")):
+        if not ref_file.is_file():
             continue
-        if _is_hidden_or_ignored(md_file, folder):
+        if entry_resolved and ref_file.resolve() == entry_resolved:
+            continue
+        if entry_file and ref_file.parent == entry_file.parent and ref_file.name.lower() == "skill.md":
+            continue
+        if _is_hidden_or_ignored(ref_file, folder):
+            continue
+        if ref_file.suffix.lower() not in _TEXT_REFERENCE_EXTS:
             continue
         try:
-            content = md_file.read_text(encoding="utf-8")
-            refs[_reference_key(md_file, folder)] = content
+            if ref_file.stat().st_size > _REFERENCE_MAX_BYTES:
+                continue
+        except Exception:
+            continue
+        try:
+            content = ref_file.read_text(encoding="utf-8", errors="replace")
+            if len(content) > _REFERENCE_MAX_CHARS:
+                content = content[:_REFERENCE_MAX_CHARS] + "\n\n…（reference 已截断）\n"
+            refs[_reference_key(ref_file, folder)] = content
         except Exception:
             continue
     return refs
@@ -417,6 +472,43 @@ def _build_reference_manifest(refs: Dict[str, str]) -> List[Dict[str, Union[str,
             "headings": _extract_markdown_headings(content, limit=6),
         })
     return manifest
+
+
+def _load_resource_manifest(folder: Path, entry_file: Optional[Path] = None) -> List[Dict[str, Union[str, int]]]:
+    """
+    列出文件夹技能携带的资源。
+
+    这不会把二进制资源读进上下文，只让 UI/Agent 知道该技能有 scripts/assets/
+    这类可用材料。OpenAI skills repo 经常依赖这些 bundled resources。
+    """
+    resources: List[Dict[str, Union[str, int]]] = []
+    entry_resolved = entry_file.resolve() if entry_file else None
+    for file in sorted(folder.rglob("*")):
+        if not file.is_file():
+            continue
+        if entry_resolved and file.resolve() == entry_resolved:
+            continue
+        if entry_file and file.parent == entry_file.parent and file.name.lower() == "skill.md":
+            continue
+        if _is_hidden_or_ignored(file, folder):
+            continue
+        try:
+            rel = file.relative_to(folder).as_posix()
+            parts = file.relative_to(folder).parts
+            kind = "reference"
+            if parts and parts[0] in {"scripts", "bin"}:
+                kind = "script"
+            elif parts and parts[0] in {"assets", "templates", "examples"}:
+                kind = "asset"
+            resources.append({
+                "path": rel,
+                "kind": kind,
+                "suffix": file.suffix.lower(),
+                "size": file.stat().st_size,
+            })
+        except Exception:
+            continue
+    return resources
 
 
 def _infer_keywords(
@@ -462,12 +554,12 @@ def _infer_keywords(
 def _load_folder_skill(folder: Path, source: str) -> Optional[Dict]:
     """
     从文件夹技能目录加载一个完整的技能条目。
-    文件夹必须包含 SKILL.md；references/ 和 agents/ 为可选。
+    文件夹必须包含 SKILL.md / skill.md；references/scripts/assets 和 agents/ 为可选。
 
     返回技能 dict，或 None（SKILL.md 不存在 / 读取失败）。
     """
-    skill_md = folder / "SKILL.md"
-    if not skill_md.exists():
+    skill_md = _find_skill_entry_file(folder)
+    if skill_md is None:
         return None
 
     try:
@@ -476,21 +568,23 @@ def _load_folder_skill(folder: Path, source: str) -> Optional[Dict]:
         return None
 
     meta, body = _parse_frontmatter(text)
-    effective_source = meta.get("source", source)
-    refs = _load_references(folder)
-    description = meta.get("description", "")
+    norm = _normalize_skill_meta(meta, body, folder.name, source)
+    effective_source = norm.get("source", source)
+    refs = _load_references(folder, entry_file=skill_md)
+    description = norm.get("description", "")
     keywords = _infer_keywords(
-        name=meta.get("name", folder.name),
-        meta_keywords=meta.get("keywords", []),
+        name=norm["name"],
+        meta_keywords=norm.get("keywords", []),
         description=description,
         body=body,
         refs=refs,
     )
 
     return {
-        "name":            meta.get("name", folder.name),
+        "name":            norm["name"],
+        "display_name":    norm.get("display_name", norm["name"]),
         "description":     description,
-        "category":        meta.get("category", "custom" if source == "user" else ""),
+        "category":        norm.get("category", ""),
         "keywords":        keywords,
         "path":            str(skill_md),
         "folder":          str(folder),
@@ -499,14 +593,68 @@ def _load_folder_skill(folder: Path, source: str) -> Optional[Dict]:
         "is_folder":       True,
         "references":      refs,
         "reference_manifest": _build_reference_manifest(refs),
+        "resource_manifest": _load_resource_manifest(folder, entry_file=skill_md),
         "agent_config":    _load_agent_config(folder),
         "source":          effective_source,
-        "filename":        "SKILL.md",
-        "rag_sources":     meta.get("rag_sources", []),
-        "generated_from":  meta.get("generated_from", ""),
-        "related_skills":  meta.get("related_skills", []),
-        "workflow":        meta.get("workflow", ""),
-    }
+        "filename":        skill_md.name,
+        "format":          "openai_folder_skill",
+        "rag_sources":     norm.get("rag_sources", []),
+        "generated_from":  norm.get("generated_from", ""),
+            "related_skills":  norm.get("related_skills", []),
+            "prefer_when":     norm.get("prefer_when", []),
+            "avoid_when":      norm.get("avoid_when", []),
+            "workflow":        norm.get("workflow", ""),
+        }
+
+
+def _discover_skill_folders(directory: Path) -> List[Path]:
+    """
+    在技能根目录中发现文件夹型技能。
+
+    支持：
+      - <root>/<skill>/SKILL.md
+      - <root>/skills/<skill>/SKILL.md
+      - <root>/<repo>/skills/<skill>/SKILL.md
+
+    最后一种用于兼容直接放入 OpenAI/Codex skills repo 的场景。不会把已有
+    文件夹技能内部的嵌套 SKILL.md 注册成顶层技能，避免父子技能拆乱。
+    """
+    folders: List[Path] = []
+    seen: Set[str] = set()
+
+    def add(folder: Path) -> None:
+        try:
+            resolved = str(folder.resolve())
+        except Exception:
+            resolved = str(folder)
+        if resolved in seen:
+            return
+        if _find_skill_entry_file(folder) is None:
+            return
+        seen.add(resolved)
+        folders.append(folder)
+
+    def add_children(container: Path) -> None:
+        if not container.is_dir():
+            return
+        for child in sorted(container.iterdir()):
+            if child.is_dir() and not _is_hidden_or_ignored(child, directory):
+                add(child)
+
+    add_children(directory)
+    add_children(directory / "skills")
+
+    try:
+        for repo in sorted(directory.iterdir()):
+            if not repo.is_dir() or _find_skill_entry_file(repo) is not None:
+                continue
+            if _is_hidden_or_ignored(repo, directory):
+                continue
+            add_children(repo / "skills")
+    except Exception:
+        pass
+
+    return folders
 
 
 # ── 目录扫描 ──────────────────────────────────────────────────────────────────
@@ -531,13 +679,21 @@ def _load_from_dir(directory: Path, source: str) -> List[Dict]:
         except Exception:
             continue
         meta, body = _parse_frontmatter(text)
-        effective_source = meta.get("source", source)
-        name = meta.get("name", md_file.stem)
+        norm = _normalize_skill_meta(meta, body, md_file.stem, source)
+        effective_source = norm.get("source", source)
+        name = norm["name"]
         entry: Dict = {
             "name":           name,
-            "description":    meta.get("description", ""),
-            "category":       meta.get("category", "custom" if source == "user" else ""),
-            "keywords":       meta.get("keywords", []),
+            "display_name":   norm.get("display_name", name),
+            "description":    norm.get("description", ""),
+            "category":       norm.get("category", ""),
+            "keywords":       _infer_keywords(
+                name=name,
+                meta_keywords=norm.get("keywords", []),
+                description=norm.get("description", ""),
+                body=body,
+                refs={},
+            ),
             "path":           str(md_file),
             "folder":         "",
             "body":           body.strip(),
@@ -545,23 +701,25 @@ def _load_from_dir(directory: Path, source: str) -> List[Dict]:
             "is_folder":      False,
             "references":     {},
             "reference_manifest": [],
+            "resource_manifest": [],
             "agent_config":   {},
             "source":         effective_source,
             "filename":       md_file.name,
-            "rag_sources":    meta.get("rag_sources", []),
-            "generated_from": meta.get("generated_from", ""),
-            "related_skills": meta.get("related_skills", []),
-            "workflow":       meta.get("workflow", ""),
+            "format":         "single_markdown_skill",
+            "rag_sources":    norm.get("rag_sources", []),
+            "generated_from": norm.get("generated_from", ""),
+            "related_skills": norm.get("related_skills", []),
+            "prefer_when":    norm.get("prefer_when", []),
+            "avoid_when":     norm.get("avoid_when", []),
+            "workflow":       norm.get("workflow", ""),
         }
         # 只在该名称还没被文件夹技能占用时才添加（文件夹优先）
         if name not in skills or not skills[name].get("is_folder"):
             skills[name] = entry
 
     # ── 文件夹技能 ────────────────────────────────────────────────────────────
-    for subdir in sorted(directory.iterdir()):
-        if not subdir.is_dir():
-            continue
-        entry = _load_folder_skill(subdir, source)
+    for skill_folder in _discover_skill_folders(directory):
+        entry = _load_folder_skill(skill_folder, source)
         if entry is None:
             continue
         # 文件夹技能覆盖同名单文件技能
@@ -574,14 +732,20 @@ def _load_from_dir(directory: Path, source: str) -> List[Dict]:
 
 def _load_all_skills() -> List[Dict]:
     """
-    加载内置技能 + 用户自定义技能。
-    同名技能中用户版本覆盖内置版本。
+    加载内置技能 + 项目内用户技能 + 旧版全局用户技能。
+    同名技能优先级：项目内用户技能 > 旧版全局用户技能 > 内置技能。
     """
     builtin = _load_from_dir(_BUILTIN_SKILL_DIR, "builtin")
+    legacy  = _load_from_dir(get_legacy_user_skill_dir(), "user") if get_legacy_user_skill_dir().exists() else []
     user    = _load_from_dir(get_user_skill_dir(), "user")
 
     user_names = {s["name"] for s in user}
-    merged = [s for s in builtin if s["name"] not in user_names] + user
+    legacy_names = {s["name"] for s in legacy}
+    merged = (
+        [s for s in builtin if s["name"] not in legacy_names and s["name"] not in user_names]
+        + [s for s in legacy if s["name"] not in user_names]
+        + user
+    )
     return merged
 
 
@@ -599,6 +763,7 @@ def invalidate_cache():
     """清除缓存（技能文件有更新时调用）。"""
     global _SKILLS_CACHE
     _SKILLS_CACHE = None
+    _SKILL_MATCH_CACHE.clear()
 
 
 # ── 公开 CRUD 接口 ────────────────────────────────────────────────────────────
@@ -617,19 +782,24 @@ def list_skills() -> List[Dict]:
         agent = s.get("agent_config", {})
         result.append({
             "name":             s["name"],
+            "display_name":     s.get("display_name", s["name"]),
             "description":      s.get("description", ""),
             "category":         s["category"],
             "keywords":         s["keywords"],
             "source":           s["source"],
             "is_folder":        s.get("is_folder", False),
             "filename":         s["filename"],
+            "format":           s.get("format", ""),
             "rag_sources":      s.get("rag_sources", []),
             "generated_from":   s.get("generated_from", ""),
             "related_skills":   s.get("related_skills", []),
+            "prefer_when":      s.get("prefer_when", []),
+            "avoid_when":       s.get("avoid_when", []),
             "workflow":         s.get("workflow", ""),
             "ref_names":        list(s.get("references", {}).keys()),
             "ref_count":        len(s.get("references", {})),
             "reference_manifest": s.get("reference_manifest", []),
+            "resource_manifest": s.get("resource_manifest", []),
             "agent_config": {
                 "display_name":      agent.get("display_name", ""),
                 "short_description": agent.get("short_description", ""),
@@ -660,7 +830,7 @@ def get_skill_detail(name: str) -> Optional[Dict]:
 
 def save_user_skill(name: str, text: str) -> Path:
     """
-    保存用户自定义单文件技能到 ~/.seismicx/skills/<name>.md。
+    保存用户自定义单文件技能到 seismo_skill/user_skills/<name>.md。
     文件夹技能请用 install_skill_from_dir()。
     """
     skill_dir = get_user_skill_dir()
@@ -689,11 +859,72 @@ def delete_user_skill(name: str) -> bool:
     return False
 
 
+def _install_one_skill_folder(source_dir: Path, overwrite: bool = True) -> Dict:
+    """安装一个已确认包含 SKILL.md/skill.md 的文件夹技能。"""
+    skill_md = _find_skill_entry_file(source_dir)
+    if skill_md is None:
+        raise ValueError(f"目录中未找到 SKILL.md / skill.md：{source_dir}")
+
+    text = skill_md.read_text(encoding="utf-8")
+    meta, body = _parse_frontmatter(text)
+    norm = _normalize_skill_meta(meta, body, source_dir.name, "user")
+    name = norm["name"].strip() or source_dir.name
+    safe_name = re.sub(r"[^\w\-]", "_", name)
+
+    target_dir = get_user_skill_dir() / safe_name
+    if target_dir.exists():
+        if not overwrite:
+            raise FileExistsError(f"技能目录已存在（overwrite=False）：{target_dir}")
+        shutil.rmtree(target_dir)
+
+    shutil.copytree(source_dir, target_dir)
+    entry = _load_folder_skill(target_dir, "user")
+    if entry is None:
+        raise RuntimeError(f"安装后无法重新加载技能：{target_dir}")
+    return entry
+
+
+def _discover_installable_skill_folders(source_dir: Path) -> List[Path]:
+    """发现可安装的单个技能或 repo 内的多个 OpenAI/Codex 技能。"""
+    if _find_skill_entry_file(source_dir) is not None:
+        return [source_dir]
+    folders = _discover_skill_folders(source_dir)
+    if not folders:
+        # 兼容直接传入 repo/skills 目录。
+        folders = _discover_skill_folders(source_dir / "skills")
+    return folders
+
+
+def install_skills_from_dir(source_dir: Union[str, Path], overwrite: bool = True) -> List[Dict]:
+    """
+    从本地目录安装一个或多个文件夹技能。
+
+    source_dir 可以是：
+      - 单个技能目录：<skill>/SKILL.md
+      - OpenAI/Codex skills repo：<repo>/skills/<skill>/SKILL.md
+      - 技能根目录：其中包含多个 <skill>/SKILL.md
+    """
+    source_dir = Path(source_dir).expanduser().resolve()
+    if not source_dir.exists():
+        raise FileNotFoundError(f"目录不存在：{source_dir}")
+
+    folders = _discover_installable_skill_folders(source_dir)
+    if not folders:
+        raise ValueError(f"目录中未找到可安装的 SKILL.md / skill.md：{source_dir}")
+
+    entries: List[Dict] = []
+    for folder in folders:
+        entries.append(_install_one_skill_folder(folder, overwrite=overwrite))
+    invalidate_cache()
+    return entries
+
+
 def install_skill_from_dir(source_dir: Union[str, Path], overwrite: bool = True) -> Dict:
     """
-    从本地目录安装文件夹技能到 ~/.seismicx/skills/<name>/。
+    从本地目录安装文件夹技能到 seismo_skill/user_skills/<name>/。
 
-    source_dir 必须包含 SKILL.md。
+    source_dir 可以包含 SKILL.md / skill.md；若传入 OpenAI/Codex skills repo，
+    建议使用 install_skills_from_dir() 批量安装。
     name 从 SKILL.md frontmatter 的 name 字段读取；不存在则用目录名。
 
     参数
@@ -708,35 +939,25 @@ def install_skill_from_dir(source_dir: Union[str, Path], overwrite: bool = True)
     异常
     ----
     FileNotFoundError  — source_dir 不存在
-    ValueError         — source_dir 中不含 SKILL.md
+    ValueError         — source_dir 中不含 SKILL.md / skill.md
     FileExistsError    — overwrite=False 且目标目录已存在
     """
     source_dir = Path(source_dir).expanduser().resolve()
     if not source_dir.exists():
         raise FileNotFoundError(f"目录不存在：{source_dir}")
 
-    skill_md = source_dir / "SKILL.md"
-    if not skill_md.exists():
-        raise ValueError(f"目录中未找到 SKILL.md：{source_dir}")
+    if _find_skill_entry_file(source_dir) is None:
+        folders = _discover_installable_skill_folders(source_dir)
+        if len(folders) > 1:
+            raise ValueError(
+                f"目录包含 {len(folders)} 个技能；请使用 install_skills_from_dir() 批量安装：{source_dir}"
+            )
+        if not folders:
+            raise ValueError(f"目录中未找到 SKILL.md / skill.md：{source_dir}")
+        source_dir = folders[0]
 
-    # 解析 name
-    text = skill_md.read_text(encoding="utf-8")
-    meta, _ = _parse_frontmatter(text)
-    name = (meta.get("name") or source_dir.name).strip()
-    safe_name = re.sub(r"[^\w\-]", "_", name)
-
-    target_dir = get_user_skill_dir() / safe_name
-    if target_dir.exists():
-        if not overwrite:
-            raise FileExistsError(f"技能目录已存在（overwrite=False）：{target_dir}")
-        shutil.rmtree(target_dir)
-
-    shutil.copytree(source_dir, target_dir)
+    entry = _install_one_skill_folder(source_dir, overwrite=overwrite)
     invalidate_cache()
-
-    entry = _load_folder_skill(target_dir, "user")
-    if entry is None:
-        raise RuntimeError(f"安装后无法重新加载技能：{target_dir}")
     return entry
 
 
@@ -764,100 +985,233 @@ def _tok_min_len(tok: str) -> bool:
     return len(tok) >= (2 if is_cjk else 3)
 
 
+def _skill_profile_text(skill: Dict, body_chars: int = 2200) -> str:
+    """Build the text used for generic skill retrieval."""
+    parts: List[str] = [
+        str(skill.get("name", "")),
+        str(skill.get("display_name", "")),
+        str(skill.get("description", "")),
+        str(skill.get("category", "")),
+        " ".join(str(x) for x in skill.get("keywords", []) or []),
+        " ".join(str(x) for x in skill.get("related_skills", []) or []),
+    ]
+    agent_config = skill.get("agent_config") or {}
+    if isinstance(agent_config, dict):
+        parts.extend(str(agent_config.get(k, "")) for k in ("display_name", "short_description", "default_prompt"))
+    for ref in skill.get("reference_manifest", [])[:12] or []:
+        if isinstance(ref, dict):
+            parts.append(str(ref.get("name", "")))
+            parts.append(" ".join(str(h) for h in ref.get("headings", [])[:8]))
+    for resource in skill.get("resource_manifest", [])[:20] or []:
+        if isinstance(resource, dict):
+            parts.append(str(resource.get("path", "")))
+            parts.append(str(resource.get("kind", "")))
+    body = str(skill.get("body", ""))
+    if body:
+        parts.append(body[:body_chars])
+    return "\n".join(p for p in parts if p).strip()
+
+
+def _metadata_score(query: str, skill: Dict) -> float:
+    """Generic metadata overlap score. Domain intent lives in SKILL keywords, not code rules."""
+    query_text = _expand_query(query)
+    query_tokens = set(_tokenize(query_text))
+    query_lower = query_text.lower()
+    profile = _skill_profile_text(skill).lower()
+    score = 0.0
+
+    for kw in skill.get("keywords", []) or []:
+        kw_lower = str(kw).lower()
+        if kw_lower and kw_lower in query_lower:
+            score += 6.0
+        elif any(_tok_min_len(tok) and tok in kw_lower for tok in query_tokens):
+            score += 3.0
+
+    for phrase in skill.get("prefer_when", []) or []:
+        phrase_lower = str(phrase).strip().lower()
+        if phrase_lower and phrase_lower in query_lower:
+            score += 8.0
+
+    for phrase in skill.get("avoid_when", []) or []:
+        phrase_lower = str(phrase).strip().lower()
+        if phrase_lower and phrase_lower in query_lower:
+            score -= 12.0
+
+    name_lower = str(skill.get("name", "")).lower()
+    if name_lower and name_lower in query_lower:
+        score += 5.0
+    if any(_tok_min_len(tok) and tok in name_lower for tok in query_tokens):
+        score += 3.0
+
+    matched = 0
+    for tok in query_tokens:
+        if _tok_min_len(tok) and tok in profile:
+            matched += 1
+    score += min(8.0, matched * 1.2)
+
+    if score > 0 and skill.get("source") == "user":
+        score += 1.0
+    return score
+
+
+def _embedding_rank_skills(query: str, skills: List[Dict], max_candidates: int) -> List[Tuple[float, Dict]]:
+    """Use the local embedding backend when available to retrieve semantic skill candidates."""
+    if not query.strip() or not skills:
+        return []
+    try:
+        _web = Path(__file__).parent.parent / "web_app"
+        if str(_web) not in sys.path:
+            sys.path.insert(0, str(_web))
+        from rag_backends import EmbeddingModel  # type: ignore
+        texts = [_skill_profile_text(skill, body_chars=3200) for skill in skills]
+        vecs = EmbeddingModel.get().encode([query] + texts, batch_size=16)
+        query_vec = vecs[0]
+        skill_vecs = vecs[1:]
+        scores = skill_vecs @ query_vec
+        ranked = sorted(
+            ((float(score), skill) for score, skill in zip(scores, skills)),
+            key=lambda item: item[0],
+            reverse=True,
+        )
+        return ranked[:max_candidates]
+    except Exception:
+        return []
+
+
+def _candidate_skills(query: str, max_candidates: int = 12) -> List[Dict]:
+    skills = _get_skills()
+    if not skills:
+        return []
+
+    embedding_scores: Dict[str, float] = {}
+    for score, skill in _embedding_rank_skills(query, skills, max_candidates=max_candidates * 2):
+        embedding_scores[str(skill.get("name", ""))] = max(0.0, float(score))
+
+    ranked: List[Tuple[float, Dict]] = []
+    for skill in skills:
+        meta_score = _metadata_score(query, skill)
+        emb_score = embedding_scores.get(str(skill.get("name", "")), 0.0)
+        combined = meta_score * 2.0 + emb_score * 6.0
+        if combined > 0:
+            ranked.append((combined, skill))
+
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return [skill for _, skill in ranked[:max_candidates]]
+
+
+def _parse_llm_skill_matches(raw: str, candidates: List[Dict]) -> List[str]:
+    allowed = {str(skill.get("name", "")): skill for skill in candidates}
+    chosen: List[str] = []
+    if re.search(r"(?im)^\s*(NO_SKILL|NONE|无匹配|不需要技能)\s*$", str(raw or "")):
+        return ["__NO_SKILL__"]
+    for line in str(raw or "").splitlines():
+        text = line.strip().strip("-*0123456789. ")
+        if not text:
+            continue
+        if ":" in text or "：" in text:
+            text = re.split(r"[:：]", text, maxsplit=1)[1].strip()
+        for name in allowed:
+            if text == name or text.startswith(name) or f"`{name}`" in text:
+                if name not in chosen:
+                    chosen.append(name)
+                break
+    return chosen
+
+
+def _llm_match_skills(query: str, candidates: List[Dict], top_k: int) -> List[str]:
+    """Ask the active LLM to rerank candidates with a raw-text protocol."""
+    if os.environ.get("SEISMICX_SKILL_LLM_MATCH", "1") == "0":
+        return []
+    if not query.strip() or not candidates:
+        return []
+    names = tuple(str(skill.get("name", "")) for skill in candidates)
+    cache_key = (query.strip(), top_k, names)
+    if cache_key in _SKILL_MATCH_CACHE:
+        return list(_SKILL_MATCH_CACHE[cache_key])
+
+    catalog_lines = []
+    for idx, skill in enumerate(candidates, 1):
+        keywords = ", ".join(str(x) for x in skill.get("keywords", [])[:12])
+        prefer_when = ", ".join(str(x) for x in skill.get("prefer_when", [])[:8])
+        avoid_when = ", ".join(str(x) for x in skill.get("avoid_when", [])[:8])
+        desc = str(skill.get("description", "")).replace("\n", " ").strip()
+        refs = ", ".join(
+            str(r.get("name", "")) for r in skill.get("reference_manifest", [])[:6]
+            if isinstance(r, dict)
+        )
+        catalog_lines.append(
+            f"[{idx}] name={skill.get('name')}\n"
+            f"description={desc}\n"
+            f"keywords={keywords}\n"
+            f"prefer_when={prefer_when}\n"
+            f"avoid_when={avoid_when}\n"
+            f"references={refs}"
+        )
+    prompt = f"""你是 SeismicX 的技能选择器。请根据用户请求，从候选 SKILL 中选择最相关的 {top_k} 个。
+
+原则：
+1. 只能选择候选列表里的 name，不能编造技能名。
+2. 优先根据每个 SKILL 自己的 description、keywords、references 判断。
+3. 用户只是问概念/论文解读/普通 QA 时，不要强行选择绘图或编程技能。
+4. 输出 RAW TEXT，不要 JSON。
+5. 如果没有明显相关技能，输出 NO_SKILL。
+
+输出格式：
+SKILL: skill_name
+SKILL: another_skill
+或：
+NO_SKILL
+
+用户请求：
+{query}
+
+候选 SKILL：
+{chr(10).join(catalog_lines)}
+"""
+    try:
+        _web = Path(__file__).parent.parent / "web_app"
+        if str(_web) not in sys.path:
+            sys.path.insert(0, str(_web))
+        from helpers import get_llm_config, llm_call  # type: ignore
+        raw = llm_call(
+            [{"role": "user", "content": prompt}],
+            get_llm_config(),
+            max_tokens=500,
+        )
+        matched = _parse_llm_skill_matches(raw, candidates)[:top_k]
+        _SKILL_MATCH_CACHE[cache_key] = matched
+        return matched
+    except Exception:
+        return []
+
+
 def search_skills(query: str, top_k: int = 3) -> List[Dict]:
     """
-    按关键词检索最相关技能（支持中英文混合查询）。
+    按 SKILL 自带元数据检索最相关技能（支持中英文混合查询）。
 
-    搜索范围：name / description / keywords / body
-    返回按相关性降序排列的技能列表。
+    流程：
+    1. 从 name / description / keywords / references / body 召回候选；
+    2. 可用时用 BGE 向量召回补强多语言语义匹配；
+    3. 可用时让 LLM 按 raw text 协议重排候选。
     """
-    expanded_query = _expand_query(query)
-    query_tokens = set(_tokenize(expanded_query))
-    query_lower  = expanded_query.lower()
-    nature_family_intent = _has_nature_family_intent(query)
-    pub_figure_intent = _has_publication_figure_intent(query)
-    data_avail_intent = _has_data_availability_intent(query)
-    polish_intent = _has_manuscript_polish_intent(query)
-    scored: List[Tuple[int, Dict]] = []
+    if not str(query or "").strip():
+        return []
+    candidates = _candidate_skills(query, max_candidates=max(12, top_k * 5))
+    if not candidates:
+        return []
 
-    for skill in _get_skills():
-        score = 0
-
-        # 1. keywords 双向子串匹配（最高优先级）
-        for kw in skill["keywords"]:
-            kw_lower = kw.lower()
-            if kw_lower in query_lower:
-                score += 5
-                continue
-            for tok in query_tokens:
-                if len(tok) >= 2 and tok in kw_lower:
-                    score += 3
-                    break
-
-        # 2. 技能名匹配
-        name_lower = skill["name"].lower()
-        if name_lower in query_lower or any(
-            tok in name_lower for tok in query_tokens if len(tok) >= 2
-        ):
-            score += 4
-
-        # 3. description 匹配（v2 新增）
-        desc_lower = skill.get("description", "").lower()
-        if desc_lower:
-            for tok in query_tokens:
-                if _tok_min_len(tok) and tok in desc_lower:
-                    score += 2
-                    break
-
-        # 4. 文档体匹配（中文 bigram 也允许，len>=2；英文 len>=3）
-        body_lower = skill["body"].lower()
-        matched_body = 0
-        for tok in query_tokens:
-            if _tok_min_len(tok) and tok in body_lower:
-                matched_body += 1
-        # 多 token 命中时额外加分，但单次最多 +3（避免长文档靠词频压倒关键词匹配）
-        score += min(3, matched_body)
-
-        # 用户自定义技能额外加分
-        if score > 0 and skill["source"] == "user":
-            score += 1
-
-        # 5. category / filename 轻量匹配
-        cat_lower = (skill.get("category", "") + " " + skill.get("filename", "")).lower()
-        if any(_tok_min_len(tok) and tok in cat_lower for tok in query_tokens):
-            score += 1
-
-        # 6. Nature 系列技能按任务意图门控，避免只因 "Nature" 一词互相抢答。
-        skill_name = skill["name"]
-        if skill_name.startswith("nature-") and not nature_family_intent:
-            score = 0
-        if skill_name == "nature-figure":
-            if pub_figure_intent:
-                score += 10
-            elif data_avail_intent or polish_intent:
-                score = 0
-            elif nature_family_intent and not re.search(r"图|figure|plot|chart|panel|heatmap|配色|排版", query, re.I):
-                score -= 3
-        elif skill_name == "nature-data":
-            if data_avail_intent:
-                score += 10
-            elif pub_figure_intent or polish_intent:
-                score = 0
-        elif skill_name == "nature-polishing":
-            if polish_intent:
-                score += 10
-            elif pub_figure_intent or data_avail_intent:
-                score = 0
-
-        if score > 0:
-            scored.append((score, skill))
-
-    scored.sort(key=lambda x: x[0], reverse=True)
-    hits = [s for _, s in scored[:top_k]]
-
-    # Deterministic fallback: common coding requests must always get a baseline API skill.
-    seen = {s["name"] for s in hits}
-    for skill in _fallback_skills(query, max_count=max(1, top_k)):
+    skill_map = {skill["name"]: skill for skill in candidates}
+    chosen_names = _llm_match_skills(query, candidates, top_k=top_k)
+    if chosen_names == ["__NO_SKILL__"]:
+        return []
+    hits: List[Dict] = []
+    seen: set[str] = set()
+    for name in chosen_names:
+        skill = skill_map.get(name)
+        if skill and name not in seen:
+            hits.append(skill)
+            seen.add(name)
+    for skill in candidates:
         if skill["name"] not in seen:
             hits.append(skill)
             seen.add(skill["name"])
@@ -1036,6 +1390,14 @@ def _format_reference_manifest(skill: Dict, max_chars: int = 1000) -> str:
         if len("\n".join(lines)) >= max_chars:
             lines.append("…（资料索引已截断）")
             break
+    resources = skill.get("resource_manifest") or []
+    if resources and len("\n".join(lines)) < max_chars:
+        shown = []
+        for resource in resources[:8]:
+            if isinstance(resource, dict):
+                shown.append(f"{resource.get('kind', 'file')}:{resource.get('path', '')}")
+        if shown:
+            lines.append("- bundled resources: " + "；".join(shown))
     return "\n".join(lines)
 
 
@@ -1101,8 +1463,6 @@ def build_skill_context(query: str, max_chars: int = 8000, top_k: int = 2) -> st
     """
     hits = search_skills(query, top_k=top_k)
     if not hits:
-        hits = _fallback_skills(query, max_count=top_k)
-    if not hits:
         return ""
 
     hits = _expand_with_related(hits, max_extra=3)
@@ -1149,8 +1509,6 @@ def build_skill_context_with_rag(
     """
     expanded_query = _expand_query(query)
     hits = search_skills(expanded_query, top_k=top_k)
-    if not hits:
-        hits = _fallback_skills(query, max_count=top_k)
     hits = _expand_with_related(hits, max_extra=3)
 
     # ── Workflow 检索 ─────────────────────────────────────────────────────────
@@ -1383,6 +1741,6 @@ interface:
 ## 使用方式
 
 该技能由 SeismicX 技能引擎自动加载。将整个文件夹放入
-`seismo_skill/skills/` 或 `~/.seismicx/skills/` 即可使用。
+`seismo_skill/skills/` 或 `seismo_skill/user_skills/` 即可使用。
 """,
 }
