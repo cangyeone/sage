@@ -264,7 +264,7 @@ class KnowledgeBase:
         """
         Index any supported file format into the knowledge base.
 
-        Supported: .pdf  .docx  .md  .txt  .rst  .html  .htm
+        Supported: .pdf  .doc  .docx  .md  .txt  .rst  .html  .htm
 
         Parameters
         ----------
@@ -362,6 +362,7 @@ class KnowledgeBase:
             model  = EmbeddingModel.get()
             texts  = [c.text for c in chunks]
             vecs   = model.encode(texts)
+            log(f"  embedding backend: {model.backend or 'unknown'}")
             log(f"  embedding dim: {vecs.shape[1]}")
 
             if self._faiss is None:

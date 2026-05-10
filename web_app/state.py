@@ -18,6 +18,7 @@ _code_jobs: dict = {}           # job_id → {status, progress, result, ts}
 _kb_dir_jobs: dict = {}         # job_id → {status, log, ...}
 _ref_kb_jobs: dict = {}         # job_id → {status, log, ...}
 _geo_agent_jobs: dict = {}      # job_id → {status, progress, result, error, ts}
+_science_agent_jobs: dict = {}  # job_id → {status, progress, result, error, ts}
 _lit_jobs: dict = {}            # job_id → {status, progress, result, error, ts}
 _chat_jobs: dict = {}           # job_id → {status, answer, sources, error, ts}
 _session_docs: dict = {}        # session_id → {chunks, doc_names}
@@ -49,6 +50,9 @@ UPLOAD_FOLDER_CHAT.mkdir(parents=True, exist_ok=True)
 
 GEO_WORKSPACE_ROOT = _WEB_APP_DIR / "uploads" / "geo_workspaces"
 GEO_WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
+
+SCIENCE_WORKSPACE_ROOT = _WEB_APP_DIR / "uploads" / "science_workspaces"
+SCIENCE_WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
 
 _REF_KNOWLEDGE_DIR = _PROJECT_ROOT / "seismo_knowledge"
 _REF_KB_MANIFEST_DIR = Path.home() / ".seismicx" / "ref_knowledge"

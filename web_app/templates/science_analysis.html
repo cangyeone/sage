@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>科学分析 Agent alpha — SeismicX</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+<style>
+:root{--accent:#2563eb;--accent2:#16a34a;--grad:linear-gradient(135deg,var(--accent),var(--accent2));--bg:#f5f7fb;}
+*{box-sizing:border-box} body{height:100vh;margin:0;background:var(--bg);display:flex;flex-direction:column;overflow:hidden;color:#222;font-size:.94rem}
+.navbar{background:#fff!important;box-shadow:0 2px 10px rgba(0,0,0,.08);z-index:100;flex-shrink:0}
+.navbar-brand span{background:var(--grad);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.app-body{flex:1;display:flex;overflow:hidden}
+.sidebar{width:320px;background:#fff;border-right:1px solid #e8eaf0;overflow-y:auto;flex-shrink:0}
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
+.sb-section{padding:.85rem 1rem;border-bottom:1px solid #f0f1f5}
+.sb-title{font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;color:#999;font-weight:700;margin-bottom:.5rem}
+.project-row{display:flex;align-items:center;gap:.45rem;padding:.42rem .55rem;border-radius:8px;cursor:pointer;color:#555}
+.project-row:hover{background:#f1f5ff}.project-row.active{background:#eaf1ff;color:#1d4ed8;font-weight:700}
+.project-name{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mini-btn{border:1px solid #d7dce8;background:#fff;border-radius:8px;padding:.34rem .55rem;font-size:.8rem}
+.mini-btn:hover{background:#f8fafc}.danger{color:#dc2626;border-color:#fecaca}
+.form-label-sm{font-size:.78rem;color:#555;margin-bottom:.25rem}.form-control-sm,.form-select-sm{font-size:.82rem}
+.upload-zone{border:2px dashed #c5d0ea;border-radius:10px;background:#fbfcff;text-align:center;padding:.9rem;cursor:pointer;color:#6b7280}
+.upload-zone:hover,.upload-zone.dragover{border-color:var(--accent);background:#eef5ff}
+.file-chip{display:inline-flex;align-items:center;gap:.3rem;background:#eaf1ff;color:#1d4ed8;border-radius:10px;padding:.15rem .55rem;font-size:.74rem;margin:.12rem}
+.composer{background:#fff;border-bottom:1px solid #e8eaf0;padding:1rem 1.1rem;flex-shrink:0}
+.task-box{border:1px solid #dbe2f1;border-radius:12px;padding:.75rem;background:#fbfcff}
+.toolbar{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:.65rem}
+.btn-run{background:var(--grad);color:#fff;border:none;border-radius:22px;padding:.52rem 1.25rem;font-weight:700}
+.btn-run:disabled{opacity:.55}.pill{border:1px solid #dbe2f1;border-radius:18px;padding:.35rem .65rem;background:#fff;color:#4b5563;font-size:.82rem}
+.guidance-row{display:flex;gap:.5rem;align-items:center;margin-top:.65rem}
+.guidance-row input{border-radius:18px}.guidance-row button{border-radius:18px;white-space:nowrap}
+.workspace-hint{font-size:.76rem;color:#777;margin-top:.45rem}
+.content{flex:1;overflow:auto;padding:1rem 1.2rem}
+.progress-card,.result-card{background:#fff;border:1px solid #e8eaf0;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,.04);margin-bottom:1rem}
+.progress-head{display:flex;align-items:center;gap:.55rem;padding:.75rem 1rem;border-bottom:1px solid #f0f1f5;font-weight:700}
+.progress-body{padding:.75rem 1rem;max-height:220px;overflow:auto}
+.log-line{font-size:.82rem;color:#555;border-left:3px solid #dbeafe;padding:.32rem .55rem;margin:.32rem 0;background:#f8fbff;border-radius:6px}
+.tabs{display:flex;gap:.35rem;flex-wrap:wrap;padding:.65rem 1rem;border-bottom:1px solid #f0f1f5}
+.tab-btn{border:1px solid #dbe2f1;background:#fff;border-radius:18px;padding:.32rem .7rem;font-size:.82rem}
+.tab-btn.active{background:#eaf1ff;color:#1d4ed8;border-color:#93b4ff;font-weight:700}
+.tab-pane{display:none;padding:1rem}.tab-pane.active{display:block}
+.md{line-height:1.7}.md h1,.md h2,.md h3{margin-top:1rem}.md pre{background:#f6f8fa;border:1px solid #e5e7eb;border-radius:8px;padding:.7rem;overflow:auto;white-space:pre-wrap}
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:.6rem;margin-bottom:.8rem}
+.stat{background:#f8fafc;border:1px solid #e5e7eb;border-radius:10px;padding:.6rem}.stat b{display:block;font-size:1.25rem;color:#1d4ed8}
+.fig-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:.8rem}.fig-card{border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;background:#fff}.fig-card img{width:100%;display:block;cursor:pointer}.fig-card div{padding:.45rem .6rem;font-size:.78rem;color:#555}
+.table-wrap{overflow:auto}.ev{border:1px solid #e5e7eb;border-radius:10px;padding:.65rem;margin-bottom:.55rem;background:#fff}.ev-id{font-weight:700;color:#1d4ed8}.muted{color:#888}
+.empty{color:#aaa;text-align:center;padding:1.6rem}
+</style>
+</head>
+<body>
+<nav class="navbar navbar-expand-lg navbar-light">
+  <div class="container-fluid px-3">
+    <a class="navbar-brand" href="/chat"><i class="bi bi-activity text-primary"></i> <span><strong>SeismicX</strong></span></a>
+    <div class="collapse navbar-collapse">
+      <ul class="navbar-nav ms-auto gap-1 align-items-center">
+        <li class="nav-item"><a class="nav-link" href="/chat"><i class="bi bi-chat-dots"></i> <span data-i18n="nav_chat">对话</span></a></li>
+        <li class="nav-item"><a class="nav-link" href="/evidence-geo-agent"><i class="bi bi-geo-alt-fill"></i> <span data-i18n="nav_geo">地学解译</span></a></li>
+        <li class="nav-item"><a class="nav-link active fw-bold" href="/science-analysis-agent"><i class="bi bi-beaker"></i> <span data-i18n="nav_science">科学分析</span> <span class="badge text-bg-warning fw-normal">alpha</span></a></li>
+        <li class="nav-item"><a class="nav-link" href="/knowledge"><i class="bi bi-journal-bookmark-fill"></i> <span data-i18n="nav_knowledge">知识库</span></a></li>
+        <li class="nav-item"><a class="nav-link" href="/skills"><i class="bi bi-lightning-charge"></i> <span data-i18n="nav_skills">技能</span></a></li>
+        <li class="nav-item"><a class="nav-link" href="/llm-settings"><i class="bi bi-sliders"></i> Config</a></li>
+        <li class="nav-item"><button class="mini-btn" onclick="toggleLang()">🌐 <span id="langLabel">EN</span></button></li>
+      </ul>
+    </div>
+  </div>
+</nav>
+
+<div class="app-body">
+  <aside class="sidebar">
+    <div class="sb-section">
+      <div class="d-flex align-items-center justify-content-between">
+        <div class="sb-title mb-0"><i class="bi bi-folder2-open me-1"></i><span data-i18n="projects">分析项目</span></div>
+        <button class="mini-btn" onclick="newProject()"><i class="bi bi-plus"></i> <span data-i18n="new">新建</span></button>
+      </div>
+      <div id="projectList" class="mt-2"></div>
+      <div class="d-flex gap-2 mt-2">
+        <button class="mini-btn flex-fill" onclick="saveProject()"><i class="bi bi-save"></i> <span data-i18n="save">保存</span></button>
+        <button class="mini-btn danger" onclick="deleteProject()"><i class="bi bi-trash"></i></button>
+      </div>
+    </div>
+
+    <div class="sb-section">
+      <div class="sb-title"><i class="bi bi-sliders me-1"></i><span data-i18n="settings">项目设置</span></div>
+      <label class="form-label-sm" data-i18n="project_name">项目名</label>
+      <input class="form-control form-control-sm mb-2" id="projectName" oninput="updateActiveName()">
+      <label class="form-label-sm" data-i18n="workspace">项目目录</label>
+      <input class="form-control form-control-sm mb-2" id="workspaceRoot" placeholder="./examples/science_analysis_agent">
+      <div class="workspace-hint mb-2" data-i18n="workspace_hint">数据、论文、说明文档和脚本都放在这个项目目录内；可以有子文件夹，Agent 会自动遍历。</div>
+      <label class="form-label-sm" data-i18n="authorized">额外授权位置</label>
+      <textarea class="form-control form-control-sm mb-2" id="authorizedRoots" rows="3" placeholder="/data/project&#10;/Users/you/project"></textarea>
+      <input type="hidden" id="literatureRoot" value="">
+      <input type="hidden" id="outputDir" value="outputs/science_analysis_agent">
+    </div>
+
+    <div class="sb-section">
+      <div class="sb-title"><i class="bi bi-upload me-1"></i><span data-i18n="upload">上传研究文件</span></div>
+      <div class="upload-zone" id="uploadZone" onclick="document.getElementById('fileInput').click()">
+        <i class="bi bi-cloud-arrow-up fs-3"></i>
+        <div data-i18n="upload_hint">拖拽或点击上传数据、论文、说明文档、图像、脚本</div>
+      </div>
+      <input id="fileInput" type="file" multiple style="display:none" onchange="uploadFiles(this.files)">
+      <div id="fileList" class="mt-2"></div>
+    </div>
+
+    <div class="sb-section">
+      <div class="sb-title"><i class="bi bi-toggles me-1"></i><span data-i18n="capabilities">能力</span></div>
+      <div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="allowPython" checked><label class="form-check-label" data-i18n="py">Python 编程统计</label></div>
+      <div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="useRag" checked><label class="form-check-label">RAG</label></div>
+      <div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="allowWeb" checked><label class="form-check-label" data-i18n="web">Web 文献检索</label></div>
+      <div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="useVision" checked><label class="form-check-label" data-i18n="vision">图像/表格解析</label></div>
+      <div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="produceLatex" checked><label class="form-check-label">LaTeX / Paper</label></div>
+      <div class="row g-2 mt-2">
+        <div class="col-6"><label class="form-label-sm" data-i18n="iters">迭代</label><input class="form-control form-control-sm" id="maxIterations" type="number" value="6"></div>
+        <div class="col-6"><label class="form-label-sm">RAG Top-K</label><input class="form-control form-control-sm" id="ragTopK" type="number" value="10"></div>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <section class="composer">
+      <div class="task-box">
+        <label class="form-label-sm fw-bold" data-i18n="data_desc">数据说明</label>
+        <textarea class="form-control mb-2" id="dataDescription" rows="3" data-i18n-placeholder="data_desc_ph" placeholder="说明数据来源、字段含义、研究区、已有假设或你希望重点分析的问题。"></textarea>
+        <label class="form-label-sm fw-bold" data-i18n="request">研究任务</label>
+        <textarea class="form-control" id="question" rows="3">根据当前项目的数据、数据说明以及文件夹中的相关参考文献，帮我编程统计相关结果，挖掘新的科学问题，并写成报告和论文草稿。</textarea>
+      </div>
+      <div class="toolbar">
+        <button class="btn-run" id="runBtn" onclick="runAgent()"><span id="runIcon"><i class="bi bi-play-fill"></i></span> <span data-i18n="run">开始分析</span></button>
+        <span class="pill"><i class="bi bi-folder2"></i> <span id="workspaceLabel">workspace</span></span>
+        <span class="pill"><i class="bi bi-file-earmark-text"></i> <span id="artifactLabel">0 files</span></span>
+      </div>
+      <div class="guidance-row">
+        <input class="form-control form-control-sm" id="guidanceInput" data-i18n-placeholder="guidance_ph" placeholder="运行中补充引导，例如：使用 article 模板、重点分析 A/B/C 三组差异">
+        <button class="mini-btn" id="guidanceBtn" onclick="sendGuidance()" disabled><i class="bi bi-arrow-return-left"></i> <span data-i18n="guide">发送引导</span></button>
+      </div>
+      <div class="workspace-hint" data-i18n="hint">Agent 会遍历授权目录，编程统计、检索文献、保存中间图表，并输出报告和论文草稿。</div>
+    </section>
+
+    <section class="content">
+      <div class="progress-card">
+        <div class="progress-head"><span id="spinner" class="spinner-border spinner-border-sm" style="display:none"></span><span id="progressTitle" data-i18n="progress">运行日志</span></div>
+        <div class="progress-body" id="progressLog"><div class="empty" data-i18n="idle">尚未开始运行</div></div>
+      </div>
+      <div class="result-card">
+        <div class="tabs">
+          <button class="tab-btn active" onclick="switchTab('report',this)" data-i18n="tab_report">报告</button>
+          <button class="tab-btn" onclick="switchTab('paper',this)" data-i18n="tab_paper">论文</button>
+          <button class="tab-btn" onclick="switchTab('figures',this)" data-i18n="tab_figures">图件</button>
+          <button class="tab-btn" onclick="switchTab('evidence',this)" data-i18n="tab_evidence">证据/统计</button>
+          <button class="tab-btn" onclick="switchTab('tools',this)" data-i18n="tab_tools">代码与日志</button>
+          <button class="tab-btn" onclick="switchTab('missing',this)" data-i18n="tab_missing">缺失信息</button>
+        </div>
+        <div id="tab_report" class="tab-pane active"><div class="empty" data-i18n="no_report">暂无报告</div></div>
+        <div id="tab_paper" class="tab-pane"><div class="empty" data-i18n="no_paper">暂无论文草稿</div></div>
+        <div id="tab_figures" class="tab-pane"><div class="empty" data-i18n="no_figures">暂无图件</div></div>
+        <div id="tab_evidence" class="tab-pane"><div class="empty" data-i18n="no_evidence">暂无统计/证据</div></div>
+        <div id="tab_tools" class="tab-pane"><div class="empty" data-i18n="no_tools">暂无工具日志</div></div>
+        <div id="tab_missing" class="tab-pane"><div class="empty" data-i18n="no_missing">暂无缺失信息</div></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+const STORE_KEY='sage_science_alpha_projects_v1';
+const ACTIVE_KEY='sage_science_alpha_active_project';
+let projects=[], activeId='', pollTimer=null, currentLang=localStorage.getItem('seismicx_lang')||'zh';
+const T={zh:{nav_chat:'对话',nav_geo:'地学解译',nav_science:'科学分析',nav_knowledge:'知识库',nav_skills:'技能',projects:'分析项目',new:'新建',save:'保存',settings:'项目设置',project_name:'项目名',workspace:'项目目录',workspace_hint:'数据、论文、说明文档和脚本都放在这个项目目录内；可以有子文件夹，Agent 会自动遍历。',authorized:'额外授权位置',literature:'文献目录',output:'输出目录',upload:'上传研究文件',upload_hint:'拖拽或点击上传数据、论文、说明文档、图像、脚本',capabilities:'能力',py:'Python 编程统计',web:'Web 文献检索',vision:'图像/表格解析',iters:'迭代',data_desc:'数据说明',data_desc_ph:'说明数据来源、字段含义、研究区、已有假设或你希望重点分析的问题。',request:'研究任务',run:'开始分析',guide:'发送引导',guidance_ph:'运行中补充引导，例如：使用 article 模板、重点分析 A/B/C 三组差异',progress:'运行日志',idle:'尚未开始运行',hint:'Agent 会在项目目录内遍历文件、编程统计、检索文献、保存中间图表，并输出报告和论文草稿。',tab_report:'报告',tab_paper:'论文',tab_figures:'图件',tab_evidence:'证据/统计',tab_tools:'代码与日志',tab_missing:'缺失信息',no_report:'暂无报告',no_paper:'暂无论文草稿',no_figures:'暂无图件',no_evidence:'暂无统计/证据',no_tools:'暂无工具日志',no_missing:'暂无缺失信息'},
+en:{nav_chat:'Chat',nav_geo:'Geo Agent',nav_science:'Science Agent',nav_knowledge:'Knowledge',nav_skills:'Skills',projects:'Analysis Projects',new:'New',save:'Save',settings:'Project Settings',project_name:'Project name',workspace:'Project directory',workspace_hint:'Put data, papers, notes, and scripts under this project directory; subfolders are fine and the agent will traverse them automatically.',authorized:'Extra authorized roots',literature:'Literature root',output:'Output dir',upload:'Upload research files',upload_hint:'Drop or click to upload data, papers, notes, images, or scripts',capabilities:'Capabilities',py:'Python statistics',web:'Web literature search',vision:'Image/table parsing',iters:'Iterations',data_desc:'Data description',data_desc_ph:'Describe data sources, fields, study area, hypotheses, and key questions.',request:'Research task',run:'Run analysis',guide:'Send guidance',guidance_ph:'Add runtime guidance, e.g. use the article template or focus on A/B/C group differences',progress:'Progress log',idle:'Not started',hint:'The agent stays inside the project directory, traverses files, codes analyses, searches literature, saves artifacts, and writes reports/paper drafts.',tab_report:'Report',tab_paper:'Paper',tab_figures:'Figures',tab_evidence:'Evidence/Stats',tab_tools:'Code & Logs',tab_missing:'Missing info',no_report:'No report yet',no_paper:'No paper draft yet',no_figures:'No figures yet',no_evidence:'No evidence/stats yet',no_tools:'No tool log yet',no_missing:'No missing info yet'}};
+function tr(k){return (T[currentLang]||T.zh)[k]||k}
+function applyLang(){document.querySelectorAll('[data-i18n]').forEach(e=>e.textContent=tr(e.dataset.i18n));document.querySelectorAll('[data-i18n-placeholder]').forEach(e=>e.placeholder=tr(e.dataset.i18nPlaceholder));document.getElementById('langLabel').textContent=currentLang==='zh'?'EN':'中'}
+function toggleLang(){currentLang=currentLang==='zh'?'en':'zh';localStorage.setItem('seismicx_lang',currentLang);applyLang()}
+function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
+function renderMd(s){let x=esc(s||'');x=x.replace(/^### (.*)$/gm,'<h3>$1</h3>').replace(/^## (.*)$/gm,'<h2>$1</h2>').replace(/^# (.*)$/gm,'<h1>$1</h1>');x=x.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>').replace(/`([^`]+)`/g,'<code>$1</code>');return '<div class="md">'+x.replace(/\n\n/g,'</p><p>').replace(/\n/g,'<br>')+'</div>'}
+function loadProjects(){projects=JSON.parse(localStorage.getItem(STORE_KEY)||'[]');if(!projects.length)newProject(false);activeId=localStorage.getItem(ACTIVE_KEY)||projects[0].id;renderProjects();loadActive()}
+function persist(){localStorage.setItem(STORE_KEY,JSON.stringify(projects));localStorage.setItem(ACTIVE_KEY,activeId)}
+function newProject(render=true){const id='sci_'+Math.random().toString(36).slice(2,10);projects.unshift({id,name:currentLang==='zh'?'未命名科学分析':'Untitled science analysis',files:[],state:{workspace_root:'./examples/science_analysis_agent',literature_root:'',output_dir:'outputs/science_analysis_agent',authorized_roots:''}});activeId=id;persist();if(render){renderProjects();loadActive()}}
+function active(){return projects.find(p=>p.id===activeId)||projects[0]}
+function renderProjects(){document.getElementById('projectList').innerHTML=projects.map(p=>`<div class="project-row ${p.id===activeId?'active':''}" onclick="selectProject('${p.id}')"><i class="bi bi-folder2"></i><span class="project-name">${esc(p.name)}</span></div>`).join('')}
+function selectProject(id){saveProject();activeId=id;persist();renderProjects();loadActive()}
+function loadActive(){const p=active();if(!p)return;document.getElementById('projectName').value=p.name||'';const s=p.state||{};workspaceRoot.value=s.workspace_root||'./examples/science_analysis_agent';authorizedRoots.value=s.authorized_roots||'';literatureRoot.value='';outputDir.value='outputs/science_analysis_agent';dataDescription.value=s.data_description||'';question.value=s.question||question.value;renderFiles();renderSavedResult(p.result);workspaceLabel.textContent=workspaceRoot.value||'workspace'}
+function updateActiveName(){const p=active();if(!p)return;p.name=projectName.value||p.name;renderProjects();persist()}
+function saveProject(){const p=active();if(!p)return;p.name=projectName.value||p.name;p.state={workspace_root:workspaceRoot.value,authorized_roots:authorizedRoots.value,literature_root:'',output_dir:'outputs/science_analysis_agent',data_description:dataDescription.value,question:question.value};literatureRoot.value='';outputDir.value='outputs/science_analysis_agent';persist();workspaceLabel.textContent=workspaceRoot.value||'workspace'}
+function deleteProject(){if(projects.length<=1)return;projects=projects.filter(p=>p.id!==activeId);activeId=projects[0].id;persist();renderProjects();loadActive()}
+function renderFiles(){const p=active();const fs=p?.files||[];artifactLabel.textContent=`${fs.length} files`;fileList.innerHTML=fs.map(f=>`<span class="file-chip" title="${esc((f.role_hint||f.type||'file')+' — '+f.path)}"><i class="bi bi-file-earmark"></i>${esc(f.name||f.path.split('/').pop())}</span>`).join('')||'<div class="muted small">No uploaded files</div>'}
+async function uploadFiles(files){const p=active();if(!p)return;for(const file of files){const fd=new FormData();fd.append('file',file);fd.append('session_id',p.id);fd.append('workspace_root',workspaceRoot.value);const r=await fetch('/api/science_analysis_agent/upload',{method:'POST',body:fd});const d=await r.json();if(d.ok){p.files=p.files||[];p.files.push({name:file.name,path:d.path,type:d.file_type,role_hint:d.role_hint,preview:d.preview});workspaceRoot.value=d.session_workspace}}saveProject();renderFiles()}
+['uploadZone'].forEach(id=>{const z=document.getElementById(id);z.addEventListener('dragover',e=>{e.preventDefault();z.classList.add('dragover')});z.addEventListener('dragleave',()=>z.classList.remove('dragover'));z.addEventListener('drop',e=>{e.preventDefault();z.classList.remove('dragover');uploadFiles(e.dataTransfer.files)})});
+function switchTab(name,btn){document.querySelectorAll('.tab-pane').forEach(e=>e.classList.remove('active'));document.getElementById('tab_'+name).classList.add('active');document.querySelectorAll('.tab-btn').forEach(e=>e.classList.remove('active'));btn.classList.add('active')}
+async function runAgent(){saveProject();const p=active();spinner.style.display='';runBtn.disabled=true;guidanceBtn.disabled=false;progressLog.innerHTML='<div class="log-line">Starting scientific analysis...</div>';const prior=p.result?`上一轮研究结果摘要：\n${(p.result.final_report||'').slice(0,5000)}\n\n上一轮论文草稿路径：${p.result.markdown_paper_path||''}\n上一轮输出目录：${p.last_output_dir||p.output_dir||''}`:'';const refine=guidanceInput.value.trim()?`本轮用户补充/修改要求：\n${guidanceInput.value.trim()}`:'';const body={session_id:p.id,question:question.value,data_description:dataDescription.value,workspace_root:workspaceRoot.value,literature_root:literatureRoot.value,output_dir:outputDir.value,project_context:[prior,refine].filter(Boolean).join('\n\n---\n\n'),authorized_roots:authorizedRoots.value.split(/\n|,|;/).map(s=>s.trim()).filter(Boolean),allow_python:allowPython.checked,use_rag:useRag.checked,allow_web_search:allowWeb.checked,use_multimodal:useVision.checked,produce_latex:produceLatex.checked,max_iterations:+maxIterations.value||6,rag_top_k:+ragTopK.value||10};const r=await fetch('/api/science_analysis_agent',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();if(!d.ok){progressLog.innerHTML=`<div class="log-line">${esc(d.error)}</div>`;spinner.style.display='none';runBtn.disabled=false;guidanceBtn.disabled=true;return}p.job_id=d.job_id;p.output_dir=d.output_dir;persist();poll(d.job_id)}
+async function sendGuidance(){const p=active();const msg=guidanceInput.value.trim();if(!p?.job_id||!msg)return;const r=await fetch('/api/science_analysis_agent/guidance',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_id:p.job_id,message:msg})});const d=await r.json();if(d.ok){guidanceInput.value='';progressLog.innerHTML+=`<div class="log-line"><b>guidance</b> ${esc(msg)}</div>`;progressLog.scrollTop=progressLog.scrollHeight}}
+function poll(jobId){if(pollTimer)clearInterval(pollTimer);pollTimer=setInterval(async()=>{const r=await fetch('/api/science_analysis_agent/poll/'+jobId);const d=await r.json();if(!d.ok)return;renderProgress(d.progress||[]);if(d.status==='done'){clearInterval(pollTimer);spinner.style.display='none';runBtn.disabled=false;guidanceBtn.disabled=true;const p=active();p.result=d.result;p.last_output_dir=d.output_dir;persist();renderResults(d.result||{})}else if(d.status==='error'){clearInterval(pollTimer);spinner.style.display='none';runBtn.disabled=false;guidanceBtn.disabled=true;progressLog.innerHTML+=`<div class="log-line" style="border-left-color:#fecaca">${esc(d.error)}</div>`}},1300)}
+function renderProgress(items){progressLog.innerHTML=(items||[]).map(x=>`<div class="log-line"><b>${esc(x.phase||'step')}</b> ${esc(x.message||'')}</div>`).join('')||`<div class="empty">${tr('idle')}</div>`;progressLog.scrollTop=progressLog.scrollHeight}
+function renderSavedResult(res){if(res)renderResults(res)}
+function renderResults(res){const stats=[['Iterations',res.iterations_run||0],['Evidence',(res.evidence_table||[]).length],['Figures',(res.generated_figures||[]).length],['Tools',(res.tool_log||[]).length]];tab_report.innerHTML='<div class="stat-grid">'+stats.map(s=>`<div class="stat"><b>${s[1]}</b>${s[0]}</div>`).join('')+'</div>'+(res.final_report?renderMd(res.final_report):`<div class="empty">${tr('no_report')}</div>`);renderPaper(res);renderFigures(res);renderEvidence(res);renderTools(res);renderMissing(res)}
+function renderPaper(res){let html='';if(res.markdown_paper_path)html+=`<p><b>Markdown:</b> <code>${esc(res.markdown_paper_path)}</code></p>`;if(res.markdown_paper)html+=renderMd(res.markdown_paper);if(res.latex_path)html+=`<p><b>LaTeX:</b> <code>${esc(res.latex_path)}</code></p>`;if(res.paper_html)html+=`<p><b>HTML:</b> <code>${esc(res.paper_html)}</code></p>`;if(res.latex_paper)html+=`<h3>LaTeX Draft</h3><pre>${esc(res.latex_paper)}</pre>`;const qs=(res.scientific_questions||[]).map(q=>`<li>${esc(q)}</li>`).join('');if(qs)html+=`<h3>Scientific questions</h3><ul>${qs}</ul>`;tab_paper.innerHTML=html||`<div class="empty">${tr('no_paper')}</div>`}
+function renderFigures(res){const figs=res.generated_figures||[];const data=res._figure_data||{};tab_figures.innerHTML=figs.length?`<div class="fig-grid">${figs.map(fp=>{const name=fp.split('/').pop();const src=data[fp]||data[name]?`data:image/png;base64,${data[fp]||data[name]}`:`/api/science_analysis_agent/artifact?path=${encodeURIComponent(fp)}`;return `<div class="fig-card"><img src="${src}" onclick="window.open('${src}','_blank')"><div>${esc(name)}</div></div>`}).join('')}</div>`:`<div class="empty">${tr('no_figures')}</div>`}
+function renderEvidence(res){const ev=res.evidence_table||[];const stats=res.statistical_results||[];let html=stats.map(s=>`<div class="ev"><b>${esc(s.title||s.artifact_id||'stat')}</b><pre>${esc(s.content||s.summary||'')}</pre></div>`).join('');html+=ev.map(e=>`<div class="ev"><span class="ev-id">${esc(e.evidence_id||'E')}</span> <b>${esc(e.source_type||'source')}</b><p>${esc(e.observation||'')}</p><p class="muted">${esc(e.source||'')} ${e.source_excerpt?'- '+esc(e.source_excerpt):''}</p></div>`).join('');tab_evidence.innerHTML=html||`<div class="empty">${tr('no_evidence')}</div>`}
+function renderTools(res){const logs=res.tool_log||[];tab_tools.innerHTML=logs.length?logs.map(t=>`<div class="ev"><b>${esc(t.tool||'tool')}.${esc(t.method||'')}</b><p>${esc(t.reason||'')}</p><pre>${esc(t.result_summary||t.error||'')}</pre></div>`).join(''):`<div class="empty">${tr('no_tools')}</div>`}
+function renderMissing(res){const miss=res.missing_information||[];tab_missing.innerHTML=miss.length?`<ul>${miss.map(m=>`<li>${esc(typeof m==='string'?m:(m.item||m.description||JSON.stringify(m)))}</li>`).join('')}</ul>`:`<div class="empty">${tr('no_missing')}</div>`}
+document.addEventListener('DOMContentLoaded',()=>{applyLang();loadProjects()});
+</script>
+</body>
+</html>

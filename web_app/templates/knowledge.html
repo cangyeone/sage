@@ -81,6 +81,7 @@ body { background: #f5f7fa; min-height: 100vh; }
 }
 .proj-card.status-new     { border-left:4px solid #667eea; }
 .proj-card.status-indexed { border-left:4px solid #43a047; }
+.proj-card.status-skill   { border-left:4px solid #43a047; }
 .proj-card.status-modified{ border-left:4px solid #fb8c00; }
 .proj-card.status-partial { border-left:4px solid #fb8c00; }
 .proj-card.status-failed  { border-left:4px solid #e53935; }
@@ -109,6 +110,7 @@ body { background: #f5f7fa; min-height: 100vh; }
       <ul class="navbar-nav ms-auto gap-1">
         <li class="nav-item"><a class="nav-link" href="/chat"><i class="bi bi-chat-dots"></i> <span data-i18n="nav_chat">对话</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/evidence-geo-agent"><i class="bi bi-geo-alt-fill"></i> <span data-i18n="nav_geo">地学解译</span> <span class="badge text-bg-warning fw-normal" style="font-size:.62rem;vertical-align:middle;">alpha</span></a></li>
+        <li class="nav-item"><a class="nav-link" href="/science-analysis-agent"><i class="bi bi-beaker"></i> <span data-i18n="nav_science">科学分析</span> <span class="badge text-bg-warning fw-normal" style="font-size:.62rem;vertical-align:middle;">alpha</span></a></li>
         <li class="nav-item"><a class="nav-link active fw-bold" href="/knowledge"><i class="bi bi-journal-bookmark-fill"></i> <span data-i18n="nav_knowledge">知识库</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/skills"><i class="bi bi-lightning-charge"></i> <span data-i18n="nav_skills">技能</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/llm-settings"><i class="bi bi-sliders"></i> Config</a></li>
@@ -180,14 +182,32 @@ body { background: #f5f7fa; min-height: 100vh; }
           </div>
 
           <div class="mt-2 p-2 rounded-3" style="background:#f8f9ff;border:1px solid #e4e7ff;">
-            <div class="fw-semibold mb-1" style="font-size:.78rem;color:#5865c9;" data-i18n="dir_build_mode">构建方式</div>
-            <select class="form-select form-select-sm" id="dirBuildMode" style="font-size:.82rem;">
-              <option value="rag" data-i18n="dir_mode_rag">只构建 RAG 索引</option>
-              <option value="skill" data-i18n="dir_mode_skill">只生成文件夹型 SKILL</option>
-              <option value="both" data-i18n="dir_mode_both" selected>RAG + 文件夹型 SKILL</option>
+            <div class="fw-semibold mb-1" style="font-size:.78rem;color:#5865c9;" data-i18n="dir_build_mode">SKILL 结构</div>
+            <select class="form-select form-select-sm" id="dirBuildStyle" style="font-size:.82rem;">
+              <option value="openai" data-i18n="dir_style_openai" selected>OpenAI-style 文件夹 SKILL</option>
+              <option value="traditional" data-i18n="dir_style_traditional">传统单文件 SKILL</option>
             </select>
+            <label class="d-flex align-items-start gap-2 mt-2 mb-0" style="font-size:.74rem;color:#555;cursor:pointer;">
+              <input class="form-check-input mt-1" type="checkbox" id="dirRagAssist" checked>
+              <span>
+                <span data-i18n="dir_rag_assist">RAG/向量辅助构建</span>
+                <span class="d-block text-muted" data-i18n="dir_rag_assist_hint">
+                  先向量化文档，用相似性把同类片段合并到同一个 subskill。
+                </span>
+              </span>
+            </label>
+            <div class="mt-2" id="dirClusterTargetWrap">
+              <label class="form-label mb-1" for="dirClusterTarget" style="font-size:.72rem;color:#5865c9;" data-i18n="dir_cluster_target">
+                目标主题簇数
+              </label>
+              <input class="form-control form-control-sm" id="dirClusterTarget" type="number" min="2" max="80" step="1"
+                     placeholder="自动建议" data-i18n-placeholder="dir_cluster_auto_placeholder" style="font-size:.78rem;">
+              <div class="text-muted mt-1" style="font-size:.68rem;" data-i18n="dir_cluster_hint">
+                留空则根据文档数量自动建议；大目录通常会聚成约 20 个主题簇。
+              </div>
+            </div>
             <div class="mt-1 text-muted" style="font-size:.7rem;" data-i18n="dir_mode_hint">
-              文件夹型 SKILL 会写入 seismo_skill/skills，可在技能页管理删除。
+              SKILL 会写入 seismo_skill/user_skills，可在技能页管理删除；RAG 只是辅助构建工具。
             </div>
           </div>
 
@@ -319,7 +339,7 @@ body { background: #f5f7fa; min-height: 100vh; }
             <div style="margin-top:.5rem;padding:.5rem .75rem;background:#f0f4ff;border-radius:8px;font-size:.76rem;color:#555;line-height:1.5;">
               <strong data-i18n="emb_ms_title">国内用户 — 使用 ModelScope 下载：</strong><br>
               <code style="font-size:.73rem;color:#333;">pip install modelscope</code><br>
-              <code style="font-size:.73rem;color:#333;">python -c "from modelscope import snapshot_download; snapshot_download('AI-ModelScope/bge-m3', local_dir='open_models/bge-m3')"</code><br>
+              <code style="font-size:.73rem;color:#333;">modelscope download --model BAAI/bge-m3 --local_dir open_models/bge-m3</code><br>
               <span data-i18n="emb_ms_then">然后将绝对路径填入上方输入框并保存。</span>
             </div>
           </div>
@@ -365,7 +385,7 @@ body { background: #f5f7fa; min-height: 100vh; }
 <script>
 const I18N = {
   zh: {
-    nav_chat: '对话', nav_geo: '地学解译', nav_knowledge: '知识库', nav_skills: '技能',
+    nav_chat: '对话', nav_geo: '地学解译', nav_science: '科学分析', nav_knowledge: '知识库', nav_skills: '技能',
     page_title: '知识库管理', page_sub: '上传论文 PDF，建立可检索的知识库',
     status_title: '知识库状态',
     drop_title: '拖拽 PDF 到此处', drop_sub: '或点击选择文件（支持批量上传）',
@@ -374,15 +394,19 @@ const I18N = {
     loading: '加载中…',
     dir_title: '技能文档目录', dir_checking: '检查中…',
     dir_build_btn: '开始构建', dir_progress: '构建进度', dir_stop: '中断',
-    dir_no_projects: '暂无文档文件或文件夹', dir_indexed: '已构建', dir_new: '待构建',
+    dir_no_projects: '暂无文档文件或文件夹', dir_indexed: '已构建', dir_skill_built: 'SKILL 已生成', dir_new: '待构建',
     dir_modified: '有更新', dir_failed: '失败', dir_partial: '部分完成',
     dir_files: '个文件', dir_selected: '个已选', dir_skill: 'Skill',
     dir_hint: '单个文件或子文件夹均可构建',
-    dir_build_mode: '构建方式',
-    dir_mode_rag: '只构建 RAG 索引',
-    dir_mode_skill: '只生成 SKILL',
-    dir_mode_both: 'RAG + SKILL',
-    dir_mode_hint: '单文件或文件夹型 SKILL 会写入 seismo_skill/skills，可在技能页管理删除。',
+    dir_build_mode: 'SKILL 结构',
+    dir_style_openai: 'OpenAI-style 文件夹 SKILL',
+    dir_style_traditional: '传统单文件 SKILL',
+    dir_rag_assist: 'RAG/向量辅助构建',
+    dir_rag_assist_hint: '先向量化文档，用相似性把同类片段合并到同一个 subskill。',
+    dir_cluster_target: '目标主题簇数',
+    dir_cluster_auto_placeholder: '自动建议',
+    dir_cluster_hint: '留空则根据文档数量自动建议；大目录通常会聚成约 20 个主题簇。',
+    dir_mode_hint: 'SKILL 会写入 seismo_skill/user_skills，可在技能页管理删除；RAG 只是辅助构建工具。',
     emb_title: '嵌入模型', emb_path_label: '本地模型路径（留空则从 HuggingFace 下载）',
     emb_save: '保存', emb_hint: '支持本地路径或 ModelScope 下载路径。更改后下次构建时生效。',
     emb_role_note: '负责文献向量化与检索，不会训练或替换当前聊天 LLM。',
@@ -397,7 +421,7 @@ const I18N = {
     docs_group_skill: 'Skill 文档', docs_group_ref: '参考文献', docs_group_upload: '手动上传',
   },
   en: {
-    nav_chat: 'Chat', nav_geo: 'Geo Agent', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
+    nav_chat: 'Chat', nav_geo: 'Geo Agent', nav_science: 'Science Agent', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
     page_title: 'Knowledge Base', page_sub: 'Upload research PDFs to build a searchable knowledge base',
     status_title: 'Knowledge Base Status',
     drop_title: 'Drag PDF files here', drop_sub: 'or click to select files (batch upload supported)',
@@ -406,15 +430,19 @@ const I18N = {
     loading: 'Loading…',
     dir_title: 'Skill Docs Library', dir_checking: 'Checking…',
     dir_build_btn: 'Build', dir_progress: 'Build Progress', dir_stop: 'Stop',
-    dir_no_projects: 'No doc files or folders found', dir_indexed: 'Built', dir_new: 'Pending',
+    dir_no_projects: 'No doc files or folders found', dir_indexed: 'Built', dir_skill_built: 'SKILL built', dir_new: 'Pending',
     dir_modified: 'Updated', dir_failed: 'Failed', dir_partial: 'Partial',
     dir_files: 'files', dir_selected: 'selected', dir_skill: 'Skill',
     dir_hint: 'Single files and subfolders can both be built',
-    dir_build_mode: 'Build mode',
-    dir_mode_rag: 'Build RAG index only',
-    dir_mode_skill: 'Generate SKILL only',
-    dir_mode_both: 'RAG + SKILL',
-    dir_mode_hint: 'Single-file or folder SKILLs are written to seismo_skill/skills and can be managed on the Skills page.',
+    dir_build_mode: 'SKILL structure',
+    dir_style_openai: 'OpenAI-style folder SKILL',
+    dir_style_traditional: 'Traditional single-file SKILL',
+    dir_rag_assist: 'Use RAG/vector-assisted build',
+    dir_rag_assist_hint: 'Vectorize docs first, then merge similar fragments into the same subskill.',
+    dir_cluster_target: 'Target topic clusters',
+    dir_cluster_auto_placeholder: 'Auto suggested',
+    dir_cluster_hint: 'Leave empty to auto-suggest from document count; large docs usually cluster into about 20 topics.',
+    dir_mode_hint: 'SKILLs are written to seismo_skill/user_skills and can be managed on the Skills page; RAG is only a build assistant.',
     emb_title: 'Embedding Model', emb_path_label: 'Local model path (leave empty to download from HuggingFace)',
     emb_save: 'Save', emb_hint: 'Accepts a local path or ModelScope download path. Takes effect on next build.',
     emb_role_note: 'Used for document vectorization and retrieval; it does not train or replace the active chat LLM.',
@@ -442,6 +470,10 @@ function applyLang() {
   document.querySelectorAll('[data-i18n-html]').forEach(el => {
     const k = el.getAttribute('data-i18n-html');
     if (T(k) !== k) el.innerHTML = T(k);
+  });
+  document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+    const k = el.getAttribute('data-i18n-placeholder');
+    if (T(k) !== k) el.setAttribute('placeholder', T(k));
   });
   const lbl = document.getElementById('langLabel');
   if (lbl) lbl.textContent = currentLang === 'zh' ? 'EN' : '中';
@@ -538,7 +570,7 @@ function renderDocCard(doc, isZh) {
         &nbsp;·&nbsp; ${new Date(doc.added_at).toLocaleDateString(locale)}
       </div>
     </div>
-    <button class="btn-del" title="${isZh ? '删除' : 'Delete'}"
+    <button type="button" class="btn-del" title="${isZh ? '删除' : 'Delete'}"
             onclick="deleteDoc('${doc.doc_id}','${safeName}')">
       <i class="bi bi-trash"></i>
     </button>
@@ -602,8 +634,8 @@ async function loadDocs() {
           <span class="folder-icon"><i class="bi bi-folder2-open"></i></span>
           <span class="folder-name" title="${folder}">${folder}</span>
           <span class="folder-meta">${metaLabel}</span>
-          <button class="btn-del ms-2" title="${delLabel}"
-                  onclick="event.stopPropagation(); deleteFolderFromKB('${safeFolder}','${groupId}')">
+          <button type="button" class="btn-del ms-2" title="${delLabel}"
+                  onclick="event.preventDefault(); event.stopPropagation(); deleteFolderFromKB('${safeFolder}','${groupId}')">
             <i class="bi bi-trash"></i>
           </button>
           <span class="folder-toggle ms-2"><i class="bi bi-chevron-right"></i></span>
@@ -639,18 +671,38 @@ async function deleteFolderFromKB(folderName, groupId) {
     ? `确认删除文件夹「${folderName}」的所有文档？此操作不可恢复。`
     : `Delete all documents in folder "${folderName}"? This cannot be undone.`;
   if (!confirm(msg)) return;
+  const groupEl = document.getElementById(groupId);
+  const delBtn = groupEl ? groupEl.querySelector('.btn-del') : null;
+  if (delBtn) {
+    delBtn.disabled = true;
+    delBtn.innerHTML = '<span class="spinner-border spinner-border-sm" style="width:.9rem;height:.9rem;"></span>';
+  }
+  showToast(isZh ? `正在删除：${folderName}` : `Deleting: ${folderName}`, 'secondary');
   try {
     const r = await fetch(`/api/knowledge/project/${encodeURIComponent(folderName)}`, { method: 'DELETE' });
     const d = await safeJson(r);
     if (d.ok) {
       document.getElementById(groupId)?.remove();
-      showToast(isZh ? `已删除文件夹：${folderName}（${d.removed_docs ?? 0} 个文档）` : `Deleted folder: ${folderName}`);
+      showToast(
+        isZh
+          ? `已删除：${folderName}（RAG ${d.removed_docs ?? 0} 个文档，SKILL ${d.skill_deleted ? '已删除' : '无'}）`
+          : `Deleted: ${folderName} (${d.removed_docs ?? 0} RAG docs, skill ${d.skill_deleted ? 'deleted' : 'none'})`
+      );
       refreshStatus();
+      loadDocs();
     } else {
       showToast(`${isZh ? '删除失败' : 'Delete failed'}：${d.error}`, 'danger');
+      if (delBtn) {
+        delBtn.disabled = false;
+        delBtn.innerHTML = '<i class="bi bi-trash"></i>';
+      }
     }
   } catch(e) {
     showToast(`${isZh ? '请求错误' : 'Request error'}：${e.message}`, 'danger');
+    if (delBtn) {
+      delBtn.disabled = false;
+      delBtn.innerHTML = '<i class="bi bi-trash"></i>';
+    }
   }
 }
 
@@ -736,18 +788,31 @@ async function pollIndexTask(taskId, bar, status) {
 // ── Delete / Clear ─────────────────────────────────────────────────────────
 async function deleteDoc(docId, docName) {
   if (!confirm(`确认删除「${docName}」？`)) return;
+  const btn = document.querySelector(`#doc-${docId} .btn-del`);
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm" style="width:.9rem;height:.9rem;"></span>';
+  }
   try {
     const r = await fetch(`/api/knowledge/delete/${docId}`, {method:'DELETE'});
     const d = await safeJson(r);
     if (d.ok) {
       document.getElementById('doc-' + docId)?.remove();
-      showToast(`已删除：${docName}`);
+      showToast(`已删除：${docName}${d.skill_deleted ? '（关联 SKILL 已删除）' : ''}`);
       refreshStatus(); loadDocs();
     } else {
       showToast(`删除失败：${d.error || 'Document not found'}`, 'danger');
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-trash"></i>';
+      }
     }
   } catch(e) {
     showToast(`删除请求失败：${e.message}`, 'danger');
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-trash"></i>';
+    }
   }
 }
 
@@ -819,6 +884,7 @@ loadEmbeddingConfig();
 <script>
 let _buildJobId     = null;
 let _buildPollTimer = null;
+const BUILD_JOB_STORAGE_KEY = 'seismicx_skill_docs_build_job_id';
 
 // status → badge class + label key
 const PROJ_STATUS = {
@@ -826,6 +892,7 @@ const PROJ_STATUS = {
   partial:  { cls: 'bg-warning text-dark',    key: 'dir_partial'  },
   modified: { cls: 'bg-warning text-dark',    key: 'dir_modified' },
   indexed:  { cls: 'bg-success',              key: 'dir_indexed'  },
+  skill:    { cls: 'bg-success',              key: 'dir_skill_built' },
   failed:   { cls: 'bg-danger',               key: 'dir_failed'   },
 };
 
@@ -869,6 +936,7 @@ function renderProjectCards(d) {
   list.innerHTML = projects.map(p => {
     const st    = PROJ_STATUS[p.status] || PROJ_STATUS.new;
     const icon  = p.is_folder ? 'bi-folder-fill text-warning' : 'bi-file-earmark-text text-secondary';
+    const failedText = p.failed_files > 0 ? `，失败 ${p.failed_files}` : '';
     const meta  = p.is_folder
       ? `${p.total_files} ${T('dir_files')}，选取 ${p.selected_files} ${T('dir_selected')}`
       : `1 ${T('dir_files')}`;
@@ -876,11 +944,14 @@ function renderProjectCards(d) {
       ? `<div class="proj-skill"><i class="bi bi-lightning-charge-fill me-1"></i>Skill: ${p.skill_name}</div>`
       : '';
     // Show delete when there is either RAG state or a generated Skill to remove.
-    const canDelete = !!p.skill_name || p.status === 'indexed' || p.status === 'partial' || p.status === 'modified';
+    const canDelete = !!p.skill_name
+      || ['indexed', 'partial', 'modified', 'failed'].includes(p.status)
+      || (p.indexed_files || 0) > 0
+      || (p.failed_files || 0) > 0;
     const delBtn = canDelete
       ? `<button class="btn btn-sm btn-outline-danger ms-1" style="font-size:.72rem;padding:.1rem .45rem;border-radius:6px;"
            onclick="event.stopPropagation();deleteProject('${p.name.replace(/'/g,"\\'")}',${p.is_folder})"
-           title="删除索引和 Skill"><i class="bi bi-trash"></i></button>`
+           title="删除索引、失败记录和 Skill"><i class="bi bi-trash"></i></button>`
       : '';
     return `
     <div class="proj-card status-${p.status}">
@@ -888,7 +959,7 @@ function renderProjectCards(d) {
         <i class="bi ${icon} proj-icon"></i>
         <div style="flex:1;min-width:0;">
           <div class="proj-name" title="${p.name}">${p.name}</div>
-          <div class="proj-meta">${meta}${p.indexed_files > 0 ? `，已索引 ${p.indexed_files}` : ''}</div>
+          <div class="proj-meta">${meta}${p.indexed_files > 0 ? `，已索引 ${p.indexed_files}` : ''}${failedText}</div>
           ${skill}
         </div>
         <div class="d-flex align-items-center gap-1">
@@ -899,10 +970,10 @@ function renderProjectCards(d) {
     </div>`;
   }).join('');
 
-  const hasPending = projects.some(p => p.status !== 'indexed');
+  const hasPending = projects.some(p => !['indexed', 'skill'].includes(p.status));
   buildBtn.disabled = projects.length === 0;
 
-  const pendingCount = projects.filter(p => p.status !== 'indexed' || !p.skill_name).length;
+  const pendingCount = projects.filter(p => !['indexed', 'skill'].includes(p.status)).length;
   if (pendingCount > 0) {
     btnLabel.textContent = `${T('dir_build_btn')} (${pendingCount})`;
   } else {
@@ -917,9 +988,14 @@ async function buildFromDir() {
   const log      = document.getElementById('buildLog');
   const bar      = document.getElementById('buildProgressBar');
   const stopBtn  = document.getElementById('stopBuildBtn');
-  const modeSel  = document.getElementById('dirBuildMode');
-  const mode     = modeSel ? modeSel.value : 'both';
-  const modeText = modeSel ? modeSel.options[modeSel.selectedIndex].textContent : mode;
+  const styleSel  = document.getElementById('dirBuildStyle');
+  const ragAssistEl = document.getElementById('dirRagAssist');
+  const clusterTargetEl = document.getElementById('dirClusterTarget');
+  const style     = styleSel ? styleSel.value : 'openai';
+  const ragAssist = ragAssistEl ? ragAssistEl.checked : true;
+  const clusterRaw = clusterTargetEl ? String(clusterTargetEl.value || '').trim() : '';
+  const ragClusterTarget = clusterRaw ? Math.max(0, parseInt(clusterRaw, 10) || 0) : 0;
+  const styleText = styleSel ? styleSel.options[styleSel.selectedIndex].textContent : style;
 
   btn.disabled = true;
   progWrap.style.display = 'block';
@@ -932,12 +1008,19 @@ async function buildFromDir() {
     const r  = await fetch('/api/knowledge/build_from_dir', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({mode})
+      body: JSON.stringify({style, rag_assist: ragAssist, rag_cluster_target: ragClusterTarget})
     });
     const d  = await r.json();
     if (!d.job_id) throw new Error(d.error || 'No job_id');
     _buildJobId = d.job_id;
-    appendLog(log, `▶ ${currentLang === 'zh' ? '开始构建' : 'Build started'}：${modeText}`);
+    localStorage.setItem(BUILD_JOB_STORAGE_KEY, _buildJobId);
+    const assistText = ragAssist
+      ? (currentLang === 'zh'
+          ? `RAG/向量辅助：开，簇数：${ragClusterTarget || '自动建议'}`
+          : `RAG/vector assist: on, clusters: ${ragClusterTarget || 'auto'}`)
+      : (currentLang === 'zh' ? 'RAG/向量辅助：关' : 'RAG/vector assist: off');
+    appendLog(log, `▶ ${currentLang === 'zh' ? '开始构建' : 'Build started'}：${styleText} · ${assistText}`);
+    if (_buildPollTimer) clearInterval(_buildPollTimer);
     _buildPollTimer = setInterval(() => pollBuildJob(log, bar, btn, stopBtn), 1500);
   } catch(e) {
     appendLog(log, `✗ 启动失败：${e.message}`, 'err');
@@ -953,6 +1036,17 @@ async function pollBuildJob(log, bar, btn, stopBtn) {
   try {
     const r = await fetch(`/api/knowledge/build_from_dir/${_buildJobId}`);
     const d = await r.json();
+    if (!r.ok || d.ok === false) {
+      clearInterval(_buildPollTimer);
+      _buildPollTimer = null;
+      localStorage.removeItem(BUILD_JOB_STORAGE_KEY);
+      _buildJobId = null;
+      stopBtn.style.display = 'none';
+      btn.disabled = false;
+      bar.className = 'progress-bar bg-warning';
+      appendLog(log, currentLang === 'zh' ? '⚠ 后台构建任务不存在或已过期' : '⚠ Background build job was not found or expired', 'warn');
+      return;
+    }
 
     // Append only new log lines
     const lines = d.log || [];
@@ -971,6 +1065,7 @@ async function pollBuildJob(log, bar, btn, stopBtn) {
       clearInterval(_buildPollTimer);
       _buildPollTimer = null;
       _buildJobId     = null;
+      localStorage.removeItem(BUILD_JOB_STORAGE_KEY);
       stopBtn.style.display = 'none';
       btn.disabled = false;
 
@@ -1011,14 +1106,51 @@ async function stopBuild() {
   } catch(e) {}
 }
 
+function resumeBuildJobIfAny() {
+  const savedJobId = localStorage.getItem(BUILD_JOB_STORAGE_KEY);
+  if (!savedJobId || _buildJobId) return;
+
+  const btn      = document.getElementById('buildDirBtn');
+  const progWrap = document.getElementById('buildProgressWrap');
+  const log      = document.getElementById('buildLog');
+  const bar      = document.getElementById('buildProgressBar');
+  const stopBtn  = document.getElementById('stopBuildBtn');
+
+  _buildJobId = savedJobId;
+  btn.disabled = true;
+  progWrap.style.display = 'block';
+  log.innerHTML = '';
+  bar.style.width = '5%';
+  bar.className = 'progress-bar progress-bar-striped progress-bar-animated bg-primary';
+  stopBtn.style.display = 'inline-block';
+  appendLog(
+    log,
+    currentLang === 'zh'
+      ? `↩ 恢复后台构建任务：${savedJobId}`
+      : `↩ Resuming background build job: ${savedJobId}`
+  );
+  pollBuildJob(log, bar, btn, stopBtn);
+  if (_buildPollTimer) clearInterval(_buildPollTimer);
+  _buildPollTimer = setInterval(() => pollBuildJob(log, bar, btn, stopBtn), 1500);
+}
+
+function syncClusterTargetState() {
+  const ragAssistEl = document.getElementById('dirRagAssist');
+  const clusterTargetEl = document.getElementById('dirClusterTarget');
+  const wrap = document.getElementById('dirClusterTargetWrap');
+  const enabled = ragAssistEl ? ragAssistEl.checked : true;
+  if (clusterTargetEl) clusterTargetEl.disabled = !enabled;
+  if (wrap) wrap.style.opacity = enabled ? '1' : '.45';
+}
+
 async function deleteProject(projName, isFolder) {
   const isZh  = currentLang === 'zh';
   const label = isFolder
     ? (isZh ? `文件夹「${projName}」` : `folder "${projName}"`)
     : (isZh ? `文件「${projName}」`   : `file "${projName}"`);
   const confirmMsg = isZh
-    ? `确认删除 ${label} 的 RAG 索引和生成的 Skill？\n（原始文件不会被删除）`
-    : `Delete RAG index and generated Skill for ${label}?\n(Original files are NOT deleted)`;
+    ? `确认删除 ${label} 的 RAG 索引、失败记录和生成的 Skill？\n（原始文件不会被删除）`
+    : `Delete RAG index, failed records, and generated Skill for ${label}?\n(Original files are NOT deleted)`;
   if (!confirm(confirmMsg)) return;
   try {
     const r = await fetch(`/api/knowledge/project/${encodeURIComponent(projName)}`, {method: 'DELETE'});
@@ -1028,11 +1160,11 @@ async function deleteProject(projName, isFolder) {
       return;
     }
     const skillMsg = d.skill_deleted
-      ? (isZh ? '，Skill 已移除' : ', skill removed')
+      ? (isZh ? '，Skill/构建残留已移除' : ', skill/build artifacts removed')
       : '';
     showToast(
       isZh
-        ? `已删除 ${d.removed_files} 个文件的索引${skillMsg}`
+        ? `已删除 ${d.removed_files} 个文件的索引/失败记录${skillMsg}`
         : `Removed index for ${d.removed_files} file(s)${skillMsg}`,
       'success'
     );
@@ -1056,6 +1188,10 @@ function appendLog(container, text, extraClass='') {
 // ── Init ──────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   checkDirStatus();
+  const ragAssistEl = document.getElementById('dirRagAssist');
+  if (ragAssistEl) ragAssistEl.addEventListener('change', syncClusterTargetState);
+  syncClusterTargetState();
+  resumeBuildJobIfAny();
 });
 </script>
 

@@ -219,6 +219,7 @@ body{background:var(--bg);height:100vh;display:flex;flex-direction:column;overfl
       <ul class="navbar-nav ms-auto gap-1 align-items-center">
         <li class="nav-item"><a class="nav-link" href="/chat"><i class="bi bi-chat-dots"></i> <span data-i18n="nav_chat">对话</span></a></li>
         <li class="nav-item"><a class="nav-link active fw-bold" href="/evidence-geo-agent"><i class="bi bi-geo-alt-fill"></i> <span data-i18n="nav_geo">地学解译</span> <span class="badge text-bg-warning fw-normal" style="font-size:.65rem;vertical-align:middle;">alpha</span></a></li>
+        <li class="nav-item"><a class="nav-link" href="/science-analysis-agent"><i class="bi bi-beaker"></i> <span data-i18n="nav_science">科学分析</span> <span class="badge text-bg-warning fw-normal" style="font-size:.62rem;vertical-align:middle;">alpha</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/knowledge"><i class="bi bi-journal-bookmark-fill"></i> <span data-i18n="nav_knowledge">知识库</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/skills"><i class="bi bi-lightning-charge"></i> <span data-i18n="nav_skills">技能</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/llm-settings"><i class="bi bi-sliders"></i> Config</a></li>
@@ -1489,7 +1490,7 @@ loadSharedProjects();
 // ── i18n ───────────────────────────────────────────────────────────────────
 const I18N_GEO = {
   zh: {
-    nav_chat:'对话', nav_geo:'地学解译', nav_knowledge:'知识库', nav_skills:'技能',
+    nav_chat:'对话', nav_geo:'地学解译', nav_science:'科学分析', nav_knowledge:'知识库', nav_skills:'技能',
     interp_proj_title:'解译项目', interp_proj_name_ph:'解译项目名称', proj_new:'新建', proj_save:'保存',
     proj_title:'引用 Chat 项目', geo_ref_title:'引用解译项目',
     sb_workspace:'工作目录', lbl_workspace:'Workspace Root', ph_workspace:'./examples/weiyuan',
@@ -1532,7 +1533,7 @@ const I18N_GEO = {
     searching:'检索中…', no_results:'无结果',
   },
   en: {
-    nav_chat:'Chat', nav_geo:'Geo Agent', nav_knowledge:'Knowledge', nav_skills:'Skills',
+    nav_chat:'Chat', nav_geo:'Geo Agent', nav_science:'Science Agent', nav_knowledge:'Knowledge', nav_skills:'Skills',
     interp_proj_title:'Interpretation Projects', interp_proj_name_ph:'Interpretation project name', proj_new:'New', proj_save:'Save',
     proj_title:'Referenced Chat Projects', geo_ref_title:'Referenced Geo Projects',
     sb_workspace:'Workspace', lbl_workspace:'Workspace Root', ph_workspace:'./examples/weiyuan',

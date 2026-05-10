@@ -75,6 +75,7 @@ body { background: #f5f7fa; min-height: 100vh; }
       <ul class="navbar-nav ms-auto gap-1 align-items-center">
         <li class="nav-item"><a class="nav-link" href="/chat"><i class="bi bi-chat-dots"></i> <span data-i18n="nav_chat">对话</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/evidence-geo-agent"><i class="bi bi-geo-alt-fill"></i> <span data-i18n="nav_geo">地学解译</span> <span class="badge text-bg-warning fw-normal" style="font-size:.62rem;vertical-align:middle;">alpha</span></a></li>
+        <li class="nav-item"><a class="nav-link" href="/science-analysis-agent"><i class="bi bi-beaker"></i> <span data-i18n="nav_science">科学分析</span> <span class="badge text-bg-warning fw-normal" style="font-size:.62rem;vertical-align:middle;">alpha</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/knowledge"><i class="bi bi-journal-bookmark-fill"></i> <span data-i18n="nav_knowledge">知识库</span></a></li>
         <li class="nav-item"><a class="nav-link" href="/skills"><i class="bi bi-lightning-charge"></i> <span data-i18n="nav_skills">技能</span></a></li>
         <li class="nav-item"><a class="nav-link active fw-bold" href="/config"><i class="bi bi-sliders"></i> Config</a></li>
@@ -161,6 +162,52 @@ body { background: #f5f7fa; min-height: 100vh; }
       <input class="form-control mb-3" id="cfgGeoOutput" placeholder="outputs/evidence_geo_agent">
       <button class="btn btn-save" type="button" onclick="saveAppPathsConfig()">
         <i class="bi bi-check-circle me-1"></i><span data-i18n="paths_save">保存路径配置</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Coding agent settings -->
+  <div class="card border-0 shadow-sm mb-3">
+    <div class="card-body p-4">
+      <div class="d-flex align-items-center justify-content-between mb-2">
+        <h6 class="fw-bold mb-0"><i class="bi bi-terminal me-1"></i><span data-i18n="coding_title">Coding Agent</span></h6>
+        <span id="codingAgentStatus" class="badge bg-secondary">builtin</span>
+      </div>
+      <div class="text-muted mb-3" style="font-size:.84rem" data-i18n="coding_sub">
+        Aider 作为 SAGE 的仓库级代码后端；内置 CodeEngine 保留用于轻量脚本、绘图和 mini test。配置写入项目目录 seismo_rag/project_config.json。
+      </div>
+      <label class="form-label fw-bold" data-i18n="coding_backend">编程后端</label>
+      <select class="form-select mb-2" id="cfgCodingBackend" onchange="renderCodingAgentConfig(collectCodingAgentPayload(), {})">
+        <option value="builtin">Built-in CodeEngine</option>
+        <option value="aider">Aider API / CLI</option>
+        <option value="openhands">OpenHands CLI</option>
+      </select>
+      <label class="form-label fw-bold" data-i18n="coding_command">后端命令路径</label>
+      <input class="form-control mb-2" id="cfgCodingCommand" placeholder="aider / openhands / /path/to/bin">
+      <label class="form-label fw-bold" data-i18n="coding_model">后端模型参数</label>
+      <input class="form-control mb-2" id="cfgCodingModel" placeholder="例如 aider: openai/gpt-4o 或 deepseek/deepseek-chat">
+      <label class="form-label fw-bold" data-i18n="coding_args">额外命令参数</label>
+      <input class="form-control mb-2" id="cfgCodingArgs" placeholder="例如 --architect 或 --map-tokens 4096">
+      <div class="row g-2">
+        <div class="col-md-6">
+          <label class="form-label fw-bold" data-i18n="coding_timeout">超时秒数</label>
+          <input class="form-control" id="cfgCodingTimeout" type="number" min="30" max="7200" value="900">
+        </div>
+        <div class="col-md-6 d-flex align-items-end">
+          <div>
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" id="cfgCodingAutoApprove" checked>
+              <label class="form-check-label" for="cfgCodingAutoApprove" data-i18n="coding_auto">自动批准 CLI 操作</label>
+            </div>
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" id="cfgCodingUseEnv" checked>
+              <label class="form-check-label" for="cfgCodingUseEnv" data-i18n="coding_env">注入当前 LLM API 环境变量</label>
+            </div>
+          </div>
+        </div>
+      </div>
+      <button class="btn btn-save mt-3" type="button" onclick="saveCodingAgentConfig()">
+        <i class="bi bi-check-circle me-1"></i><span data-i18n="coding_save">保存代码后端配置</span>
       </button>
     </div>
   </div>
@@ -442,7 +489,7 @@ body { background: #f5f7fa; min-height: 100vh; }
 // ── i18n ──────────────────────────────────────────────────────────────────────
 const I18N = {
   zh: {
-    nav_chat: '对话', nav_geo: '地学解译', nav_knowledge: '知识库', nav_skills: '技能',
+    nav_chat: '对话', nav_geo: '地学解译', nav_science: '科学分析', nav_knowledge: '知识库', nav_skills: '技能',
     page_title: 'Config 设置',
     page_sub: '统一配置模型、搜索源和 Chat / Geo Agent 默认路径',
     model_scope_note: '此页统一控制回答模型、Web Search API Key 和常用路径。知识库向量化/检索模型仍在知识库页单独设置。',
@@ -458,6 +505,17 @@ const I18N = {
     paths_geo_lit: 'Geo Agent Literature Root',
     paths_geo_output: 'Geo Agent Output Dir',
     paths_save: '保存路径配置',
+    coding_title: 'Coding Agent',
+    coding_sub: 'Aider 作为 SAGE 的仓库级代码后端，优先使用 Python API，必要时退回 CLI；内置 CodeEngine 保留用于轻量脚本、绘图和 mini test。OpenHands 可作为实验后端。配置写入项目目录 seismo_rag/project_config.json。',
+    coding_backend: '代码后端',
+    coding_command: '后端命令路径',
+    coding_model: '后端模型参数',
+    coding_args: '额外命令参数',
+    coding_timeout: '超时秒数',
+    coding_auto: '自动批准 CLI 操作',
+    coding_env: '注入当前 LLM API 环境变量',
+    coding_save: '保存代码后端配置',
+    coding_saved: '代码后端配置已保存到项目目录',
     current_model: '当前模型：',
     loading: '读取中…',
     btn_test: '测试连接',
@@ -525,7 +583,7 @@ const I18N = {
     ollama_timeout: 'Ollama 响应超时，请确认 <code>ollama serve</code> 已启动',
   },
   en: {
-    nav_chat: 'Chat', nav_geo: 'Geo Agent', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
+    nav_chat: 'Chat', nav_geo: 'Geo Agent', nav_science: 'Science Agent', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
     page_title: 'Config',
     page_sub: 'Configure models, search providers, and Chat / Geo Agent default paths',
     model_scope_note: 'This page controls the answer model, Web Search API keys, and common paths. Knowledge embeddings remain configured on the Knowledge page.',
@@ -541,6 +599,17 @@ const I18N = {
     paths_geo_lit: 'Geo Agent Literature Root',
     paths_geo_output: 'Geo Agent Output Dir',
     paths_save: 'Save Path Config',
+    coding_title: 'Coding Agent',
+    coding_sub: 'Aider is the integrated repository-level coding backend for SAGE. SAGE uses the Python API first and falls back to the CLI when needed. The built-in CodeEngine remains available for lightweight scripts, plotting, and mini tests. OpenHands is available as an experimental backend. Settings are stored at seismo_rag/project_config.json.',
+    coding_backend: 'Coding backend',
+    coding_command: 'Backend command path',
+    coding_model: 'Backend model argument',
+    coding_args: 'Extra command arguments',
+    coding_timeout: 'Timeout seconds',
+    coding_auto: 'Auto-approve CLI actions',
+    coding_env: 'Inject current LLM API environment',
+    coding_save: 'Save Coding Backend Config',
+    coding_saved: 'Coding backend config saved to project',
     current_model: 'Active model:',
     loading: 'Loading…',
     btn_test: 'Test Connection',
@@ -765,6 +834,68 @@ async function saveAppPathsConfig() {
   } catch(e) { showToast(e.message, 'danger'); }
 }
 
+function collectCodingAgentPayload() {
+  const backend = document.getElementById('cfgCodingBackend').value;
+  return {
+    backend,
+    enabled: backend !== 'builtin',
+    command: document.getElementById('cfgCodingCommand').value.trim(),
+    model: document.getElementById('cfgCodingModel').value.trim(),
+    extra_args: document.getElementById('cfgCodingArgs').value.trim(),
+    timeout_s: Number(document.getElementById('cfgCodingTimeout').value || 900),
+    auto_approve: document.getElementById('cfgCodingAutoApprove').checked,
+    use_current_llm_env: document.getElementById('cfgCodingUseEnv').checked,
+  };
+}
+
+function renderCodingAgentConfig(cfg, status={}) {
+  cfg = cfg || {};
+  document.getElementById('cfgCodingBackend').value = cfg.backend || 'builtin';
+  document.getElementById('cfgCodingCommand').value = cfg.command || '';
+  document.getElementById('cfgCodingModel').value = cfg.model || '';
+  document.getElementById('cfgCodingArgs').value = cfg.extra_args || '';
+  document.getElementById('cfgCodingTimeout').value = cfg.timeout_s || 900;
+  document.getElementById('cfgCodingAutoApprove').checked = cfg.auto_approve !== false;
+  document.getElementById('cfgCodingUseEnv').checked = cfg.use_current_llm_env !== false;
+  const badge = document.getElementById('codingAgentStatus');
+  const backend = cfg.backend || 'builtin';
+  const usesCliBackend = backend !== 'builtin';
+  if (!usesCliBackend) {
+    badge.className = 'badge bg-secondary';
+    badge.textContent = 'Built-in CodeEngine';
+  } else if (status.available) {
+    badge.className = 'badge bg-success';
+    badge.textContent = `${backend} ready`;
+  } else {
+    badge.className = 'badge bg-warning text-dark';
+    badge.textContent = `${backend} not found`;
+  }
+}
+
+async function loadCodingAgentConfig() {
+  try {
+    const r = await fetch('/api/config/coding_agent');
+    const d = await r.json();
+    renderCodingAgentConfig(d.coding_agent || {}, d.status || {});
+  } catch(e) {}
+}
+
+async function saveCodingAgentConfig() {
+  const payload = collectCodingAgentPayload();
+  try {
+    const r = await fetch('/api/config/coding_agent', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const d = await r.json();
+    if (d.ok) {
+      renderCodingAgentConfig(d.coding_agent || {}, {});
+      await loadCodingAgentConfig();
+      showToast(T('coding_saved'), 'success');
+    } else showToast(d.error || 'Save failed', 'danger');
+  } catch(e) { showToast(e.message, 'danger'); }
+}
+
 // ── Provider presets ──────────────────────────────────────────────────────────
 const PRESETS = {
   openai:      { label: 'OpenAI', base: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
@@ -864,6 +995,8 @@ async function loadConfig() {
     updateCurrentBadge();
     renderSearchConfig(d.search || {});
     renderAppPaths(d.app_paths || {});
+    renderCodingAgentConfig(d.coding_agent || {}, {});
+    loadCodingAgentConfig();
   } catch(e) {
     showToast(T('load_fail') + e.message, 'danger');
   }

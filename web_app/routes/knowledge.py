@@ -24,6 +24,176 @@ from helpers import (
 bp = Blueprint('knowledge', __name__)
 
 
+def _proj_match(value: str | None, candidates: set[str]) -> bool:
+    val = str(value or "").strip()
+    if not val:
+        return False
+    p = Path(val)
+    return val in candidates or p.name in candidates or p.stem in candidates
+
+
+def _bulk_delete_kb_docs(kb, doc_ids: set[str]) -> int:
+    """Delete many KB docs with one FAISS rebuild instead of one rebuild per doc."""
+    if not kb or not doc_ids:
+        return 0
+    removed = 0
+    try:
+        docs = getattr(kb, "_docs", None)
+        chunks = getattr(kb, "_chunks", None)
+        if isinstance(docs, dict) and isinstance(chunks, dict):
+            for doc_id in list(doc_ids):
+                meta = docs.pop(doc_id, None)
+                if not meta:
+                    continue
+                removed += 1
+                file_path = getattr(meta, "file_path", "") or ""
+                if file_path:
+                    try:
+                        Path(file_path).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+            for cid, ch in list(chunks.items()):
+                if getattr(ch, "doc_id", "") in doc_ids:
+                    chunks.pop(cid, None)
+            try:
+                kb._rebuild_faiss()
+                kb._save_state()
+            except Exception:
+                pass
+        else:
+            for doc_id in list(doc_ids):
+                try:
+                    if kb.delete_doc(doc_id):
+                        removed += 1
+                except Exception:
+                    pass
+
+        try:
+            from rag_engine import _get_simple_rag  # type: ignore
+            sr = _get_simple_rag()
+            for doc_id in list(doc_ids):
+                try:
+                    sr.delete_document(doc_id)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    except Exception:
+        for doc_id in list(doc_ids):
+            try:
+                if kb.delete_doc(doc_id):
+                    removed += 1
+            except Exception:
+                pass
+    return removed
+
+
+def _delete_generated_skill_by_name(skill_name: str) -> bool:
+    if not skill_name:
+        return False
+    deleted = False
+    try:
+        from seismo_skill.knowledge_indexer import _USER_SKILL_DIR, delete_generated_builtin_skill
+        skill_file = _USER_SKILL_DIR / f"{skill_name}.md"
+        if skill_file.exists():
+            skill_file.unlink(missing_ok=True)
+            deleted = True
+        if delete_generated_builtin_skill(skill_name):
+            deleted = True
+    except Exception:
+        pass
+    try:
+        from seismo_skill import skill_loader as _sl
+        _sl.invalidate_cache()
+    except Exception:
+        pass
+    return deleted
+
+
+def _cleanup_generated_skill_artifacts_for_project(proj_name: str, skill_names: set[str] | None = None) -> int:
+    """Remove generated skill folders/temp build dirs for a docs project, including failed builds."""
+    removed = 0
+    try:
+        import shutil
+        from seismo_skill.knowledge_indexer import (
+            _BUILTIN_SKILL_DIR,
+            _DOC_SKILL_GENERATOR,
+            _USER_SKILL_DIR,
+            _generated_skill_slug,
+            _safe_skill_slug,
+        )
+
+        names = {str(n or "").strip() for n in (skill_names or set()) if str(n or "").strip()}
+        source_bits = {
+            str(proj_name or "").strip(),
+            Path(str(proj_name or "")).name,
+            Path(str(proj_name or "")).stem,
+        }
+        for bit in list(source_bits):
+            if not bit:
+                continue
+            names.add(_safe_skill_slug(bit))
+            names.add(_generated_skill_slug(bit))
+
+        normalized = {n.lower().strip("._-") for n in names if n}
+        for root in (_USER_SKILL_DIR, _BUILTIN_SKILL_DIR):
+            if not root.exists():
+                continue
+            for child in list(root.iterdir()):
+                child_key = child.name.lower().replace(".building", "").strip("._-")
+                is_temp_build = child.name.endswith(".building")
+                name_matches = child_key in normalized or any(n and n in child_key for n in normalized)
+                generated_marker = False
+                skill_md = child / "SKILL.md" if child.is_dir() else child
+                if skill_md.exists() and skill_md.is_file():
+                    try:
+                        text = skill_md.read_text(encoding="utf-8", errors="ignore")
+                        generated_marker = f"generated_by: {_DOC_SKILL_GENERATOR}" in text
+                    except Exception:
+                        generated_marker = False
+                # Failed builds often leave hidden ".<skill>.building" folders without SKILL.md.
+                # Completed folders are deleted only when they are docs-generated to avoid
+                # removing hand-written user skills with the same name.
+                if not name_matches or (not is_temp_build and not generated_marker):
+                    continue
+                if child.is_dir():
+                    shutil.rmtree(child, ignore_errors=True)
+                else:
+                    child.unlink(missing_ok=True)
+                removed += 1
+        if removed:
+            try:
+                from seismo_skill import skill_loader as _sl
+                _sl.invalidate_cache()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return removed
+
+
+def _clear_skill_docs_persistent_rag(indexer, kb) -> tuple[int, int]:
+    """Remove persistent RAG index entries created from seismo_skill/docs, keeping generated SKILLs."""
+    doc_ids = set()
+    keys_to_del = []
+    try:
+        for rel, entry in list(getattr(indexer, "_manifest", {}).items()):
+            if entry.get("status") != "indexed":
+                continue
+            doc_id = entry.get("doc_id")
+            if doc_id:
+                doc_ids.add(doc_id)
+            keys_to_del.append(rel)
+        removed_docs = _bulk_delete_kb_docs(kb, doc_ids)
+        for rel in keys_to_del:
+            indexer._manifest.pop(rel, None)
+        if keys_to_del:
+            indexer._save_manifest()
+        return removed_docs, len(keys_to_del)
+    except Exception:
+        return 0, 0
+
+
 def _safe_pdf_upload_path(filename: str | None) -> tuple[Path, str]:
     raw_name = Path(filename or "").name
     if Path(raw_name).suffix.lower() != ".pdf":
@@ -179,12 +349,73 @@ def knowledge_index_status(task_id):
 def knowledge_delete(doc_id):
     try:
         kb = get_kb_instance()
-        if kb:
-            ok = kb.delete_doc(doc_id)
-            return jsonify({"ok": ok, "error": "" if ok else "Document not found"})
-        return jsonify({"ok": False, "error": "Knowledge base unavailable"})
+        if not kb:
+            return jsonify({"ok": False, "error": "Knowledge base unavailable"})
+
+        doc_meta = None
+        try:
+            doc_meta = getattr(kb, "_docs", {}).get(doc_id)
+        except Exception:
+            doc_meta = None
+
+        removed_docs = _bulk_delete_kb_docs(kb, {doc_id})
+        ok = removed_docs > 0
+
+        removed_manifest = 0
+        skill_deleted = False
+        try:
+            import sys as _s
+            _proj = str(_PROJECT_ROOT)
+            if _proj not in _s.path:
+                _s.path.insert(0, _proj)
+            from seismo_skill.knowledge_indexer import KnowledgeIndexer
+            indexer = KnowledgeIndexer()
+            touched_proj = getattr(doc_meta, "proj_folder", "") if doc_meta else ""
+            skill_names = set()
+            for rel, entry in list(indexer._manifest.items()):
+                if entry.get("doc_id") == doc_id:
+                    if entry.get("skill_name"):
+                        skill_names.add(entry.get("skill_name"))
+                    if entry.get("proj_folder"):
+                        touched_proj = entry.get("proj_folder")
+                    indexer._manifest.pop(rel, None)
+                    removed_manifest += 1
+
+            if touched_proj:
+                has_project_docs = any(
+                    getattr(d, "proj_folder", "") == touched_proj
+                    for d in (kb.list_docs() if kb else [])
+                ) or any(
+                    e.get("proj_folder") == touched_proj
+                    for e in indexer._manifest.values()
+                )
+                if not has_project_docs:
+                    proj_entry = indexer._proj_manifest.pop(touched_proj, None)
+                    if proj_entry and proj_entry.get("skill_name"):
+                        skill_names.add(proj_entry.get("skill_name"))
+
+            if removed_manifest:
+                indexer._save_manifest()
+            if skill_names:
+                indexer._save_proj_manifest()
+                for skill_name in skill_names:
+                    skill_deleted = _delete_generated_skill_by_name(skill_name) or skill_deleted
+            artifact_proj = touched_proj or (getattr(doc_meta, "doc_name", "") if doc_meta else "")
+            artifact_removed = _cleanup_generated_skill_artifacts_for_project(artifact_proj, skill_names)
+            skill_deleted = skill_deleted or artifact_removed > 0
+        except Exception:
+            pass
+
+        return jsonify({
+            "ok": ok,
+            "error": "" if ok else "Document not found",
+            "removed_docs": removed_docs,
+            "removed_manifest": removed_manifest,
+            "skill_deleted": skill_deleted,
+            "artifacts_deleted": locals().get("artifact_removed", 0),
+        })
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @bp.route('/api/knowledge/clear', methods=['POST'])
@@ -222,16 +453,41 @@ def knowledge_dir_status():
 
 @bp.route('/api/knowledge/build_from_dir', methods=['POST'])
 def knowledge_build_from_dir():
-    """启动后台任务：扫描 seismo_skill/docs/ 并按模式构建 RAG 或文件夹型 Skill。"""
+    """启动后台任务：扫描 seismo_skill/docs/ 并构建 SKILL，可选 RAG/向量辅助。"""
     data = request.get_json(silent=True) or {}
-    mode = (data.get("mode") or "both").strip().lower()
-    if mode not in {"rag", "skill", "both"}:
-        mode = "both"
+    legacy_mode = (data.get("mode") or "").strip().lower()
+    style = (data.get("style") or data.get("skill_style") or "").strip().lower()
+    raw_rag_assist = data.get("rag_assist", True)
+    if isinstance(raw_rag_assist, str):
+        rag_assist = raw_rag_assist.strip().lower() not in {"0", "false", "no", "off"}
+    else:
+        rag_assist = bool(raw_rag_assist)
+    try:
+        rag_cluster_target = int(data.get("rag_cluster_target") or data.get("cluster_target") or 0)
+    except Exception:
+        rag_cluster_target = 0
+    if rag_cluster_target < 0:
+        rag_cluster_target = 0
+
+    # Backward compatibility for older frontends/API clients.
+    if legacy_mode in {"rag", "skill", "both"} and not style:
+        if legacy_mode == "rag":
+            style = "rag_only"
+            rag_assist = True
+        elif legacy_mode == "skill":
+            style = "openai"
+            rag_assist = False
+        else:
+            style = "openai"
+            rag_assist = True
+    if style not in {"openai", "traditional", "rag_only"}:
+        style = "openai"
     job_id = f"kbdir_{_uuid.uuid4().hex[:8]}"
     stop_ev = threading.Event()
     _kb_dir_jobs[job_id] = {
         "status": "running", "log": [], "result": None,
-        "progress": 0, "stop_event": stop_ev, "mode": mode,
+        "progress": 0, "stop_event": stop_ev, "style": style,
+        "rag_assist": rag_assist, "rag_cluster_target": rag_cluster_target,
     }
 
     def _run(jid):
@@ -243,7 +499,7 @@ def knowledge_build_from_dir():
             _proj = str(_PROJECT_ROOT)
             if _proj not in _s.path:
                 _s.path.insert(0, _proj)
-            from seismo_skill.knowledge_indexer import KnowledgeIndexer
+            from seismo_skill.knowledge_indexer import BuildResult, KnowledgeIndexer
             indexer = KnowledgeIndexer()
 
             # Count pending files upfront for progress tracking
@@ -260,36 +516,59 @@ def knowledge_build_from_dir():
                     done = int(m.group(1))
                     job["progress"] = max(5, int(done / total * 90))
 
-            log_lines.append(f"▶ 构建模式：{mode}")
-            if mode == "rag":
+            style_label = {
+                "openai": "OpenAI-style 文件夹 SKILL",
+                "traditional": "传统单文件 SKILL",
+                "rag_only": "仅构建 RAG 索引",
+            }.get(style, style)
+            log_lines.append(f"▶ SKILL 结构：{style_label}")
+            if style == "rag_only":
+                log_lines.append("▶ 持久化 RAG 索引：开启")
+            elif style == "openai":
+                log_lines.append("▶ 持久化 RAG 索引：跳过（仅使用临时向量/聚类辅助 SKILL 构建）")
+            else:
+                log_lines.append("▶ 持久化 RAG 索引：开启（传统单文件 SKILL 依赖索引 chunks）")
+            log_lines.append(f"▶ 临时向量辅助：{'开启' if rag_assist else '关闭'}")
+            if rag_assist:
+                log_lines.append(f"▶ 目标主题簇数：{rag_cluster_target if rag_cluster_target > 0 else '自动建议'}")
+            if style == "rag_only":
                 result = indexer.build(
                     progress_cb=_progress_cb,
                     stop_event=stop_event,
                     skip_skill_gen=True,
                 )
-            elif mode == "skill":
-                result = indexer.build_folder_skills(
+            elif style == "traditional":
+                # 传统单文件 Skill 由已索引 chunks 生成，因此保留索引步骤。
+                result = indexer.build(
                     progress_cb=_progress_cb,
                     stop_event=stop_event,
-                    use_llm=True,
+                    skip_skill_gen=False,
                 )
             else:
-                result = indexer.build(
-                    progress_cb=_progress_cb,
-                    stop_event=stop_event,
-                    skip_skill_gen=True,
-                )
+                # OpenAI-style folder skills are built from source documents.
+                # RAG/embedding assist is temporary clustering inside the builder,
+                # not a persistent RAG-indexing step; otherwise large docs are read
+                # twice and users see "RAG completed" followed by another full read.
+                result = BuildResult()
                 if not result.interrupted and not stop_event.is_set():
                     skill_result = indexer.build_folder_skills(
                         progress_cb=_progress_cb,
                         stop_event=stop_event,
                         use_llm=True,
+                        rag_assist=rag_assist,
+                        rag_cluster_target=rag_cluster_target,
                     )
                     result.skills_generated.extend(skill_result.skills_generated)
                     result.skipped.extend(skill_result.skipped)
                     result.failed.extend(skill_result.failed)
                     result.interrupted = result.interrupted or skill_result.interrupted
-
+                if not result.interrupted:
+                    removed_docs, removed_manifest = _clear_skill_docs_persistent_rag(indexer, get_kb_instance())
+                    if removed_docs or removed_manifest:
+                        log_lines.append(
+                            f"🧹 OpenAI-style 构建完成：已清理持久化 RAG 索引 "
+                            f"({removed_docs} docs, {removed_manifest} manifest entries)，仅保留 SKILL。"
+                        )
             if result.interrupted:
                 job["status"] = "stopped"
             else:
@@ -302,7 +581,9 @@ def knowledge_build_from_dir():
                 "skipped": result.skipped,
                 "failed": result.failed,
                 "interrupted": result.interrupted,
-                "mode": mode,
+                "style": style,
+                "rag_assist": rag_assist,
+                "rag_cluster_target": rag_cluster_target,
             }
         except Exception as exc:
             job["status"] = "error"
@@ -310,7 +591,13 @@ def knowledge_build_from_dir():
             log_lines.append(f"❌ 错误：{exc}")
 
     threading.Thread(target=_run, args=(job_id,), daemon=True).start()
-    return jsonify({"ok": True, "job_id": job_id, "mode": mode})
+    return jsonify({
+        "ok": True,
+        "job_id": job_id,
+        "style": style,
+        "rag_assist": rag_assist,
+        "rag_cluster_target": rag_cluster_target,
+    })
 
 
 @bp.route('/api/knowledge/build_from_dir/<job_id>', methods=['GET'])
@@ -344,9 +631,7 @@ def knowledge_delete_project(proj_name):
         _proj = str(_PROJECT_ROOT)
         if _proj not in _s.path:
             _s.path.insert(0, _proj)
-        from seismo_skill.knowledge_indexer import (
-            KnowledgeIndexer, _USER_SKILL_DIR, delete_generated_builtin_skill,
-        )
+        from seismo_skill.knowledge_indexer import KnowledgeIndexer
 
         indexer = KnowledgeIndexer()
         kb = get_kb_instance()
@@ -360,16 +645,12 @@ def knowledge_delete_project(proj_name):
         # 1. 先从 RAG 元数据删除该 proj_folder 下的文档。
         # Chat/Project 入库的整体资料只存在 RAG metadata 中，不一定存在
         # KnowledgeIndexer manifest，所以必须以 RAG 元数据为准。
-        removed_docs = []
+        doc_ids_to_remove = set()
         if kb:
             for doc in list(kb.list_docs()):
                 folder = getattr(doc, "proj_folder", "") or ""
-                if folder == proj_name:
-                    try:
-                        if kb.delete_doc(doc.doc_id):
-                            removed_docs.append(doc.doc_id)
-                    except Exception:
-                        pass
+                if _proj_match(folder, proj_candidates):
+                    doc_ids_to_remove.add(doc.doc_id)
 
         # 2. 兼容 skill docs / reference library 的目录索引 manifest。
         keys_to_del = []
@@ -385,16 +666,13 @@ def knowledge_delete_project(proj_name):
                 or rel.startswith(proj_name + "\\")
             ):
                 doc_id = entry.get("doc_id")
-                if doc_id and doc_id not in removed_docs:
-                    try:
-                        if kb:
-                            if kb.delete_doc(doc_id):
-                                removed_docs.append(doc_id)
-                    except Exception:
-                        pass
+                if doc_id:
+                    doc_ids_to_remove.add(doc_id)
                 if entry.get("skill_name"):
                     skill_names_to_del.add(entry.get("skill_name"))
                 keys_to_del.append(rel)
+
+        removed_docs = _bulk_delete_kb_docs(kb, doc_ids_to_remove)
 
         for k in keys_to_del:
             indexer._manifest.pop(k, None)
@@ -416,24 +694,19 @@ def knowledge_delete_project(proj_name):
             if skill_name:
                 skill_names_to_del.add(skill_name)
 
+        skill_deleted = False
         for skill_name in skill_names_to_del:
-            skill_file = _USER_SKILL_DIR / f"{skill_name}.md"
-            skill_file.unlink(missing_ok=True)
-            delete_generated_builtin_skill(skill_name)
-        if skill_names_to_del:
-            # Invalidate skill cache
-            try:
-                from seismo_skill import skill_loader as _sl
-                _sl.invalidate_cache()
-            except Exception:
-                pass
+            skill_deleted = _delete_generated_skill_by_name(skill_name) or skill_deleted
+        artifacts_deleted = _cleanup_generated_skill_artifacts_for_project(proj_name, skill_names_to_del)
+        skill_deleted = skill_deleted or artifacts_deleted > 0
 
         return jsonify({
             "ok": True,
             "proj_name": proj_name,
             "removed_files": len(keys_to_del),
-            "removed_docs": len(removed_docs),
-            "skill_deleted": bool(skill_names_to_del),
+            "removed_docs": removed_docs,
+            "skill_deleted": skill_deleted,
+            "artifacts_deleted": artifacts_deleted,
         })
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500

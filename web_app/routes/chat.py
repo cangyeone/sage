@@ -13,8 +13,8 @@ from datetime import datetime
 from pathlib import Path
 from werkzeug.utils import secure_filename
 from state import (
-    tasks, _session_docs, _geo_agent_jobs, _lit_jobs, _chat_jobs,
-    UPLOAD_FOLDER_CHAT, GEO_WORKSPACE_ROOT, _PROJECT_ROOT,
+    tasks, _session_docs, _geo_agent_jobs, _science_agent_jobs, _lit_jobs, _chat_jobs,
+    UPLOAD_FOLDER_CHAT, GEO_WORKSPACE_ROOT, SCIENCE_WORKSPACE_ROOT, _PROJECT_ROOT,
 )
 from helpers import (
     USER_PROFILE_MD,
@@ -78,6 +78,234 @@ def _extract_session_pdf_chunks(path: str | Path, upload_id: str, doc_name: str)
                 "upload_id": upload_id,
             })
     return pages, chunks
+
+
+def _science_read_file_preview(path: Path, max_chars: int = 4000) -> str:
+    """Best-effort text/table preview for scientific-analysis project files."""
+    ext = path.suffix.lower()
+    try:
+        if ext in {".pdf", ".docx", ".md", ".txt", ".text", ".rst", ".html", ".htm"}:
+            sys.path.insert(0, str(Path(__file__).parent))
+            from rag_extractors import extract_text
+            pages = extract_text(str(path))
+            text = "\n\n".join(str(t or "") for _, t in pages)
+            return text[:max_chars].strip()
+        if ext == ".doc":
+            try:
+                proc = subprocess.run(
+                    ["textutil", "-convert", "txt", "-stdout", str(path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=False,
+                )
+                if proc.stdout.strip():
+                    return proc.stdout[:max_chars].strip()
+            except Exception:
+                pass
+            data = path.read_bytes()[:max_chars * 2]
+            return data.decode("utf-8", errors="ignore")[:max_chars].strip()
+        if ext in {".csv", ".tsv", ".dat", ".json", ".yaml", ".yml", ".bib", ".tex", ".py", ".sh"}:
+            data = path.read_bytes()[:max_chars * 2]
+            return data.decode("utf-8", errors="ignore")[:max_chars].strip()
+        if ext in {".xlsx", ".xls"}:
+            try:
+                from openpyxl import load_workbook  # type: ignore
+                wb = load_workbook(str(path), read_only=True, data_only=True)
+                parts = []
+                for ws in wb.worksheets[:3]:
+                    parts.append(f"[sheet] {ws.title}")
+                    for row in ws.iter_rows(max_row=12, values_only=True):
+                        parts.append("\t".join("" if v is None else str(v) for v in row[:12]))
+                return "\n".join(parts)[:max_chars].strip()
+            except Exception as exc:
+                return f"[xlsx preview unavailable: {exc}]"
+        if ext in {".h5", ".hdf5"}:
+            try:
+                import h5py  # type: ignore
+                lines = []
+                with h5py.File(str(path), "r") as h5:
+                    def visit(name, obj):
+                        shape = getattr(obj, "shape", "")
+                        dtype = getattr(obj, "dtype", "")
+                        lines.append(f"{name} shape={shape} dtype={dtype}")
+                    h5.visititems(visit)
+                return "\n".join(lines[:80])[:max_chars].strip()
+            except Exception as exc:
+                return f"[hdf5 metadata unavailable: {exc}]"
+        if ext == ".nc":
+            try:
+                from netCDF4 import Dataset  # type: ignore
+                with Dataset(str(path)) as ds:
+                    lines = ["dimensions: " + ", ".join(f"{k}={len(v)}" for k, v in ds.dimensions.items())]
+                    lines.append("variables: " + ", ".join(list(ds.variables.keys())[:80]))
+                return "\n".join(lines)[:max_chars].strip()
+            except Exception as exc:
+                return f"[netcdf metadata unavailable: {exc}]"
+    except Exception as exc:
+        return f"[preview extraction failed: {exc}]"
+    return ""
+
+
+def _science_numeric_text_score(text: str) -> float:
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()][:60]
+    if not lines:
+        return 0.0
+    numeric = 0
+    for ln in lines:
+        tokens = _re.split(r"[\s,;]+", ln)
+        vals = 0
+        for tok in tokens:
+            try:
+                float(tok)
+                vals += 1
+            except Exception:
+                pass
+        if vals >= 3:
+            numeric += 1
+    return numeric / max(len(lines), 1)
+
+
+def _science_guess_file_role(path: Path, preview: str) -> str:
+    name = path.name.lower()
+    ext = path.suffix.lower()
+    if any(k in path.name for k in ("数据说明", "说明", "字段", "README", "readme")) or "description" in name:
+        return "data_description_or_project_notes"
+    if ext == ".pdf":
+        return "reference_paper_or_report"
+    if ext in {".csv", ".tsv", ".xlsx", ".xls", ".parquet", ".h5", ".hdf5", ".nc"}:
+        return "structured_data"
+    if ext in {".sac", ".mseed"}:
+        return "waveform_data"
+    if ext in {".py", ".ipynb", ".sh"}:
+        return "code_or_processing_script"
+    if ext in {".png", ".jpg", ".jpeg", ".svg"}:
+        return "figure_or_image_evidence"
+    if ext in {".txt", ".dat"} and _science_numeric_text_score(preview) > 0.35:
+        return "numeric_text_data"
+    if ext in {".md", ".txt", ".doc", ".docx", ".rst", ".html", ".htm"}:
+        return "document_or_notes"
+    return "unknown_project_file"
+
+
+def _science_build_file_profiles(root: Path, max_files: int = 160) -> list[dict]:
+    """Scan project files and attach previews/role hints for the science agent prompt."""
+    if not root.exists():
+        return []
+    skip_dirs = {".git", "__pycache__", ".pytest_cache", "node_modules"}
+    candidates = []
+    for p in root.rglob("*"):
+        if not p.is_file():
+            continue
+        if any(part in skip_dirs for part in p.parts):
+            continue
+        if "outputs" in p.parts and "science_analysis_agent" in p.parts:
+            continue
+        if p.suffix.lower() not in _SCI_ALLOWED_EXTS:
+            continue
+        candidates.append(p)
+
+    def priority(p: Path):
+        ext = p.suffix.lower()
+        name = p.name.lower()
+        score = 5
+        if any(k in p.name for k in ("数据说明", "说明", "字段")) or "readme" in name:
+            score = 0
+        elif ext in {".csv", ".tsv", ".xlsx", ".xls", ".txt", ".dat", ".json", ".h5", ".hdf5", ".nc", ".sac", ".mseed"}:
+            score = 1
+        elif ext == ".pdf":
+            score = 2
+        elif ext in {".doc", ".docx", ".md", ".rst"}:
+            score = 3
+        elif ext in {".py", ".ipynb", ".sh"}:
+            score = 4
+        return (score, str(p).lower())
+
+    profiles = []
+    for p in sorted(candidates, key=priority)[:max_files]:
+        preview = _science_read_file_preview(p)
+        try:
+            rel = str(p.relative_to(root))
+        except Exception:
+            rel = str(p)
+        profiles.append({
+            "path": rel,
+            "abs_path": str(p),
+            "suffix": p.suffix.lower() or "file",
+            "size": p.stat().st_size,
+            "role_hint": _science_guess_file_role(p, preview),
+            "preview": preview[:2200],
+            "numeric_score": round(_science_numeric_text_score(preview), 2),
+        })
+    return profiles
+
+
+def _science_profiles_to_prompt(profiles: list[dict], role_summary: str = "") -> str:
+    if not profiles:
+        return "No readable project files were found."
+    lines = []
+    if role_summary:
+        lines += ["===== LLM file-role assessment =====", role_summary.strip(), ""]
+    lines.append("===== Project file profiles with previews =====")
+    for idx, item in enumerate(profiles, 1):
+        preview = (item.get("preview") or "").strip()
+        preview = preview if preview else "[no text preview extracted; use filename, suffix, metadata, or multimodal tools if needed]"
+        lines += [
+            f"\n### [{idx}] {item.get('path')}",
+            f"- suffix: {item.get('suffix')}  size: {item.get('size')} bytes",
+            f"- rough_role_hint: {item.get('role_hint')}  numeric_score: {item.get('numeric_score')}",
+            "- preview:",
+            preview[:2200],
+        ]
+    return "\n".join(lines)
+
+
+def _science_llm_role_summary(profiles: list[dict], data_description: str = "") -> str:
+    """Ask the configured LLM to classify project files. Returns raw text, no JSON dependency."""
+    if not profiles:
+        return ""
+    brief_parts = []
+    for item in profiles[:60]:
+        brief_parts.append(
+            f"文件: {item.get('path')}\n"
+            f"后缀: {item.get('suffix')}  初步提示: {item.get('role_hint')}\n"
+            f"内容片段:\n{(item.get('preview') or '')[:900]}"
+        )
+    messages = [
+        {"role": "system", "content": (
+            "你是科研数据管家。请根据文件名、扩展名和内容片段判断每个文件在科研项目中的作用。"
+            "不要编造未出现的信息；不确定时写“待验证”。直接输出 Markdown 表格和简短建议，不要输出 JSON。"
+        )},
+        {"role": "user", "content": (
+            "用户提供的数据说明：\n"
+            f"{data_description or '(未提供)'}\n\n"
+            "请把下面文件分为：数据、数据说明/字段说明、参考论文、代码/脚本、图像/表格、其他。"
+            "同时指出后续分析应优先读取哪些文件。\n\n"
+            + "\n\n---\n\n".join(brief_parts)
+        )},
+    ]
+    try:
+        return llm_call(messages, get_llm_config(), max_tokens=1800)
+    except Exception as exc:
+        return f"[LLM file-role assessment unavailable: {exc}]"
+
+
+def _science_resolve_workspace_root(value: str | Path | None, session_id: str = "default_science") -> Path:
+    """Resolve Science Agent workspaces consistently, with legacy upload fallback."""
+    raw = str(value or "").strip()
+    if not raw:
+        return SCIENCE_WORKSPACE_ROOT / _clean_conversation_id(session_id)
+    p = Path(raw).expanduser()
+    if p.is_absolute():
+        return p
+    repo_candidate = (_PROJECT_ROOT / p).resolve()
+    legacy_candidate = (Path(__file__).parent.parent / p).resolve()
+    if legacy_candidate.exists():
+        repo_has_files = repo_candidate.exists() and any(x.is_file() for x in repo_candidate.rglob("*"))
+        legacy_has_files = any(x.is_file() for x in legacy_candidate.rglob("*"))
+        if not repo_candidate.exists() or (legacy_has_files and not repo_has_files):
+            return legacy_candidate
+    return repo_candidate
 
 
 def _clean_conversation_title(value: str) -> str:
@@ -959,6 +1187,351 @@ def evidence_geo_agent_poll(job_id):
         "result":   job["result"],       # None while running, full dict when done
         "error":    job["error"],
     })
+
+
+# ── Scientific Analysis Agent alpha ─────────────────────────────────────────
+
+def _science_agent_gc():
+    """Discard scientific analysis jobs older than 2 hours."""
+    cutoff = _time.time() - 7200
+    for k in [k for k, v in _science_agent_jobs.items() if v.get("ts", 0) < cutoff]:
+        _science_agent_jobs.pop(k, None)
+
+
+@bp.route('/api/science_analysis_agent', methods=['POST'])
+def science_analysis_agent():
+    """Start an async autonomous scientific analysis job."""
+    data = request.json or {}
+    question = (data.get("question") or "").strip()
+    data_description = (data.get("data_description") or "").strip()
+    if not question and not data_description:
+        return jsonify({"ok": False, "error": "question or data_description is required"}), 400
+
+    _science_agent_gc()
+    job_id = "sci_" + _uuid.uuid4().hex[:10]
+    session_id = _clean_conversation_id(data.get("session_id") or "default_science")
+    workspace_root = _science_resolve_workspace_root(data.get("workspace_root"), session_id)
+    output_cfg = Path(data.get("output_dir") or "outputs/science_analysis_agent").expanduser()
+    if output_cfg.is_absolute():
+        try:
+            output_cfg.resolve().relative_to(workspace_root.resolve())
+            effective_output_dir = output_cfg / session_id / job_id
+        except Exception:
+            effective_output_dir = workspace_root / "outputs" / "science_analysis_agent" / session_id / job_id
+    else:
+        effective_output_dir = workspace_root / output_cfg / session_id / job_id
+    _science_agent_jobs[job_id] = {
+        "status": "running",
+        "progress": [],
+        "guidance": [],
+        "result": None,
+        "error": None,
+        "ts": _time.time(),
+        "session_id": session_id,
+        "workspace_root": str(workspace_root),
+        "output_dir": str(effective_output_dir),
+    }
+
+    def _run():
+        try:
+            import sys as _sys
+            import os as _os
+            _root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+            if _root not in _sys.path:
+                _sys.path.insert(0, _root)
+            try:
+                from sage_agents import EvidenceDrivenGeoAgent, AgentConfig
+                _agent_backend = "evidence_geo_agent"
+            except Exception:
+                EvidenceDrivenGeoAgent = None
+                AgentConfig = None
+                _agent_backend = "seismo_agent"
+
+            ws_cfg = get_workspace_config()
+            authorized_roots = []
+            if ws_cfg.get("enabled"):
+                authorized_roots.extend(ws_cfg.get("paths") or [])
+            authorized_roots.extend(data.get("authorized_roots") or [])
+            authorized_roots = [str(p).strip() for p in authorized_roots if str(p).strip()]
+
+            workspace_root_str = str(workspace_root)
+            literature_root = data.get("literature_root") or ""
+
+            def _prog(d):
+                if isinstance(d, str):
+                    phase, msg = "agent", d
+                else:
+                    phase = d.get("phase", "")
+                    msg = d.get("message") or d.get("msg", "")
+                _science_agent_jobs[job_id]["progress"].append(
+                    {"phase": phase, "message": msg, "ts": _time.time()}
+                )
+
+            def _runtime_guidance() -> str:
+                items = _science_agent_jobs.get(job_id, {}).get("guidance") or []
+                return "\n".join(f"- {g.get('message', '')}" for g in items if g.get("message"))
+
+            file_profiles = []
+            file_role_summary = ""
+            try:
+                root_path = Path(workspace_root_str).expanduser()
+                _prog({"phase": "file_profile", "message": f"Scanning project files in {root_path}"})
+                file_profiles = _science_build_file_profiles(root_path)
+                _prog({"phase": "file_profile", "message": f"Profiled {len(file_profiles)} project files"})
+                if file_profiles:
+                    file_role_summary = _science_llm_role_summary(file_profiles, data_description)
+                    _prog({"phase": "file_profile", "message": "Prepared LLM-assisted file-role assessment"})
+            except Exception as exc:
+                file_profiles = []
+                file_role_summary = f"[file profiling failed: {exc}]"
+            literature_sources = [
+                p.get("abs_path")
+                for p in file_profiles
+                if p.get("suffix") == ".pdf" or p.get("role_hint") == "reference_paper_or_report"
+            ]
+            literature_sources = [str(p) for p in literature_sources if p]
+            if literature_sources:
+                _prog({
+                    "phase": "literature",
+                    "message": f"Detected {len(literature_sources)} local PDF literature files",
+                })
+
+            profile = get_user_profile_context(max_chars=2500)
+            project_context = (data.get("project_context") or "").strip()
+            prompt_parts = [
+                "你是 Scientific Analysis Agent alpha，不是地学解译专用助手。",
+                "目标是把用户提供的数据说明、工作目录数据、本地/在线文献和知识库证据，转化为可复现的科学分析、报告和论文草稿。",
+                f"项目根目录：{workspace_root_str}",
+                "编程执行时当前工作目录就是项目根目录；请使用项目相对路径（如 data/xxx、literature/xxx、docs/xxx）访问文件。",
+                f"所有输出必须写入：{effective_output_dir}",
+                "",
+                "===== User research request =====",
+                question or "请根据数据说明和工作目录自主开展科学分析。",
+            ]
+            if data_description:
+                prompt_parts += ["", "===== Data description supplied by user =====", data_description]
+            if file_profiles or file_role_summary:
+                prompt_parts += [
+                    "",
+                    "===== Initial project file profiles =====",
+                    _science_profiles_to_prompt(file_profiles, file_role_summary),
+                ]
+            prompt_parts += [
+                "",
+                "===== Required autonomous workflow =====",
+                "1. 数据研究：根据文件画像、数据说明、文献和必要的 web search，先判断这些数据可以支持哪些研究方向；用户指定方向时优先服从用户方向。",
+                "2. 科学问题规划：基于数据可用性和文献背景，提出可验证的科学问题、假设、反证路径和缺失信息。",
+                "3. 图件与统计规划：让 LLM 先规划论文需要哪些图件、统计量、表格和中间产物，再进入编程。",
+                "4. Coding Agent 执行：自己编程解析数据格式、整理字段、做 mini test、统计和绘图；出错后不要停，必须让 LLM 根据错误自动诊断、改方案、重试。",
+                "5. 论文撰写：根据生成图件、统计结果、给定论文和 web search 证据撰写 Markdown 论文草稿，并用 Markdown 图片语法嵌入图件。",
+                "6. 交互式迭代：如果用户后续提出修改、补充或新假设，基于上一轮结果继续研究，不要从零开始。",
+                "7. 所有读写、脚本、图表、报告、LaTeX 和临时文件都必须限制在用户指定的项目工作目录内；不要写到项目目录之外。",
+                "8. 必须使用上面的文件画像判断文件作用：numeric_text_data/structured_data/waveform_data 都应视为候选数据；reference_paper_or_report 视为参考文献；data_description_or_project_notes 视为数据说明。不要因为文件扩展名是 .txt/.doc/.pdf 就忽略它。",
+                "9. 所有结论必须有来源依据：数据文件、统计输出、图件、RAG chunk、web 文献或工具输出。证据不足就明确说明。",
+                "10. 不要把中间猜测写成事实；报告中保留“已验证/待验证/缺失信息”状态。",
+            ]
+            if project_context:
+                prompt_parts += ["", "===== Project shared context =====", project_context[:16000]]
+            if profile:
+                prompt_parts += ["", "===== Long-term user profile (soft context; do not mention unless useful) =====", profile]
+
+            study_area = (data.get("study_area") or "scientific analysis").strip()
+            _prog({"phase": "start", "message": f"Scientific analysis workspace: {workspace_root_str}"})
+            _prog({"phase": "backend", "message": f"Using {_agent_backend}"})
+            if _agent_backend == "evidence_geo_agent" and EvidenceDrivenGeoAgent is not None and AgentConfig is not None:
+                cfg = AgentConfig(
+                    workspace_root=workspace_root_str,
+                    literature_root=literature_root,
+                    output_dir=str(effective_output_dir),
+                    authorized_roots=authorized_roots,
+                    allow_python=bool(data.get("allow_python", True)),
+                    allow_shell=bool(data.get("allow_shell", False)),
+                    allow_web_search=bool(data.get("allow_web_search", True)),
+                    use_multimodal=bool(data.get("use_multimodal", True)),
+                    use_rag=bool(data.get("use_rag", True)),
+                    use_local_files=bool(data.get("use_local_files", True)),
+                    produce_latex=bool(data.get("produce_latex", True)),
+                    use_code_engine=bool(data.get("use_code_engine", True)),
+                    web_search_sources=data.get("web_search_sources") or _default_search_sources(),
+                    max_iterations=int(data.get("max_iterations", 4)),
+                    max_tool_calls_per_iter=int(data.get("max_tool_calls_per_iter", 10)),
+                    rag_top_k=int(data.get("rag_top_k", 10)),
+                    score_threshold=float(data.get("score_threshold", 0.3)),
+                    code_timeout_s=int(data.get("code_timeout_s", 90)),
+                )
+                agent = EvidenceDrivenGeoAgent(config=cfg, llm_cfg=get_llm_config())
+                result = agent.run("\n".join(prompt_parts), study_area, on_progress=_prog)
+            else:
+                from seismo_agent import SeismoAgent
+                agent = SeismoAgent(llm_config=get_llm_config(), project_root=workspace_root_str, mode="autonomous")
+                fallback = agent.run(
+                    "\n".join(prompt_parts),
+                    paper_source=literature_sources,
+                    output_dir=str(effective_output_dir),
+                    progress_cb=_prog,
+                    guidance_provider=_runtime_guidance,
+                    max_steps=int(data.get("max_iterations", 4)),
+                )
+                result = {
+                    "final_report": fallback.get("summary", ""),
+                    "generated_figures": fallback.get("figures", []),
+                    "markdown_paper": fallback.get("markdown_paper", ""),
+                    "markdown_paper_path": fallback.get("markdown_paper_path", ""),
+                    "tool_log": [],
+                    "statistical_results": [
+                        {"title": "Agent summary", "content": fallback.get("summary", "")}
+                    ],
+                    "missing_information": [] if fallback.get("success") else ["部分步骤失败或底层 evidence agent 不可用，请查看运行日志。"],
+                    "_fallback_backend": "seismo_agent",
+                    "_raw_result": fallback,
+                }
+            if isinstance(result, dict):
+                result.setdefault("_run_output_dir", str(effective_output_dir))
+                result.setdefault("_session_id", session_id)
+                result.setdefault("_agent_kind", "science_analysis")
+                result.setdefault("_workspace_root", workspace_root_str)
+            _science_agent_jobs[job_id]["status"] = "done"
+            _science_agent_jobs[job_id]["result"] = result
+        except Exception as exc:
+            _science_agent_jobs[job_id]["status"] = "error"
+            _science_agent_jobs[job_id]["error"] = str(exc)
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"ok": True, "job_id": job_id, "output_dir": str(effective_output_dir)})
+
+
+@bp.route('/api/science_analysis_agent/guidance', methods=['POST'])
+def science_analysis_agent_guidance():
+    data = request.json or {}
+    job_id = (data.get("job_id") or "").strip()
+    message = (data.get("message") or "").strip()
+    if not job_id or not message:
+        return jsonify({"ok": False, "error": "job_id and message are required"}), 400
+    job = _science_agent_jobs.get(job_id)
+    if not job:
+        return jsonify({"ok": False, "error": "Job not found"}), 404
+    item = {"message": message, "ts": _time.time()}
+    job.setdefault("guidance", []).append(item)
+    job.setdefault("progress", []).append({"phase": "guidance", "message": message, "ts": _time.time()})
+    return jsonify({"ok": True, "guidance": item})
+
+
+@bp.route('/api/science_analysis_agent/poll/<job_id>', methods=['GET'])
+def science_analysis_agent_poll(job_id):
+    job = _science_agent_jobs.get(job_id)
+    if not job:
+        return jsonify({"ok": False, "error": "Job not found"}), 404
+    return jsonify({
+        "ok": True,
+        "status": job["status"],
+        "progress": job["progress"],
+        "guidance": job.get("guidance", []),
+        "result": job["result"],
+        "error": job["error"],
+        "workspace_root": job.get("workspace_root", ""),
+        "output_dir": job.get("output_dir", ""),
+    })
+
+
+_SCI_ALLOWED_EXTS = {
+    ".pdf", ".png", ".jpg", ".jpeg",
+    ".csv", ".txt", ".md", ".json",
+    ".yaml", ".yml", ".bib", ".dat",
+    ".sac", ".mseed", ".xml",
+    ".xlsx", ".xls", ".tsv", ".parquet", ".h5", ".hdf5", ".nc",
+    ".py", ".ipynb", ".sh", ".tex", ".doc", ".docx", ".ppt", ".pptx",
+}
+
+
+@bp.route('/api/science_analysis_agent/upload', methods=['POST'])
+def science_analysis_agent_upload():
+    """Upload a research data/literature file into the science workspace."""
+    if 'file' not in request.files:
+        return jsonify({"ok": False, "error": "No file provided"}), 400
+    f = request.files['file']
+    session_id = _clean_conversation_id(request.form.get('session_id') or 'default_science')
+    orig_name = Path(f.filename).name if f.filename else 'upload'
+    ext = Path(orig_name).suffix.lower()
+    if ext not in _SCI_ALLOWED_EXTS:
+        return jsonify({"ok": False, "error": f"File type '{ext}' not allowed"}), 400
+
+    workspace_root = request.form.get('workspace_root') or ""
+    ws_dir = _science_resolve_workspace_root(workspace_root, session_id)
+    if ext == ".pdf":
+        sub = "literature"
+    elif ext in {".png", ".jpg", ".jpeg"}:
+        sub = "figures"
+    elif ext in {".csv", ".tsv", ".xlsx", ".xls", ".parquet", ".h5", ".hdf5", ".nc", ".dat", ".json"}:
+        sub = "data"
+    elif ext in {".py", ".ipynb", ".sh"}:
+        sub = "code"
+    else:
+        sub = "docs"
+    dest_dir = ws_dir / sub
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / orig_name
+    f.save(str(dest))
+    preview = _science_read_file_preview(dest, max_chars=1600)
+    role_hint = _science_guess_file_role(dest, preview)
+    original_sub = sub
+    if role_hint in {"numeric_text_data", "structured_data", "waveform_data"}:
+        sub = "data"
+    elif role_hint == "data_description_or_project_notes":
+        sub = "docs"
+    if sub != original_sub:
+        new_dir = ws_dir / sub
+        new_dir.mkdir(parents=True, exist_ok=True)
+        new_dest = new_dir / orig_name
+        try:
+            dest.replace(new_dest)
+            dest = new_dest
+        except Exception:
+            pass
+    return jsonify({
+        "ok": True,
+        "path": str(dest),
+        "session_workspace": str(ws_dir),
+        "file_type": sub,
+        "role_hint": role_hint,
+        "preview": preview[:500],
+    })
+
+
+@bp.route('/api/science_analysis_agent/artifact', methods=['GET'])
+def science_analysis_agent_artifact():
+    """Serve a generated or uploaded science-analysis artifact."""
+    artifact_path = request.args.get('path', '').strip()
+    if not artifact_path:
+        return jsonify({"error": "path required"}), 400
+    p = Path(artifact_path).expanduser()
+    if not p.exists() or not p.is_file():
+        return jsonify({"error": "File not found"}), 404
+    allowed = {'.png', '.jpg', '.jpeg', '.svg', '.html', '.pdf', '.txt', '.md', '.csv', '.json'}
+    if p.suffix.lower() not in allowed:
+        return jsonify({"error": "Unsupported file type"}), 400
+    resolved = p.resolve()
+    allowed_roots = [Path(__file__).parent.parent.resolve(), SCIENCE_WORKSPACE_ROOT.resolve()]
+    for job in _science_agent_jobs.values():
+        for key in ("workspace_root", "output_dir"):
+            val = job.get(key)
+            if val:
+                try:
+                    allowed_roots.append(Path(val).expanduser().resolve())
+                except Exception:
+                    pass
+    allowed = False
+    for root in allowed_roots:
+        try:
+            resolved.relative_to(root)
+            allowed = True
+            break
+        except ValueError:
+            continue
+    if not allowed:
+        return jsonify({"error": "Access denied"}), 403
+    if p.suffix.lower() == '.svg':
+        return send_file(str(resolved), mimetype='image/svg+xml')
+    return send_file(str(resolved))
 
 
 # ── EvidenceGeoAgent — file upload for workspace ───────────────────────────

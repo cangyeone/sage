@@ -129,6 +129,7 @@ if __name__ == '__main__':
     print("=" * 70)
     print(f"\nStarting on  http://{args.host}:{args.port}")
     print(f"  Chat:       http://localhost:{args.port}/chat")
+    print(f"  Science:    http://localhost:{args.port}/science-analysis-agent")
     print(f"  Knowledge:  http://localhost:{args.port}/knowledge")
     print(f"  Skills:     http://localhost:{args.port}/skills")
     print(f"  LLM:        http://localhost:{args.port}/llm-settings")

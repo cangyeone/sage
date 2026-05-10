@@ -41,6 +41,11 @@ def evidence_geo_agent_page():
     return render_template('evidence_geo.html')
 
 
+@bp.route('/science-analysis-agent')
+def science_analysis_agent_page():
+    return render_template('science_analysis.html')
+
+
 @bp.route('/health')
 def health_check():
     return jsonify({

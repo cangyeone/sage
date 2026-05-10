@@ -167,6 +167,20 @@ class LLMConfigManager:
         paths.setdefault('geo_output_dir', 'outputs/evidence_geo_agent')
         return paths
 
+    def get_coding_agent_config(self) -> Dict:
+        """Project-scoped integrated coding backend settings."""
+        project_cfg = self.get_project_config()
+        cfg = project_cfg.setdefault('coding_agent', {})
+        cfg.setdefault('backend', 'builtin')  # builtin, aider, openhands
+        cfg.setdefault('enabled', cfg.get('backend') != 'builtin')  # legacy compatibility
+        cfg.setdefault('command', '')
+        cfg.setdefault('model', '')
+        cfg.setdefault('extra_args', '')
+        cfg.setdefault('timeout_s', 900)
+        cfg.setdefault('auto_approve', True)
+        cfg.setdefault('use_current_llm_env', True)
+        return cfg
+
     @property
     def project_config_file(self) -> Path:
         return Path(__file__).parent / 'seismo_rag' / 'project_config.json'

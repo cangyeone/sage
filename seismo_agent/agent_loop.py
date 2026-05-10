@@ -47,8 +47,8 @@ except Exception:
 # ---------------------------------------------------------------------------
 
 _STEP_SYSTEM = """\
-You are a professional seismology researcher and Python engineer.
-You are incrementally completing a seismology research task.
+You are a professional scientific researcher and Python engineer.
+You are incrementally completing an autonomous scientific analysis task.
 
 Pre-injected seismology toolkit (call directly — no import needed):
   read_stream(path)  read_stream_from_dir(directory)
@@ -67,6 +67,12 @@ Rules:
 3. Save images via plot_* functions or savefig('name.png') — NEVER use plt.show()
 4. Wrap critical steps in try/except with informative error messages
 5. Variables computed in prior steps are available (listed in context)
+6. Do not assume data schemas. First inspect files, delimiters, columns, units, and row examples.
+7. Use os.environ["SAGE_OUTDIR"] for all outputs. Save intermediate CSV/JSON/Markdown notes when useful.
+8. If fixing a failed attempt, explicitly diagnose the error in comments and change the approach.
+9. The process cwd is os.environ["SAGE_WORKSPACE_ROOT"]; project-relative paths like data/file.txt are valid there.
+10. Before reparsing raw files, check prior artifacts listed in context. If a validated CSV such as events_all.csv/events_A.csv exists, prefer reading it with pandas/csv and verify its columns/row count.
+11. Every code step must include a small smoke test: print dataframe shapes, columns, and basic non-empty checks before downstream statistics or plotting.
 """
 
 
@@ -76,6 +82,7 @@ def _generate_step_code(
     memory_context: str,
     llm_config: Dict,
     goal: str,
+    error_context: str = "",
 ) -> str:
     """Call LLM to generate code for a single step."""
     user_content = (
@@ -87,6 +94,12 @@ def _generate_step_code(
         user_content += f"Paper method summary:\n{paper_context[:3000]}\n\n"
     if memory_context:
         user_content += f"Prior step results (variables/files available for reuse):\n{memory_context}\n\n"
+    if error_context:
+        user_content += (
+            "Previous attempt failed. Diagnose and repair it automatically.\n"
+            "Use the traceback/stdout below to change the plan, inspect files, or choose a simpler robust method.\n"
+            f"{error_context[:4000]}\n\n"
+        )
     user_content += "Generate complete Python code for this step:"
 
     # Inject relevant skill documentation based on step description + goal
@@ -138,6 +151,18 @@ def _generate_step_code(
     return raw.strip()
 
 
+def _python_syntax_error(code: str) -> str:
+    """Return a concise syntax error for generated code, or an empty string."""
+    try:
+        compile(code, "<llm_generated_step>", "exec")
+        return ""
+    except SyntaxError as exc:
+        line = ""
+        if exc.text:
+            line = exc.text.rstrip()
+        return f"SyntaxError before execution: {exc.msg} at line {exc.lineno}: {line}"
+
+
 def _explain_paper_methods(paper_context: str, goal: str, llm_config: Dict) -> str:
     """Ask LLM to summarize the key method from the paper for the given goal."""
     if not paper_context.strip():
@@ -177,6 +202,88 @@ def _explain_paper_methods(paper_context: str, goal: str, llm_config: Dict) -> s
         return body.get("choices", [{}])[0].get("message", {}).get("content", "")
     except Exception:
         return ""
+
+
+def _write_markdown_paper(
+    goal: str,
+    method_summary: str,
+    memory: AgentMemory,
+    figures: List[str],
+    output_files: List[str],
+    output_dir: str,
+    llm_config: Dict,
+) -> str:
+    """Use the LLM to synthesize a Markdown paper draft with figure links."""
+    output_path = Path(output_dir) / "science_paper_draft.md"
+    fig_lines = "\n".join(f"- {Path(f).name}: {f}" for f in figures) or "(no generated figures)"
+    file_lines = "\n".join(f"- {Path(f).name}: {f}" for f in output_files) or "(no extra output files)"
+    step_log = memory.steps_summary()
+    prompt = f"""
+Research goal:
+{goal}
+
+Literature/method summary:
+{method_summary or '(not available)'}
+
+Executed analysis log:
+{step_log}
+
+Generated figures:
+{fig_lines}
+
+Generated data/files:
+{file_lines}
+
+Write a grounded Markdown research paper draft in Chinese. Use this structure:
+# Title
+## Abstract
+## Introduction
+## Data
+## Methods
+## Results
+## Discussion
+## Conclusions
+## Limitations and Missing Information
+## References and Evidence
+
+Rules:
+- Insert generated figures with Markdown image syntax using the file paths above.
+- Distinguish verified results from hypotheses.
+- Do not invent citations, numbers, or conclusions. If evidence is missing, say so.
+- Mention which output files support each main claim.
+"""
+
+    messages = [
+        {"role": "system", "content": "你是一位严谨的科研论文写作助手，只根据给定日志、图件、文件和文献摘要写作。"},
+        {"role": "user", "content": prompt},
+    ]
+
+    provider = llm_config.get("provider", "ollama")
+    model = llm_config.get("model", "qwen2.5:7b")
+    api_base = llm_config.get("api_base", "http://localhost:11434")
+    api_key = llm_config.get("api_key", "")
+    if provider == "ollama":
+        url = api_base.rstrip("/") + "/api/chat"
+        payload = {"model": model, "messages": messages, "stream": False,
+                   "options": {"temperature": 0.3, "num_predict": 3500}}
+    else:
+        url = api_base.rstrip("/") + "/chat/completions"
+        payload = {"model": model, "messages": messages, "temperature": 0.3, "max_tokens": 3500}
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode(), method="POST",
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {api_key}" if api_key else "Bearer none"},
+    )
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        body = json.loads(resp.read().decode())
+    if provider == "ollama":
+        text = body.get("message", {}).get("content", "").strip()
+    else:
+        text = body.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+    if not text:
+        text = "# Science Paper Draft\n\nNo draft was generated."
+    output_path.write_text(text, encoding="utf-8")
+    return str(output_path)
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +342,14 @@ class SeismoAgent:
         try:
             provider = self.llm_config.get("provider", "ollama")
             api_base = self.llm_config.get("api_base", "http://localhost:11434")
-            url = api_base.rstrip("/") + ("/api/tags" if provider == "ollama" else "/models")
+            model = self.llm_config.get("model", "")
+            if provider != "ollama":
+                # Many OpenAI-compatible online providers either do not expose
+                # /models or require different permissions. Chat itself uses
+                # /chat/completions, so do not reject a configured online model
+                # before the actual request path has a chance to run.
+                return bool(api_base and model)
+            url = api_base.rstrip("/") + "/api/tags"
             urllib.request.urlopen(url, timeout=3)
             return True
         except Exception:
@@ -259,9 +373,10 @@ class SeismoAgent:
     def run(
         self,
         goal: str,
-        paper_source: Optional[str] = None,
+        paper_source: Optional[Any] = None,
         output_dir: Optional[str] = None,
         progress_cb: Optional[Callable[[str], None]] = None,
+        guidance_provider: Optional[Callable[[], str]] = None,
         max_steps: int = 8,
         max_retries: int = 2,
     ) -> Dict:
@@ -272,8 +387,8 @@ class SeismoAgent:
         ----------
         goal : str
             Research/programming goal in natural language.
-        paper_source : str, optional
-            Path/URL/ID of paper to read.
+        paper_source : str or list[str], optional
+            Path/URL/ID of one or more papers to read.
         output_dir : str, optional
             Directory for output figures and files.
         progress_cb : callable, optional
@@ -316,7 +431,17 @@ class SeismoAgent:
 
         # Step 1: Load paper(s)
         if paper_source:
-            self.load_paper(paper_source, cb)
+            if isinstance(paper_source, (list, tuple, set)):
+                paper_sources = [str(s) for s in paper_source if str(s).strip()]
+            else:
+                paper_sources = [str(paper_source)]
+            cb(f"   检测到 {len(paper_sources)} 个文献输入")
+            loaded = 0
+            for src in paper_sources:
+                if self.load_paper(src, cb):
+                    loaded += 1
+            if loaded == 0:
+                cb("   ⚠ 文献均未能加载，将基于文件画像和目标继续规划")
         else:
             cb("   （无文献输入，根据目标直接规划）")
 
@@ -351,6 +476,15 @@ class SeismoAgent:
 
         for step in steps:
             cb(f"── 步骤 {step.index}/{len(steps)}: {step.description}")
+            runtime_guidance = guidance_provider() if callable(guidance_provider) else ""
+            step_goal = goal
+            if runtime_guidance:
+                cb("   ↪ 已接收运行中补充引导，将用于本步骤。")
+                step_goal = (
+                    goal
+                    + "\n\n===== Runtime user guidance =====\n"
+                    + runtime_guidance[-4000:]
+                )
 
             if step.step_type == "qa":
                 # QA step — just log, no execution
@@ -367,21 +501,34 @@ class SeismoAgent:
 
             # Generate and execute code
             exec_result = None
+            error_context = ""
             for attempt in range(max_retries + 1):
                 if attempt > 0:
-                    cb(f"   ↩  重试 ({attempt}/{max_retries})...")
+                    cb(f"   ↩  LLM 自动诊断并重试 ({attempt}/{max_retries})...")
 
                 try:
                     code = _generate_step_code(
                         step=step,
                         paper_context=effective_context,
-                        memory_context=self.memory.accumulated_context(),
+                        memory_context=self.memory.accumulated_context(max_chars=7000),
                         llm_config=self.llm_config,
-                        goal=goal,
+                        goal=step_goal,
+                        error_context=error_context,
                     )
                 except Exception as e:
                     cb(f"   ✗ 代码生成失败：{e}")
                     break
+
+                syntax_error = _python_syntax_error(code)
+                if syntax_error:
+                    cb(f"   ⚠  代码语法自检失败：{syntax_error[:120]}")
+                    error_context = (
+                        f"{syntax_error}\n\n"
+                        "The generated Python code did not compile. Regenerate the entire step as valid Python.\n"
+                        "Avoid unterminated multi-line strings; use triple-quoted strings or write line lists joined by '\\n'.\n\n"
+                        f"Generated code preview:\n{code[:3500]}"
+                    )
+                    continue
 
                 # Execute
                 from seismo_code.safe_executor import execute_code
@@ -390,7 +537,10 @@ class SeismoAgent:
                     project_root=self.project_root,
                     timeout=120,
                     keep_dir=True,
-                    extra_env={"SAGE_OUTDIR": output_dir},
+                    extra_env={
+                        "SAGE_OUTDIR": output_dir,
+                        "SAGE_WORKSPACE_ROOT": self.project_root,
+                    },
                 )
 
                 if exec_result.success:
@@ -398,6 +548,11 @@ class SeismoAgent:
 
                 # On failure, feed error back for retry
                 cb(f"   ⚠  执行失败：{exec_result.error[:100]}")
+                error_context = (
+                    f"Exit error: {exec_result.error}\n"
+                    f"STDOUT:\n{exec_result.stdout[-2500:]}\n\n"
+                    f"STDERR:\n{exec_result.stderr[-2500:]}\n"
+                )
 
             if exec_result is None:
                 step_result = StepResult(
@@ -421,7 +576,7 @@ class SeismoAgent:
                 step_result = StepResult(
                     step_index=step.index,
                     description=step.description,
-                    code=code if exec_result.success else "",
+                    code=code,
                     stdout=exec_result.stdout,
                     figures=step_figs,
                     output_files=exec_result.output_files,
@@ -448,6 +603,23 @@ class SeismoAgent:
         n_ok = sum(1 for r in self.memory.step_results if r.success)
         n_total = len(self.memory.step_results)
         overall_success = n_ok == n_total
+
+        markdown_paper_path = ""
+        try:
+            cb("\n📝 基于图件、统计结果和文献摘要撰写 Markdown 论文草稿...")
+            markdown_paper_path = _write_markdown_paper(
+                goal=goal,
+                method_summary=method_summary,
+                memory=self.memory,
+                figures=all_figures,
+                output_files=all_output_files,
+                output_dir=output_dir,
+                llm_config=self.llm_config,
+            )
+            all_output_files.append(markdown_paper_path)
+            cb(f"   ✓ Markdown 论文草稿: {markdown_paper_path}")
+        except Exception as e:
+            cb(f"   ⚠ Markdown 论文草稿生成失败：{e}")
 
         summary_lines = [
             f"\n{'✅' if overall_success else '⚠️ '} Agent 执行完成",
@@ -478,4 +650,6 @@ class SeismoAgent:
             "steps_total": n_total,
             "output_dir": output_dir,
             "method_summary": method_summary,
+            "markdown_paper_path": markdown_paper_path,
+            "markdown_paper": Path(markdown_paper_path).read_text(encoding="utf-8") if markdown_paper_path else "",
         }

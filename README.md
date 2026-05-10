@@ -115,7 +115,7 @@ SAGE is an earthquake science AI platform integrating **natural language interac
 | 🔗 **Event Association** | Multiple methods including FastLink / REAL / Gamma, automatically associating station picking results into earthquake events |
 | 🧭 **Polarity Analysis** | Automatic determination of P-wave first motion polarity |
 | 📊 **Seismic Statistics** | b-value estimation (MLE/LSQ), F-M distribution plots, temporal and spatial distribution analysis |
-| 🧑‍💻 **Code Generation and Execution** | LLM generates Python code + sandbox secure execution + built-in seismology toolkit, connecting multiple skill steps |
+| 🧑‍💻 **Code Generation and Execution** | Built-in CodeEngine handles sandboxed Python/GMT analysis; Aider is integrated as a repository-level coding backend for bug fixes, refactors, and multi-file edits; OpenHands is available as an experimental backend |
 | 🗺️ **GMT Map Drawing** | Calls GMT6 to draw epicenter maps, station maps, topographic maps, focal mechanism diagrams, with downloadable images and scripts |
 | 🤖 **Autonomous Agent** | Reads papers → understands methods → autonomous planning → progressive programming implementation, with automatic retries at each step |
 | 📚 **Knowledge Base RAG** | BGE-M3 vectorization + FAISS retrieval, persistent storage, batch PDF ingestion and literature Q&A |
@@ -512,6 +512,14 @@ python seismic_cli.py run "do 1-10Hz bandpass filtering on /data/wave.mseed and 
 python seismic_cli.py run "calculate source parameters, epicentral distance 50km" -d /data/waves/
 python seismic_cli.py run "draw travel time curve, distance 0-30°, depth 10km" --show-code
 ```
+
+SAGE now separates coding into complementary backends:
+
+- **Built-in CodeEngine**: the default sandboxed runner for scientific scripts, GMT/Python plotting, mini tests, and reproducible artifacts.
+- **Aider backend**: an integrated repository-level coding backend for bug fixes, refactors, and coordinated multi-file edits. SAGE first loads the vendored Aider source at `third_party/aider`, uses Aider's Python scripting API, and falls back to the installed package or CLI if needed. Install project dependencies with `pip install -r requirements.txt`, then select **Aider API / CLI** in `Config -> Coding Agent`.
+- **OpenHands backend**: an experimental CLI-compatible option for heavier agentic development workflows.
+
+Coding backend settings are stored in the project file `seismo_rag/project_config.json`, so they are easy to inspect, version-control selectively, or remove.
 
 ### Autonomous Agent
 
@@ -1671,6 +1679,12 @@ pip install FlagEmbedding sentence-transformers
 ```
 
 If none of the above methods can solve, the project's built-in lightweight TF-IDF vector database will automatically serve as fallback solution, basic RAG functionality still available.
+
+---
+
+## Acknowledgements
+
+SAGE's integrated Aider backend builds on [Aider](https://github.com/Aider-AI/aider), an open-source AI pair programming tool for terminal and Git workflows. SAGE vendors the Aider source under `third_party/aider` and integrates it through its Python scripting API where available, with installed-package and CLI fallbacks for compatibility. The experimental OpenHands backend is designed to interoperate with [OpenHands](https://github.com/OpenHands/OpenHands). We thank these open-source communities for making stronger coding-agent workflows possible.
 
 ---
 

@@ -18,6 +18,7 @@ seismo_rag/*
 # User test / runtime artifacts
 /web_app/results/
 /seismo_skill/skills/pnsn_phase_detection/pnsn/
+.aider.tags.cache.v4/
 
 # Large model files generated or downloaded during local tests
 *.pt
@@ -45,3 +46,4 @@ SAGE_SeismicX_投资人介绍.pdf
 seismo_skill/skills/gmt6/references/manifest.md
 /seismo_skill/skills/gmt6
 /seismo_skill/skills/gmt6_chinese_manual
+/web_app/examples/science_analysis_agent

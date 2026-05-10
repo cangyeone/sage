@@ -49,6 +49,11 @@ def chat_code():
 
     def _run():
         try:
+            from config_manager import get_config_manager
+            coding_cfg = get_config_manager().get_coding_agent_config()
+            coding_backend = (coding_cfg.get('backend') or 'builtin').strip()
+            use_coding_backend = coding_backend in {'aider', 'openhands'}
+
             # Phase 1: Init under lock — protects sentence-transformers / C-extension loading
             with _code_engine_lock:
                 from seismo_skill import search_skills, invalidate_cache
@@ -59,12 +64,15 @@ def chat_code():
                 except Exception:
                     skill_used = None
 
-                engine = get_code_engine(session_id, llm_cfg)
+                engine = None if use_coding_backend else get_code_engine(session_id, llm_cfg)
 
             # Phase 2: Execute OUTSIDE lock — subprocess (GMT/Python) is fork-safe;
             # holding the lock here would block all other init for minutes.
             def _on_progress(p):
-                _code_jobs[job_id]['progress'].append(p.get('phase', p.get('message', '')))
+                if isinstance(p, dict):
+                    _code_jobs[job_id]['progress'].append(p.get('message') or p.get('phase', ''))
+                else:
+                    _code_jobs[job_id]['progress'].append(str(p))
 
             profile = get_user_profile_context(max_chars=2500)
             engine_msg = user_msg
@@ -74,13 +82,23 @@ def chat_code():
                     + profile
                 )
 
-            result = engine.run(
-                engine_msg,
-                timeout=180,
-                max_debug_rounds=6,
-                run_verify=False,
-                on_progress=_on_progress,
-            )
+            if use_coding_backend:
+                from seismo_code.external_coding_agent import run_external_coding_agent
+                result = run_external_coding_agent(
+                    engine_msg,
+                    workspace=str(_PROJECT_ROOT),
+                    llm_config=llm_cfg,
+                    config=coding_cfg,
+                    progress_cb=_on_progress,
+                )
+            else:
+                result = engine.run(
+                    engine_msg,
+                    timeout=180,
+                    max_debug_rounds=6,
+                    run_verify=False,
+                    on_progress=_on_progress,
+                )
             if not _code_jobs[job_id].get('cancelled'):
                 _code_jobs[job_id]['result'] = serialize_code_result(result, skill_used)
         except Exception as exc:

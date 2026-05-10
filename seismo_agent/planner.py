@@ -61,11 +61,18 @@ step_type values:
 - "search" Search literature for specific information
 
 Planning principles:
-1. If paper is provided, start with 1-2 steps to extract key methods/formulas
-2. Data preparation steps (read, preprocess) come first
-3. Each step does one thing; keep granularity moderate
-4. Final step is result visualization or verification
-5. Aim for 3-8 total steps — avoid over-splitting
+1. For scientific analysis projects, follow this pipeline:
+   data discovery -> research-direction assessment -> scientific-question planning ->
+   figure/statistics plan -> coding/statistical analysis -> markdown paper synthesis.
+2. The first executable step must inspect real files and infer data formats/columns
+   before assuming a schema.
+3. If papers or web-search context are provided, include a literature-evidence step
+   before final interpretation.
+4. Figure/statistics planning should happen before plotting so the code has a target.
+5. Each code step should leave reproducible artifacts in the output directory:
+   scripts, tables, figures, logs, or markdown notes.
+6. Final step is result verification and Markdown paper/report drafting.
+7. Aim for 5-8 total steps — avoid over-splitting.
 """
 
 
@@ -128,11 +135,14 @@ def _parse_plan(raw: str) -> List[PlanStep]:
 
 
 def _fallback_plan() -> List[PlanStep]:
-    """Default 3-step plan when LLM parsing fails."""
+    """Default science workflow when LLM parsing fails."""
     return [
-        PlanStep(1, "Prepare data and verify format", "code", "Data loaded"),
-        PlanStep(2, "Implement core processing", "code", "Processing result"),
-        PlanStep(3, "Visualize and output results", "code", "Result figures"),
+        PlanStep(1, "Inspect project files and infer data schemas", "code", "Data inventory and schema notes"),
+        PlanStep(2, "Assess feasible research directions", "code", "Research direction notes"),
+        PlanStep(3, "Plan scientific questions and hypotheses", "qa", "Question and hypothesis plan"),
+        PlanStep(4, "Plan figures and statistical tests", "code", "Figure/statistics plan"),
+        PlanStep(5, "Compute statistics and generate figures", "code", "Tables and figures"),
+        PlanStep(6, "Verify results for paper synthesis", "code", "Verification notes"),
     ]
 
 

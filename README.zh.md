@@ -70,7 +70,7 @@ SAGE 是集**自然语言交互**、**智能震相拾取**、**统计分析**、
 | 🔗 **震相关联** | FastLink / REAL / Gamma 多方法，将台站拾取结果自动关联为地震事件 |
 | 🧭 **极性分析** | P 波初动极性自动判断 |
 | 📊 **地震统计** | b 值估算（MLE/LSQ）、F-M 分布图、时序与空间分布分析 |
-| 🧑‍💻 **代码生成执行** | LLM 生成 Python 代码 + 沙箱安全执行 + 内置地震学工具包，串联多个技能步骤 |
+| 🧑‍💻 **代码生成执行** | 内置 CodeEngine 负责沙箱 Python/GMT 科学脚本；Aider 作为仓库级代码后端用于修 bug、重构和多文件协同修改；OpenHands 可作为实验后端 |
 | 🗺️ **GMT 地图绘制** | 调用 GMT6 绘制震中图、台站图、地形图、震源机制球，图像与脚本均可下载 |
 | 🤖 **自主 Agent** | 读入论文 → 理解方法 → 自主规划 → 逐步编程实现，每步自动重试 |
 | 📚 **知识库 RAG** | BGE-M3 向量化 + FAISS 检索，持久化存储，批量 PDF 入库与文献问答 |
@@ -468,6 +468,14 @@ python seismic_cli.py run "对 /data/wave.mseed 做 1-10Hz 带通滤波并画图
 python seismic_cli.py run "计算震源参数，震中距 50km" -d /data/waves/
 python seismic_cli.py run "画走时曲线，距离 0-30°，深度 10km" --show-code
 ```
+
+SAGE 的编程能力分为两个互补后端：
+
+- **内置 CodeEngine**：默认后端，适合科学数据脚本、GMT/Python 绘图、mini test 和可复现中间产物。
+- **Aider 后端**：作为 SAGE 内部仓库级 Coding Backend，用于修复 bug、重构、多文件编辑和 Git 工作流。SAGE 会优先加载项目内置源码 `third_party/aider`，通过 Aider Python scripting API 调用，必要时退回已安装包或 CLI。安装项目依赖 `pip install -r requirements.txt` 后，在 `Config -> Coding Agent` 中选择 **Aider API / CLI**。
+- **OpenHands 后端**：实验性 CLI 后端，适合更重的 agentic development 工作流。
+
+代码后端配置写入项目目录下的 `seismo_rag/project_config.json`，便于检查、选择性纳入版本控制或清理。
 
 ### 自主 Agent
 
@@ -1549,6 +1557,10 @@ pip install FlagEmbedding sentence-transformers
 <p align="center">
   <sub>Built with ❤️ for the seismology community</sub>
 </p>
+
+## 致谢
+
+SAGE 的 Aider 集成后端基于开源项目 [Aider](https://github.com/Aider-AI/aider)，它为终端和 Git 工作流提供 AI 结对编程能力。SAGE 已将 Aider 源码放在 `third_party/aider`，优先通过 Python scripting API 集成，并保留已安装包和 CLI 退路以增强兼容性。实验性的 OpenHands 后端面向 [OpenHands](https://github.com/OpenHands/OpenHands) 的 CLI 工作流。感谢这些开源社区为更强的 coding-agent 能力提供基础。
 
 ## 联系方式
 

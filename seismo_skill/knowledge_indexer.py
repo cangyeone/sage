@@ -3,7 +3,7 @@ knowledge_indexer.py — seismo_skill/knowledge/ 目录文档索引器
 
 功能
 ----
-1. 扫描 seismo_skill/knowledge/ 下的文档（多层级目录，支持 PDF/DOCX/TXT/MD/RST/HTML）
+1. 扫描 seismo_skill/knowledge/ 下的文档（多层级目录，支持 PDF/DOC/DOCX/TXT/MD/RST/HTML）
 2. 维护 manifest（seismo_rag/dir_manifest.json）检测新增/修改/删除
 3. 每个顶级子文件夹作为一个"项目"，统一索引为 RAG，并可生成一个文件夹型 Skill
 4. knowledge/ 根目录下的单个文件也会作为独立文档项处理，并可生成一个文件夹型 Skill
@@ -38,18 +38,18 @@ from typing import Callable, Dict, List, Optional, Tuple
 # ── 常量 ───────────────────────────────────────────────────────────────────────
 
 # 支持的文档格式
-SUPPORTED_EXTS = {".pdf", ".docx", ".txt", ".md", ".rst", ".html", ".htm"}
+SUPPORTED_EXTS = {".pdf", ".doc", ".docx", ".txt", ".md", ".rst", ".html", ".htm"}
 
 # Skill Builder Agent 可读取的源码/示例格式。RAG 索引仍只使用 SUPPORTED_EXTS；
 # 这里额外纳入脚本，是为了让 LLM 能从文档示例中整理出可执行子技能。
 SKILL_SOURCE_EXTS = SUPPORTED_EXTS | {
     ".sh", ".bash", ".zsh", ".csh", ".py", ".m", ".jl", ".r",
-    ".gmt", ".cpt", ".dat", ".csv", ".tsv",
+    ".gmt", ".cpt", ".dat", ".csv", ".tsv", ".sty", ".tex", ".bib",
 }
 
 CODE_EXAMPLE_EXTS = {
     ".sh", ".bash", ".zsh", ".csh", ".py", ".m", ".jl", ".r",
-    ".gmt", ".cpt", ".dat", ".csv", ".tsv",
+    ".gmt", ".cpt", ".dat", ".csv", ".tsv", ".sty", ".tex", ".bib",
 }
 
 # 跳过格式（二进制、脚本、图片等不适合 RAG 的文件）
@@ -300,6 +300,26 @@ class BuildResult:
         return "，".join(parts)
 
 
+def _source_manifest_for_skill(files: List[Path], source_root: Path) -> Dict[str, dict]:
+    """Return lightweight fingerprints for incremental docs-to-SKILL builds."""
+    out: Dict[str, dict] = {}
+    for path in files:
+        try:
+            stat = path.stat()
+            h = hashlib.sha256()
+            with path.open("rb") as f:
+                for block in iter(lambda: f.read(1024 * 1024), b""):
+                    h.update(block)
+            out[str(_safe_relpath(path, source_root))] = {
+                "size": stat.st_size,
+                "mtime": stat.st_mtime,
+                "sha256": h.hexdigest(),
+            }
+        except Exception:
+            continue
+    return out
+
+
 # ── 主类 ──────────────────────────────────────────────────────────────────────
 
 class KnowledgeIndexer:
@@ -474,14 +494,17 @@ class KnowledgeIndexer:
                     current_rel.add(rel)
                     entry = self._manifest.get(rel)
 
-                    if entry is None or entry.get("status") != "indexed":
+                    if entry is None:
+                        result.new.append(path)
+                        has_new = True
+                    elif entry.get("status") == "failed":
+                        result.failed.append(rel)
+                        has_new = True
+                    elif entry.get("status") != "indexed":
                         result.new.append(path)
                         has_new = True
                     elif self._is_changed(path, entry):
                         result.modified.append(path)
-                        has_new = True
-                    elif entry.get("status") == "failed":
-                        result.failed.append(rel)
                         has_new = True
                     else:
                         # 验证 doc 是否真的存在于 KB（防止 KB 被清空后 manifest 仍标记 indexed）
@@ -775,6 +798,8 @@ class KnowledgeIndexer:
         stop_event=None,
         use_llm: bool = True,
         overwrite: bool = True,
+        rag_assist: bool = True,
+        rag_cluster_target: int = 0,
     ) -> BuildResult:
         """
         将 seismo_skill/docs/ 下的每个顶级文档项转换为一个文件夹型 Skill。
@@ -784,20 +809,21 @@ class KnowledgeIndexer:
         - 根目录单文件：一个 PDF/MD/DOCX/TXT/HTML 文件 = 一个 Skill。
 
         目标格式：
-            seismo_skill/skills/<skill_name>/SKILL.md
-            seismo_skill/skills/<skill_name>/references/*.md
-            seismo_skill/skills/<skill_name>/agents/openai.yaml
+            seismo_skill/user_skills/<skill_name>/SKILL.md
+            seismo_skill/user_skills/<skill_name>/references/*.md
+            seismo_skill/user_skills/<skill_name>/agents/openai.yaml
 
-        这个路径不依赖 RAG 索引，适合把文档固化为可被其它 Skill 系统复用的
-        通用技能包。若同名技能已经存在且不是本构建器生成的，会自动追加后缀，
-        避免覆盖手写内置技能。
+        这个路径把文档固化为可被其它 Skill 系统复用的通用技能包。
+        RAG/embedding 只作为辅助：用于向量化判断相似片段是否应合并到
+        同一个子技能，而不是作为最终产物类型。若同名技能已经存在且不是
+        本构建器生成的，会自动追加后缀，避免覆盖手写用户技能。
         """
         def _log(msg: str):
             if progress_cb:
                 progress_cb(msg)
 
         result = BuildResult()
-        _BUILTIN_SKILL_DIR.mkdir(parents=True, exist_ok=True)
+        _USER_SKILL_DIR.mkdir(parents=True, exist_ok=True)
 
         try:
             projects = [
@@ -820,7 +846,12 @@ class KnowledgeIndexer:
             _log("ℹ️  seismo_skill/docs 下暂无支持的文档文件或文件夹，未生成文件夹型 Skill。")
             return result
 
-        _log(f"📦 将 {len(projects)} 个文档项转换为文件夹型 Skill…")
+        assist_label = "开启" if rag_assist else "关闭"
+        _log(f"📦 将 {len(projects)} 个文档项转换为 OpenAI-style 文件夹 Skill…")
+        _log(f"   🔎 RAG/向量辅助：{assist_label}")
+        if rag_assist:
+            cluster_hint = rag_cluster_target if rag_cluster_target > 0 else "自动建议"
+            _log(f"   🧭 目标主题簇数：{cluster_hint}")
         for idx, proj_path in enumerate(projects, 1):
             if stop_event and stop_event.is_set():
                 result.interrupted = True
@@ -836,6 +867,21 @@ class KnowledgeIndexer:
             if not files:
                 result.skipped.append(proj_name)
                 _log("   ⚠ 未发现支持的文档文件，跳过。")
+                continue
+
+            source_manifest = _source_manifest_for_skill(files, source_root)
+            proj_entry = self._proj_manifest.get(proj_name, {})
+            existing_skill = str(proj_entry.get("skill_name") or "").strip()
+            existing_path = Path(str(proj_entry.get("skill_path") or "")) if proj_entry.get("skill_path") else None
+            if (
+                existing_skill
+                and existing_path
+                and (existing_path / "SKILL.md").exists()
+                and proj_entry.get("generated_by") == _DOC_SKILL_GENERATOR
+                and proj_entry.get("source_manifest") == source_manifest
+            ):
+                result.skipped.append(proj_name)
+                _log(f"   ✅ SKILL 已是最新，跳过增量重建：{existing_skill}")
                 continue
 
             docs = []
@@ -898,20 +944,32 @@ class KnowledgeIndexer:
                 target = _resolve_generated_skill_target(skill_name, overwrite=overwrite)
                 final_name = target.name
                 spec["name"] = final_name
-                self._write_folder_skill(target, proj_name, source_root, files, docs, spec, _log, use_llm=use_llm)
+                self._write_folder_skill(
+                    target,
+                    proj_name,
+                    source_root,
+                    files,
+                    docs,
+                    spec,
+                    _log,
+                    use_llm=use_llm,
+                    rag_assist=rag_assist,
+                    rag_cluster_target=rag_cluster_target,
+                )
                 self._proj_manifest[proj_name] = {
                     "proj_name": proj_name,
                     "skill_name": final_name,
                     "skill_path": str(target),
                     "skill_kind": "single_file" if is_single_file else "folder",
-                    "skill_location": "builtin",
+                    "skill_location": "user",
                     "generated_by": _DOC_SKILL_GENERATOR,
                     "generated_at": datetime.now().isoformat(timespec="seconds"),
                     "source_path": str(proj_path),
+                    "source_manifest": source_manifest,
                 }
                 self._save_proj_manifest()
                 result.skills_generated.append(final_name)
-                _log(f"   ✅ 文件夹型 Skill 已生成：{final_name}")
+                _log(f"   ✅ OpenAI-style 文件夹 Skill 已生成：{final_name}")
             except Exception as exc:
                 result.failed.append(proj_name)
                 _log(f"   ❌ 生成失败：{exc}")
@@ -930,12 +988,15 @@ class KnowledgeIndexer:
         spec: dict,
         log: Callable[[str], None],
         use_llm: bool = True,
+        rag_assist: bool = True,
+        rag_cluster_target: int = 0,
     ) -> None:
-        if target.exists():
-            shutil.rmtree(target)
-        (target / "references").mkdir(parents=True, exist_ok=True)
-        (target / "subskills").mkdir(parents=True, exist_ok=True)
-        (target / "agents").mkdir(parents=True, exist_ok=True)
+        work_target = target.with_name(f".{target.name}.building")
+        if work_target.exists():
+            shutil.rmtree(work_target, ignore_errors=True)
+        (work_target / "references").mkdir(parents=True, exist_ok=True)
+        (work_target / "subskills").mkdir(parents=True, exist_ok=True)
+        (work_target / "agents").mkdir(parents=True, exist_ok=True)
 
         ref_lines = [
             f"# 转换清单：{proj_name}",
@@ -950,76 +1011,90 @@ class KnowledgeIndexer:
         for path in files:
             rel = _safe_relpath(path, proj_path)
             ref_lines.append(f"- `{rel}`")
-        (target / "references" / "manifest.md").write_text("\n".join(ref_lines) + "\n", encoding="utf-8")
+            ref_lines.append(f"  - Absolute path: `{path}`")
+        try:
+            (work_target / "references" / "manifest.md").write_text("\n".join(ref_lines) + "\n", encoding="utf-8")
 
-        skill_plan = {}
-        if use_llm:
-            log("   🧠 Skill Builder Agent：读取文档并规划层级 SKILL 结构…")
-            skill_plan = _llm_hierarchical_skill_plan(proj_name, docs) if docs else {}
-            if skill_plan.get("_error"):
-                log(f"   ❌ Skill Builder Agent 失败：{skill_plan.get('_error')}")
-                if skill_plan.get("_raw_preview"):
-                    log(f"   🧾 LLM 原始输出预览：{skill_plan.get('_raw_preview')}")
-        outline_lines = [f"# {proj_name} 层级技能资料", ""]
-        ref_count = 0
+            skill_plan = {}
+            if use_llm:
+                log("   🧠 Skill Builder Agent：读取文档并规划层级 SKILL 结构…")
+                skill_plan = _llm_hierarchical_skill_plan(
+                    proj_name,
+                    docs,
+                    rag_assist=rag_assist,
+                    rag_cluster_target=rag_cluster_target,
+                    log=log,
+                ) if docs else {}
+                if skill_plan.get("_error"):
+                    log(f"   ❌ Skill Builder Agent 失败：{skill_plan.get('_error')}")
+                    if skill_plan.get("_raw_preview"):
+                        log(f"   🧾 LLM 原始输出预览：{skill_plan.get('_raw_preview')}")
+            outline_lines = [f"# {proj_name} 层级技能资料", ""]
+            ref_count = 0
 
-        planned_units = _filter_usable_subskills(
-            _merge_similar_subskills(skill_plan.get("subskills") or skill_plan.get("references") or [])
-        )
-        if use_llm and not planned_units:
-            detail = skill_plan.get("_error") if isinstance(skill_plan, dict) else ""
-            raise RuntimeError(
-                "Skill Builder Agent 未能生成有效功能型子技能；已停止，避免生成不可用的机械切分 SKILL。"
-                + (f"原因：{detail}。" if detail else "")
-                + "请检查 LLM 配置或换用更强模型后重试。"
-            )
-        if planned_units:
-            outline_lines.append("## Skill Builder Agent 规划的子技能")
-            for unit_idx, unit in enumerate(planned_units[:80], 1):
-                ref_count += 1
-                title = str(unit.get("title_zh") or unit.get("title") or f"章节 {unit_idx}").strip()
-                slug = _ascii_slug(str(unit.get("slug") or ""), fallback="")
-                if not slug:
-                    slug = _fallback_english_slug(str(unit.get("title_en") or title), fallback=f"subskill_{unit_idx}")
-                ref_name = f"{unit_idx:02d}_{slug}.md"
-                outline_lines.append(f"- `subskills/{ref_name}`：{title}")
-                body = _render_llm_subskill(unit)
-                (target / "subskills" / ref_name).write_text(body, encoding="utf-8")
-            outline_lines.append("")
-        else:
-            log("   ⚠ LLM 规划失败，回退为功能聚类拆分。")
-            fallback_units = []
-            for doc_idx, doc in enumerate(docs[:60], 1):
-                units = _split_document_into_skill_units(doc["path"], doc["text"])
-                for unit_idx, unit in enumerate(units, 1):
-                    unit.setdefault("source_evidence", [f"{doc['path']}：{unit.get('title_zh') or unit.get('title') or unit_idx}"])
-                    fallback_units.append(unit)
-            fallback_units = _filter_usable_subskills(_merge_similar_subskills(fallback_units))
-            outline_lines.append("## 功能聚类生成的子技能")
-            if not fallback_units:
-                outline_lines.append("- 未能抽取有效内容")
-            for unit_idx, unit in enumerate(fallback_units[:80], 1):
-                ref_count += 1
-                title = str(unit.get("title_zh") or unit.get("title") or f"子技能 {unit_idx}").strip()
-                slug = _ascii_slug(str(unit.get("slug") or ""), fallback="")
-                if not slug:
-                    slug = _fallback_english_slug(str(unit.get("title_en") or title), fallback=f"subskill_{unit_idx}")
-                ref_name = f"{unit_idx:02d}_{slug}.md"
-                outline_lines.append(f"- `subskills/{ref_name}`：{title}")
-                body = _render_converted_reference("merged_sources", unit)
-                (target / "subskills" / ref_name).write_text(body, encoding="utf-8")
-            outline_lines.append("")
-        (target / "references" / "outline.md").write_text("\n".join(outline_lines).strip() + "\n", encoding="utf-8")
-        log(f"   🧩 已生成 {ref_count} 个子技能 Markdown 文档")
+            raw_units = skill_plan.get("subskills") or skill_plan.get("references") or []
+            planned_units = _filter_usable_subskills(_merge_similar_subskills(raw_units, log=log, use_embedding=rag_assist))
+            if use_llm and not planned_units:
+                detail = skill_plan.get("_error") if isinstance(skill_plan, dict) else ""
+                raise RuntimeError(
+                    "Skill Builder Agent 未能生成有效功能型子技能；已停止，避免生成不可用的机械切分 SKILL。"
+                    + (f"原因：{detail}。" if detail else "")
+                    + "请检查 LLM 配置或换用更强模型后重试。"
+                )
+            if planned_units:
+                outline_lines.append("## Skill Builder Agent 规划的子技能")
+                for unit_idx, unit in enumerate(planned_units[:80], 1):
+                    ref_count += 1
+                    title = str(unit.get("title_zh") or unit.get("title") or f"章节 {unit_idx}").strip()
+                    slug = _ascii_slug(str(unit.get("slug") or ""), fallback="")
+                    if not slug:
+                        slug = _fallback_english_slug(str(unit.get("title_en") or title), fallback=f"subskill_{unit_idx}")
+                    ref_name = f"{unit_idx:02d}_{slug}.md"
+                    outline_lines.append(f"- `subskills/{ref_name}`：{title}")
+                    body = _render_llm_subskill(unit)
+                    (work_target / "subskills" / ref_name).write_text(body, encoding="utf-8")
+                outline_lines.append("")
+            else:
+                log("   ⚠ LLM 规划失败，回退为功能聚类拆分。")
+                fallback_units = []
+                for doc_idx, doc in enumerate(docs[:60], 1):
+                    units = _split_document_into_skill_units(doc["path"], doc["text"])
+                    for unit_idx, unit in enumerate(units, 1):
+                        unit.setdefault("source_evidence", [f"{doc['path']}：{unit.get('title_zh') or unit.get('title') or unit_idx}"])
+                        fallback_units.append(unit)
+                fallback_units = _filter_usable_subskills(_merge_similar_subskills(fallback_units, log=log, use_embedding=rag_assist))
+                outline_lines.append("## 功能聚类生成的子技能")
+                if not fallback_units:
+                    outline_lines.append("- 未能抽取有效内容")
+                for unit_idx, unit in enumerate(fallback_units[:80], 1):
+                    ref_count += 1
+                    title = str(unit.get("title_zh") or unit.get("title") or f"子技能 {unit_idx}").strip()
+                    slug = _ascii_slug(str(unit.get("slug") or ""), fallback="")
+                    if not slug:
+                        slug = _fallback_english_slug(str(unit.get("title_en") or title), fallback=f"subskill_{unit_idx}")
+                    ref_name = f"{unit_idx:02d}_{slug}.md"
+                    outline_lines.append(f"- `subskills/{ref_name}`：{title}")
+                    body = _render_converted_reference("merged_sources", unit)
+                    (work_target / "subskills" / ref_name).write_text(body, encoding="utf-8")
+                outline_lines.append("")
+            (work_target / "references" / "outline.md").write_text("\n".join(outline_lines).strip() + "\n", encoding="utf-8")
+            log(f"   🧩 已生成 {ref_count} 个子技能 Markdown 文档")
 
-        if skill_plan:
-            spec = _merge_hierarchical_plan_into_spec(spec, skill_plan)
-            audit = _skill_builder_audit(skill_plan, ref_count)
-            (target / "references" / "builder_audit.md").write_text(audit, encoding="utf-8")
-        skill_md = _render_folder_skill_md(proj_name, spec, docs)
-        (target / "SKILL.md").write_text(skill_md, encoding="utf-8")
-        (target / "agents" / "openai.yaml").write_text(_render_agent_yaml(spec), encoding="utf-8")
-        log(f"   📁 写入：{target}")
+            if skill_plan:
+                spec = _merge_hierarchical_plan_into_spec(spec, skill_plan)
+                audit = _skill_builder_audit(skill_plan, ref_count)
+                (work_target / "references" / "builder_audit.md").write_text(audit, encoding="utf-8")
+            skill_md = _render_folder_skill_md(proj_name, spec, docs)
+            (work_target / "SKILL.md").write_text(skill_md, encoding="utf-8")
+            (work_target / "agents" / "openai.yaml").write_text(_render_agent_yaml(spec), encoding="utf-8")
+
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.move(str(work_target), str(target))
+            log(f"   📁 写入：{target}")
+        except Exception:
+            shutil.rmtree(work_target, ignore_errors=True)
+            raise
 
     # ── 清理已删除文件 ────────────────────────────────────────────────────────
 
@@ -1052,6 +1127,7 @@ class KnowledgeIndexer:
                 if proj_entry and proj_entry.get("skill_name"):
                     sp = _USER_SKILL_DIR / f"{proj_entry['skill_name']}.md"
                     sp.unlink(missing_ok=True)
+                    delete_generated_builtin_skill(proj_entry["skill_name"])
                 self._save_proj_manifest()
 
         self._save_manifest()
@@ -1099,7 +1175,17 @@ class KnowledgeIndexer:
                     continue
                 rel = str(item.relative_to(self.knowledge_dir))
                 entry = self._manifest.get(rel, {})
-                if rel in new_rels:
+                proj_entry = self._proj_manifest.get(item.stem, {})
+                source_manifest = _source_manifest_for_skill([item], item.parent)
+                skill_name = entry.get("skill_name", "") or proj_entry.get("skill_name", "")
+                skill_current = bool(
+                    skill_name
+                    and proj_entry.get("generated_by") == _DOC_SKILL_GENERATOR
+                    and proj_entry.get("source_manifest") == source_manifest
+                )
+                if skill_current and entry.get("status") != "indexed":
+                    status = "skill"
+                elif rel in new_rels:
                     status = "new"
                 elif rel in modified_rels:
                     status = "modified"
@@ -1109,7 +1195,6 @@ class KnowledgeIndexer:
                     status = "failed"
                 else:
                     status = "new"
-                proj_entry = self._proj_manifest.get(item.stem, {})
                 projects.append({
                     "name": item.name,
                     "is_folder": False,
@@ -1118,7 +1203,7 @@ class KnowledgeIndexer:
                     "indexed_files": 1 if entry.get("status") == "indexed" else 0,
                     "failed_files": 1 if entry.get("status") == "failed" else 0,
                     "status": status,
-                    "skill_name": entry.get("skill_name", "") or proj_entry.get("skill_name", ""),
+                    "skill_name": skill_name,
                     "skill_generated_at": proj_entry.get("generated_at", ""),
                     "files": [{
                         "name": item.name,
@@ -1138,8 +1223,19 @@ class KnowledgeIndexer:
                 failed  = sum(1 for r in sel_rels
                               if self._manifest.get(r, {}).get("status") == "failed")
                 has_new = any(r in new_rels or r in modified_rels for r in sel_rels)
+                proj_entry = self._proj_manifest.get(item.name, {})
+                source_manifest = _source_manifest_for_skill(selected, item)
+                skill_current = bool(
+                    proj_entry.get("skill_name")
+                    and proj_entry.get("generated_by") == _DOC_SKILL_GENERATOR
+                    and proj_entry.get("source_manifest") == source_manifest
+                )
 
-                if indexed == 0:
+                if skill_current and indexed == 0 and failed == 0:
+                    status = "skill"
+                elif failed > 0 and indexed == 0 and not has_new:
+                    status = "failed"
+                elif indexed == 0:
                     status = "new"
                 elif has_new:
                     status = "modified" if indexed > 0 else "new"
@@ -1148,7 +1244,6 @@ class KnowledgeIndexer:
                 else:
                     status = "indexed"
 
-                proj_entry = self._proj_manifest.get(item.name, {})
                 # 收集该文件夹下各文件的状态，供前端展开显示
                 folder_files = []
                 for p in selected:
@@ -1175,7 +1270,7 @@ class KnowledgeIndexer:
 
         total_indexed = sum(1 for v in self._manifest.values() if v.get("status") == "indexed")
         total_failed  = sum(1 for v in self._manifest.values() if v.get("status") == "failed")
-        pending_projects = sum(1 for p in projects if p["status"] in ("new", "partial", "modified"))
+        pending_projects = sum(1 for p in projects if p["status"] in ("new", "partial", "modified", "failed"))
 
         return {
             "knowledge_dir": str(self.knowledge_dir),
@@ -1347,7 +1442,7 @@ def _read_source_text(path: Path, max_chars: int = 8000) -> str:
     """Best-effort text extraction for docs-to-skill generation."""
     ext = path.suffix.lower()
     try:
-        if ext in {".md", ".txt", ".rst"}:
+        if ext in {".md", ".txt", ".rst", ".sty", ".tex", ".bib"}:
             return path.read_text(encoding="utf-8", errors="ignore")[:max_chars]
         if ext in {".sh", ".bash", ".zsh", ".csh", ".py", ".m", ".jl", ".r", ".gmt", ".cpt", ".dat", ".csv", ".tsv"}:
             return path.read_text(encoding="utf-8", errors="ignore")[:max_chars]
@@ -1355,6 +1450,19 @@ def _read_source_text(path: Path, max_chars: int = 8000) -> str:
             return _strip_html(path.read_text(encoding="utf-8", errors="ignore"))[:max_chars]
         if ext == ".pdf":
             return _read_pdf_text_best_effort(path, max_chars=max_chars)
+        if ext == ".doc":
+            try:
+                proc = subprocess.run(
+                    ["textutil", "-convert", "txt", "-stdout", str(path)],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=25,
+                )
+                if proc.stdout.strip():
+                    return proc.stdout[:max_chars]
+            except Exception:
+                return ""
         if ext == ".docx":
             try:
                 from docx import Document  # type: ignore
@@ -1612,19 +1720,24 @@ def _llm_folder_skill_spec(proj_name: str, docs: List[dict]) -> dict:
         snippets.append(
             f"FILE: {doc['path']}\nHEADINGS: {headings}\nTEXT:\n{doc['text'][:1600]}"
         )
-    prompt = f"""You convert a documentation folder into a portable Codex-style Skill.
+    prompt = f"""You convert a documentation folder into a portable OpenAI/Codex-style Skill.
 
 Folder name: {proj_name}
 
-Return ONLY compact JSON with these keys:
-name: lowercase machine-safe skill name.
-display_name: human readable name.
-description: trigger description. Say when this skill should be used.
-keywords: array of 6-14 technical keywords.
-when_to_use: array of concrete situations.
-workflow: array of 4-8 concise steps.
-validation: array of checks/tests the agent should run.
-example_prompts: array of realistic prompts.
+Use this RAW TEXT format. Do not output JSON.
+
+SKILL_NAME: lowercase_machine_safe_name
+DISPLAY_NAME: human readable bilingual name
+DESCRIPTION: trigger description. Say when this skill should be used.
+KEYWORDS: keyword1, keyword2, keyword3
+WHEN_TO_USE:
+- concrete situation
+WORKFLOW:
+- concise step
+VALIDATION:
+- check or test the agent should run
+EXAMPLE_PROMPTS:
+- realistic user prompt
 
 Make the skill generic and reusable by other systems. Do not mention RAG as a requirement.
 
@@ -1641,9 +1754,39 @@ Documentation excerpts:
             get_llm_config(),
             max_tokens=1200,
         )
-        return _normalize_folder_skill_spec(_json_from_text(raw), proj_name, docs)
+        parsed = _raw_folder_skill_spec_from_text(raw)
+        if not parsed:
+            parsed = _json_from_text(raw)
+        return _normalize_folder_skill_spec(parsed, proj_name, docs)
     except Exception:
         return {}
+
+
+def _raw_folder_skill_spec_from_text(raw: str) -> dict:
+    text = str(raw or "").strip()
+    if not text:
+        return {}
+    out: dict = {}
+    field_map = {
+        "SKILL_NAME": "name",
+        "DISPLAY_NAME": "display_name",
+        "DESCRIPTION": "description",
+    }
+    for raw_key, key in field_map.items():
+        m = re.search(rf"(?im)^\s*{raw_key}\s*[:：]\s*(.+)$", text)
+        if m:
+            out[key] = m.group(1).strip()
+    for raw_key, key in {
+        "KEYWORDS": "keywords",
+        "WHEN_TO_USE": "when_to_use",
+        "WORKFLOW": "workflow",
+        "VALIDATION": "validation",
+        "EXAMPLE_PROMPTS": "example_prompts",
+    }.items():
+        m = re.search(rf"(?ims)^\s*{raw_key}\s*[:：]\s*(.*?)(?=^\s*[A-Z_]+\s*[:：]|\Z)", text)
+        if m:
+            out[key] = _parse_raw_list(m.group(1))
+    return out
 
 
 def _fallback_folder_skill_spec(proj_name: str, docs: List[dict]) -> dict:
@@ -1794,6 +1937,189 @@ def _embedding_merge_hints(docs: List[dict], max_docs: int = 36, top_pairs: int 
     return "\n".join(lines)
 
 
+def _suggest_skill_cluster_target(n_docs: int) -> int:
+    """Suggest a practical topic-cluster count for large documentation sets."""
+    if n_docs <= 0:
+        return 0
+    if n_docs <= 24:
+        return max(3, min(8, n_docs))
+    # sqrt-like growth keeps LLM calls bounded while preserving major topics.
+    try:
+        import math
+        suggested = int(round(math.sqrt(n_docs) * 1.25))
+    except Exception:
+        suggested = 20
+    return max(8, min(36, suggested))
+
+
+def _skill_doc_semantic_text(doc: dict) -> str:
+    text = str(doc.get("text") or "")
+    parts = [
+        str(doc.get("path") or ""),
+        " ".join(doc.get("headings") or []),
+        " ".join(_extract_command_like_items(text, limit=18)),
+        " ".join(_extract_parameter_like_items(text, limit=18)),
+        text[:2200],
+    ]
+    return "\n".join(p for p in parts if p).strip()[:5000]
+
+
+def _semantic_doc_batches_for_skill_builder(
+    docs: List[dict],
+    rag_assist: bool,
+    fallback_batch_size: int,
+    cluster_target: int = 0,
+    log: Optional[Callable[[str], None]] = None,
+) -> List[dict]:
+    """Group docs into LLM batches; use embedding + DBSCAN for large sets."""
+    docs = [d for d in docs if isinstance(d, dict)]
+    if not docs:
+        return []
+    fallback_batch_size = max(4, fallback_batch_size)
+    if not rag_assist or len(docs) <= fallback_batch_size:
+        return [
+            {"label": f"batch_{i // fallback_batch_size + 1}", "docs": docs[i:i + fallback_batch_size]}
+            for i in range(0, len(docs), fallback_batch_size)
+        ]
+
+    target = cluster_target if cluster_target and cluster_target > 0 else _suggest_skill_cluster_target(len(docs))
+    try:
+        clusters = _dbscan_cluster_docs(docs, target_clusters=target)
+    except Exception:
+        clusters = []
+
+    if not clusters:
+        if log:
+            log("   ⚠ DBSCAN 文档聚类不可用，回退为顺序分批。")
+        return [
+            {"label": f"batch_{i // fallback_batch_size + 1}", "docs": docs[i:i + fallback_batch_size]}
+            for i in range(0, len(docs), fallback_batch_size)
+        ]
+
+    batches: List[dict] = []
+    try:
+        max_docs_per_cluster = int(os.environ.get("SEISMICX_SKILL_MAX_DOCS_PER_CLUSTER", "36"))
+    except Exception:
+        max_docs_per_cluster = 36
+    max_docs_per_cluster = max(fallback_batch_size, max_docs_per_cluster)
+    for idx, cluster_docs in enumerate(clusters, 1):
+        if len(cluster_docs) <= max_docs_per_cluster:
+            label = _cluster_label_from_docs(cluster_docs, idx)
+            batches.append({"label": label, "docs": cluster_docs})
+            continue
+        for part_no, start in enumerate(range(0, len(cluster_docs), max_docs_per_cluster), 1):
+            chunk = cluster_docs[start:start + max_docs_per_cluster]
+            label = f"{_cluster_label_from_docs(chunk, idx)} part {part_no}"
+            batches.append({"label": label, "docs": chunk})
+
+    if log:
+        log(f"   🔎 DBSCAN 文档聚类：{len(docs)} 个文档 → {len(clusters)} 个主题簇，LLM 批次 {len(batches)} 个（目标 {target}）")
+    return batches
+
+
+def _dbscan_cluster_docs(docs: List[dict], target_clusters: int = 20) -> List[List[dict]]:
+    if len(docs) <= 1:
+        return [docs]
+    texts = [_skill_doc_semantic_text(doc) for doc in docs]
+    try:
+        _web = Path(__file__).parent.parent / "web_app"
+        if str(_web) not in sys.path:
+            sys.path.insert(0, str(_web))
+        from rag_backends import EmbeddingModel  # type: ignore
+        import numpy as np  # type: ignore
+
+        vecs = EmbeddingModel.get().encode(texts, batch_size=16)
+        vecs = np.asarray(vecs, dtype="float32")
+        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+        vecs = vecs / np.maximum(norms, 1e-8)
+        sims = vecs @ vecs.T
+    except Exception:
+        return []
+
+    target_clusters = max(2, min(max(2, len(docs)), int(target_clusters or _suggest_skill_cluster_target(len(docs)))))
+    best_labels = None
+    best_score = 10**9
+    # eps is cosine distance; larger eps merges more documents.
+    for eps in [0.18, 0.22, 0.26, 0.30, 0.34, 0.38, 0.42, 0.46, 0.50, 0.56, 0.62]:
+        labels = _dbscan_labels_from_similarity(sims, eps=eps, min_samples=2)
+        n_clusters = len({label for label in labels if label >= 0})
+        n_noise = sum(1 for label in labels if label < 0)
+        effective = n_clusters + max(1, (n_noise + 7) // 8 if n_noise else 0)
+        score = abs(effective - target_clusters) + 0.05 * n_noise
+        if score < best_score:
+            best_labels = labels
+            best_score = score
+
+    if best_labels is None:
+        return []
+
+    grouped: Dict[int, List[dict]] = {}
+    noise: List[dict] = []
+    order: List[int] = []
+    for doc, label in zip(docs, best_labels):
+        if label < 0:
+            noise.append(doc)
+            continue
+        if label not in grouped:
+            grouped[label] = []
+            order.append(label)
+        grouped[label].append(doc)
+
+    clusters = [grouped[label] for label in order if grouped.get(label)]
+    # Preserve noise instead of discarding rare but useful topics.
+    if noise:
+        chunk_size = max(4, min(10, (len(noise) + max(1, target_clusters // 2) - 1) // max(1, target_clusters // 2)))
+        clusters.extend(noise[i:i + chunk_size] for i in range(0, len(noise), chunk_size))
+
+    return [cluster for cluster in clusters if cluster]
+
+
+def _dbscan_labels_from_similarity(sims, eps: float, min_samples: int = 2) -> List[int]:
+    threshold = 1.0 - float(eps)
+    n = int(getattr(sims, "shape", [0])[0])
+    labels = [-99] * n
+    cluster_id = 0
+
+    def neighbors(i: int) -> List[int]:
+        return [j for j in range(n) if float(sims[i, j]) >= threshold]
+
+    for i in range(n):
+        if labels[i] != -99:
+            continue
+        nbrs = neighbors(i)
+        if len(nbrs) < min_samples:
+            labels[i] = -1
+            continue
+        labels[i] = cluster_id
+        seeds = [j for j in nbrs if j != i]
+        while seeds:
+            j = seeds.pop()
+            if labels[j] == -1:
+                labels[j] = cluster_id
+            if labels[j] != -99:
+                continue
+            labels[j] = cluster_id
+            nbrs_j = neighbors(j)
+            if len(nbrs_j) >= min_samples:
+                for k in nbrs_j:
+                    if labels[k] in {-99, -1} and k not in seeds:
+                        seeds.append(k)
+        cluster_id += 1
+    return labels
+
+
+def _cluster_label_from_docs(docs: List[dict], idx: int) -> str:
+    tokens: Dict[str, int] = {}
+    for doc in docs[:12]:
+        text = _skill_doc_semantic_text(doc).lower()
+        for tok in re.findall(r"[a-zA-Z][a-zA-Z0-9_+-]{2,}|[\u4e00-\u9fff]{2,}", text):
+            if tok in {"the", "and", "for", "with", "文件", "标题线索"}:
+                continue
+            tokens[tok] = tokens.get(tok, 0) + 1
+    top = [k for k, _ in sorted(tokens.items(), key=lambda kv: (-kv[1], kv[0]))[:4]]
+    return f"cluster_{idx}: " + (", ".join(top) if top else "misc")
+
+
 def _lexical_merge_hints(texts: List[str], labels: List[str]) -> List[Tuple[float, str, str]]:
     def toks(s: str) -> set:
         return set(re.findall(r"[A-Za-z0-9_\-]+|[\u4e00-\u9fff]{2,}", s.lower()))
@@ -1915,17 +2241,35 @@ def _markdown_cache_file(path: Path, text: str) -> Path:
     return _SKILL_BUILDER_CACHE_DIR / "markdown" / f"{h.hexdigest()[:24]}.md"
 
 
-def _llm_hierarchical_skill_plan(proj_name: str, docs: List[dict]) -> dict:
+def _llm_hierarchical_skill_plan(
+    proj_name: str,
+    docs: List[dict],
+    rag_assist: bool = True,
+    rag_cluster_target: int = 0,
+    log: Optional[Callable[[str], None]] = None,
+) -> dict:
     """Skill Builder Agent: plan, design, generate, and self-check a hierarchical skill package."""
-    if len(docs) > 80 and os.environ.get("SEISMICX_SKILL_BUILDER_MODE", "map_reduce") != "single":
-        mapped = _llm_map_reduce_skill_plan(proj_name, docs)
+    mode = os.environ.get("SEISMICX_SKILL_BUILDER_MODE", "map_reduce").strip().lower()
+    try:
+        batch_size_hint = int(os.environ.get("SEISMICX_SKILL_BUILDER_BATCH_SIZE", "8"))
+    except Exception:
+        batch_size_hint = 8
+    # 默认采用小模型友好的 map-reduce：文档项稍多时先分批抽取功能，再用 RAG/embedding 合并。
+    if mode != "single" and len(docs) > max(4, batch_size_hint):
+        mapped = _llm_map_reduce_skill_plan(
+            proj_name,
+            docs,
+            rag_assist=rag_assist,
+            rag_cluster_target=rag_cluster_target,
+            log=log,
+        )
         if _normalize_llm_units(_extract_subskill_units(mapped)):
             return mapped
 
     digest = _doc_digest_for_llm(docs)
     if not digest:
         return {}
-    merge_hints = _embedding_merge_hints(docs)
+    merge_hints = _embedding_merge_hints(docs) if rag_assist else ""
 
     prompt = f"""你是 Skill Builder Agent，负责把一个混乱的文档目录二次整理成可复用的 seismo_skill 文件夹型 SKILL。
 
@@ -1949,7 +2293,8 @@ def _llm_hierarchical_skill_plan(proj_name: str, docs: List[dict]) -> dict:
 10. 必须合并同类功能：如果多个文件/片段都是同一个命令、同一个参数族或同一个任务（例如 `gmt coast -EAU` 和 `gmt coast -E=OC` 都是 `coast -E` 边界绘制），只能生成一个子技能，在其中列出多个场景和示例。
 11. 一个子技能应该聚合“概念说明 + 参数解释 + 示例代码 + 常见错误 + 验证方法”，不要把两个相邻示例拆成两个技能。
 12. 参考“相似片段候选”决定哪些内容应合并，但最终合并/拆分由你根据功能语义判断。
-13. 优先输出下面的 RAW TEXT 协议；不要强行输出 JSON。小模型也可以稳定遵循这个协议。
+13. SOURCE_EVIDENCE 必须列出相对文件路径、章节、脚本或代码块线索；如果证据来自多个文件，要全部列出，方便后续打开源文件复核。
+14. 优先输出下面的 RAW TEXT 协议；不要强行输出 JSON。小模型也可以稳定遵循这个协议。
 
 RAW TEXT 协议：
 SKILL_NAME: 中文技能包名称
@@ -1977,14 +2322,14 @@ WORKFLOW:
 VALIDATION:
 - 如何检查结果正确
 SOURCE_EVIDENCE:
-- 文件或章节线索
+- source/path/file.md：章节或代码块线索
 === END_SUBSKILL ===
 
 可以重复多个 SUBSKILL。不要输出 index、section、纯数字标题这类子技能。
 
 文档项目名：{proj_name}
 
-相似片段候选（BGE/embedding 召回，供你判断合并/拆分）：
+相似片段候选（RAG/embedding 召回，供你判断合并/拆分）：
 {merge_hints or "无；请直接根据文档内容判断。"}
 
 文档内容：
@@ -2020,12 +2365,19 @@ SOURCE_EVIDENCE:
         return {"_error": str(exc)}
 
 
-def _llm_map_reduce_skill_plan(proj_name: str, docs: List[dict]) -> dict:
+def _llm_map_reduce_skill_plan(
+    proj_name: str,
+    docs: List[dict],
+    rag_assist: bool = True,
+    rag_cluster_target: int = 0,
+    log: Optional[Callable[[str], None]] = None,
+) -> dict:
     """
     Build a skill plan with small-model-friendly map-reduce calls.
 
-    Full directories still enter the RAG/indexing pipeline, but the LLM planner
-    only sees compact evidence batches and merges capability-level subskills.
+    The LLM planner only sees compact semantic evidence batches and merges
+    capability-level subskills. When rag_assist is enabled, embeddings + DBSCAN
+    group scattered files into topic clusters before LLM extraction.
     """
     try:
         evidence_limit = int(os.environ.get("SEISMICX_SKILL_BUILDER_EVIDENCE_DOCS", "96"))
@@ -2039,15 +2391,23 @@ def _llm_map_reduce_skill_plan(proj_name: str, docs: List[dict]) -> dict:
     batch_size = max(4, min(16, batch_size))
 
     ranked = _rank_docs_for_skill_digest(docs)[:evidence_limit]
+    batches = _semantic_doc_batches_for_skill_builder(
+        ranked,
+        rag_assist=rag_assist,
+        fallback_batch_size=batch_size,
+        cluster_target=rag_cluster_target,
+        log=log,
+    )
     all_units: List[dict] = []
     failed = 0
-    for start in range(0, len(ranked), batch_size):
-        batch = ranked[start:start + batch_size]
+    for batch_idx, batch_info in enumerate(batches, 1):
+        batch = batch_info["docs"]
         batch_plan = _llm_subskills_from_doc_batch(
             proj_name=proj_name,
             docs=batch,
-            batch_no=start // batch_size + 1,
-            batch_total=(len(ranked) + batch_size - 1) // batch_size,
+            batch_no=batch_idx,
+            batch_total=len(batches),
+            batch_label=batch_info.get("label", ""),
         )
         units = _normalize_llm_units(_extract_subskill_units(batch_plan))
         if units:
@@ -2055,7 +2415,7 @@ def _llm_map_reduce_skill_plan(proj_name: str, docs: List[dict]) -> dict:
         else:
             failed += 1
 
-    merged_units = _filter_usable_subskills(_merge_similar_subskills(all_units))
+    merged_units = _filter_usable_subskills(_merge_similar_subskills(all_units, use_embedding=rag_assist))
     if not merged_units:
         return {
             "_error": f"map-reduce 未生成有效子技能；失败批次 {failed}",
@@ -2084,6 +2444,7 @@ def _llm_map_reduce_skill_plan(proj_name: str, docs: List[dict]) -> dict:
             "covered_capabilities": [str(u.get("title_zh") or u.get("title") or "") for u in merged_units[:24]],
             "missing_or_weak": [
                 f"完整目录共有 {len(docs)} 个文档项；本轮 LLM 编排使用排序后的 {len(ranked)} 个代表证据文档。",
+                f"本轮按 {'RAG/embedding + DBSCAN 主题簇' if rag_assist else '顺序分批'} 组织为 {len(batches)} 个证据批次。",
                 "其余文档仍保留在索引/清单中，可通过 RAG 或后续增量构建补充。",
             ],
             "suggested_tests": [
@@ -2095,7 +2456,13 @@ def _llm_map_reduce_skill_plan(proj_name: str, docs: List[dict]) -> dict:
     }
 
 
-def _llm_subskills_from_doc_batch(proj_name: str, docs: List[dict], batch_no: int, batch_total: int) -> dict:
+def _llm_subskills_from_doc_batch(
+    proj_name: str,
+    docs: List[dict],
+    batch_no: int,
+    batch_total: int,
+    batch_label: str = "",
+) -> dict:
     digest = _doc_digest_for_llm(docs, max_chars=16000)
     if not digest:
         return {}
@@ -2130,6 +2497,7 @@ SOURCE_EVIDENCE:
 
 项目：{proj_name}
 批次：{batch_no}/{batch_total}
+批次主题：{batch_label or "未命名主题簇"}
 
 文档证据：
 {digest}
@@ -2395,25 +2763,148 @@ def _merge_hierarchical_plan_into_spec(spec: dict, plan: dict) -> dict:
     return merged
 
 
-def _merge_similar_subskills(units) -> List[dict]:
+def _merge_similar_subskills(
+    units,
+    log: Optional[Callable[[str], None]] = None,
+    use_embedding: bool = True,
+) -> List[dict]:
+    """
+    Merge candidate subskills by semantic/RAG similarity.
+
+    LLMs, especially small models, often split adjacent examples into separate
+    skills. When RAG/embedding assistance is enabled, we embed each candidate's
+    title, purpose, commands, parameters, and source evidence, then cluster
+    similar candidates. Keyword matching remains as a fallback.
+    """
     if not isinstance(units, list):
         return []
-    clusters: Dict[str, dict] = {}
-    order: List[str] = []
-    for raw in units:
-        if not isinstance(raw, dict):
-            continue
-        unit = dict(raw)
-        text = "\n".join(str(unit.get(k) or "") for k in (
-            "title_zh", "title", "purpose", "content", "commands_or_api", "parameters"
-        ))
-        key = _subskill_cluster_key(text)
-        if key not in clusters:
-            clusters[key] = unit
-            order.append(key)
-            continue
-        clusters[key] = _merge_two_subskill_units(clusters[key], unit)
-    return [_polish_merged_subskill(k, clusters[k]) for k in order]
+    normalized = [dict(u) for u in units if isinstance(u, dict)]
+    if not normalized:
+        return []
+
+    clusters = _embedding_cluster_subskills(normalized) if use_embedding else []
+    method = "RAG/embedding"
+    if not clusters:
+        clusters = _lexical_cluster_subskills(normalized)
+        method = "keyword fallback" if use_embedding else "keyword"
+    if log and len(normalized) != len(clusters):
+        log(f"   🔎 使用 {method} 相似性合并子技能：{len(normalized)} → {len(clusters)}")
+    return clusters
+
+
+def _subskill_semantic_text(unit: dict) -> str:
+    fields = [
+        "slug", "title_zh", "title", "title_en", "purpose", "purpose_en",
+        "content", "commands_or_api", "parameters", "mini_workflow",
+        "validation", "source_evidence",
+    ]
+    parts: List[str] = []
+    for key in fields:
+        value = unit.get(key)
+        if isinstance(value, list):
+            parts.append(" ; ".join(str(v) for v in value[:40]))
+        elif value:
+            parts.append(str(value))
+    return "\n".join(parts)[:5000]
+
+
+def _embedding_cluster_subskills(units: List[dict]) -> List[dict]:
+    if len(units) <= 1:
+        return units
+    texts = [_subskill_semantic_text(unit) for unit in units]
+    try:
+        _web = Path(__file__).parent.parent / "web_app"
+        if str(_web) not in sys.path:
+            sys.path.insert(0, str(_web))
+        from rag_backends import EmbeddingModel  # type: ignore
+        import numpy as np  # type: ignore
+
+        vecs = EmbeddingModel.get().encode(texts, batch_size=16)
+        vecs = np.asarray(vecs, dtype="float32")
+        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+        vecs = vecs / np.maximum(norms, 1e-8)
+        sims = vecs @ vecs.T
+    except Exception:
+        return []
+
+    try:
+        threshold = float(os.environ.get("SEISMICX_SKILL_MERGE_SIM_THRESHOLD", "0.66"))
+    except Exception:
+        threshold = 0.66
+    parent = list(range(len(units)))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    for i in range(len(units)):
+        for j in range(i + 1, len(units)):
+            if float(sims[i, j]) >= threshold or _strong_command_overlap(units[i], units[j]):
+                union(i, j)
+
+    grouped: Dict[int, List[dict]] = {}
+    order: List[int] = []
+    for idx, unit in enumerate(units):
+        root = find(idx)
+        if root not in grouped:
+            grouped[root] = []
+            order.append(root)
+        grouped[root].append(unit)
+
+    merged: List[dict] = []
+    for root in order:
+        cluster = grouped[root]
+        base = cluster[0]
+        for unit in cluster[1:]:
+            base = _merge_two_subskill_units(base, unit)
+        merged.append(base)
+    return merged
+
+
+def _strong_command_overlap(a: dict, b: dict) -> bool:
+    a_cmds = {str(x).lower().strip() for x in _as_list(a.get("commands_or_api"), 80)}
+    b_cmds = {str(x).lower().strip() for x in _as_list(b.get("commands_or_api"), 80)}
+    if a_cmds and b_cmds and a_cmds & b_cmds:
+        return True
+    a_params = {str(x).lower().strip().split(":", 1)[0] for x in _as_list(a.get("parameters"), 80)}
+    b_params = {str(x).lower().strip().split(":", 1)[0] for x in _as_list(b.get("parameters"), 80)}
+    return bool(a_params and b_params and len(a_params & b_params) >= 2)
+
+
+def _lexical_cluster_subskills(units: List[dict]) -> List[dict]:
+    """Embedding unavailable fallback: merge by token Jaccard and command overlap."""
+    if len(units) <= 1:
+        return units
+
+    def toks(unit: dict) -> set:
+        text = _subskill_semantic_text(unit).lower()
+        return set(re.findall(r"[a-zA-Z0-9_\-]+|[\u4e00-\u9fff]{2,}", text))
+
+    groups: List[dict] = []
+    group_tokens: List[set] = []
+    for unit in units:
+        unit_tokens = toks(unit)
+        best = -1
+        best_score = 0.0
+        for idx, existing_tokens in enumerate(group_tokens):
+            score = len(unit_tokens & existing_tokens) / max(1, len(unit_tokens | existing_tokens))
+            if score > best_score:
+                best = idx
+                best_score = score
+        if best >= 0 and (best_score >= 0.18 or _strong_command_overlap(groups[best], unit)):
+            groups[best] = _merge_two_subskill_units(groups[best], unit)
+            group_tokens[best] |= unit_tokens
+        else:
+            groups.append(unit)
+            group_tokens.append(set(unit_tokens))
+    return groups
 
 
 def _filter_usable_subskills(units: List[dict]) -> List[dict]:
@@ -2460,32 +2951,6 @@ def _is_meaningful_subskill(title: str, content: str, commands: List[str], param
     return True
 
 
-def _subskill_cluster_key(text: str) -> str:
-    s = str(text or "").lower()
-    if "gmt coast" in s and re.search(r"(?:^|\s)-e(?:[=a-z]|\\b)", s):
-        return "gmt_coast_boundary"
-    if "gmt coast" in s and any(w in s for w in ["shoreline", "coastline", "海岸线", "海岸"]):
-        return "gmt_coastline_basemap"
-    if "grdview" in s or "-jz" in s or "三维地形" in s or "3d terrain" in s:
-        return "gmt_3d_terrain"
-    if "makecpt" in s or ".cpt" in s or "color palette" in s or "色标" in s:
-        return "gmt_cpt_color_palette"
-    if "grdimage" in s or "earth_relief" in s or "地形" in s:
-        return "gmt_grid_image_relief"
-    if "grdvector" in s or "矢量场" in s or "vector field" in s:
-        return "gmt_vector_field"
-    if re.search(r"(?:^|\s)-w", s) or "线条" in s or "line style" in s:
-        return "gmt_line_style"
-    commands = re.findall(r"gmt\s+([a-z0-9_]+)", s)
-    if commands:
-        return "gmt_" + commands[0]
-    params = re.findall(r"(?<![a-z0-9])-([A-Za-z])", text or "")
-    if params:
-        return "parameter_" + "_".join(sorted(set(p.lower() for p in params[:3])))
-    title_words = re.findall(r"[\u4e00-\u9fffA-Za-z0-9]+", s)
-    return _ascii_slug("_".join(title_words[:4]), fallback="general_skill")
-
-
 def _merge_two_subskill_units(a: dict, b: dict) -> dict:
     merged = dict(a)
     for key in ("content", "content_en", "purpose", "purpose_en"):
@@ -2510,31 +2975,6 @@ def _merge_two_subskill_units(a: dict, b: dict) -> dict:
         merged["title_zh"] = f"{title} / {other_title}".strip(" /")
     merged["slug"] = _fallback_english_slug(str(merged.get("title_en") or merged.get("title_zh") or merged.get("title") or ""), fallback=str(merged.get("slug") or "merged_skill"))
     return merged
-
-
-def _polish_merged_subskill(key: str, unit: dict) -> dict:
-    out = dict(unit)
-    if key == "gmt_coast_boundary":
-        out["title_zh"] = "GMT coast 国家与区域边界绘制"
-        out["title_en"] = "GMT coast country and region boundary plotting"
-        out["slug"] = "gmt_coast_boundary_plotting"
-        out["purpose"] = (
-            "使用 GMT coast 的 -E 选项绘制国家、地区或大洲边界，并控制边界线宽、颜色和样式。"
-        )
-        out["purpose_en"] = "Plot country, region, or continent boundaries with GMT coast -E."
-    elif key == "gmt_3d_terrain":
-        out["title_zh"] = "GMT 三维地形绘制"
-        out["title_en"] = "GMT 3D terrain plotting"
-        out["slug"] = "gmt_3d_terrain_plotting"
-    elif key == "gmt_cpt_color_palette":
-        out["title_zh"] = "GMT CPT 色标与颜色表控制"
-        out["title_en"] = "GMT CPT color palette control"
-        out["slug"] = "gmt_cpt_color_palette"
-    elif key == "gmt_line_style":
-        out["title_zh"] = "GMT 线条颜色、宽度与样式控制"
-        out["title_en"] = "GMT line color width and style control"
-        out["slug"] = "gmt_line_style_control"
-    return out
 
 
 def _clean_generated_skill_markdown(text: str) -> str:
@@ -2759,15 +3199,18 @@ def _render_converted_reference(path_name: str, unit: dict) -> str:
 
 
 def _resolve_generated_skill_target(skill_name: str, overwrite: bool = True) -> Path:
-    base = _BUILTIN_SKILL_DIR / skill_name
+    base = _USER_SKILL_DIR / skill_name
     if not base.exists():
         return base
     skill_md = base / "SKILL.md"
     text = skill_md.read_text(encoding="utf-8", errors="ignore") if skill_md.exists() else ""
-    if overwrite and f"generated_by: {_DOC_SKILL_GENERATOR}" in text:
+    if overwrite and (
+        f"generated_by: {_DOC_SKILL_GENERATOR}" in text
+        or (base.name.startswith("_gen_") and not skill_md.exists())
+    ):
         return base
     for i in range(2, 100):
-        candidate = _BUILTIN_SKILL_DIR / f"{skill_name}_{i}"
+        candidate = _USER_SKILL_DIR / f"{skill_name}_{i}"
         if not candidate.exists():
             return candidate
     raise FileExistsError(f"Cannot find free skill folder for {skill_name}")
@@ -2815,6 +3258,7 @@ generated_at: {datetime.now().isoformat(timespec="seconds")}
 ## Purpose
 
 这是由 LLM 从原始文档内容整理出的层级化中文技能包。使用它回答问题或编写代码时，应优先读取 `references/outline.md`，再打开相关章节页；这些章节页已经从 PDF/文档正文转换而来，不需要再读取原 PDF。
+如需追溯原文，`references/manifest.md` 保留了参与构建的源文件相对路径和绝对路径。
 {f"\\nEnglish: {description_en}" if description_en else ""}
 
 ## When To Use / 何时使用
@@ -2859,26 +3303,27 @@ default_prompt: >-
 
 
 def delete_generated_builtin_skill(name: str) -> bool:
-    """Delete a docs-generated folder skill under seismo_skill/skills/ only."""
+    """Delete a docs-generated folder skill under project skill directories."""
     if str(name).startswith("_gen_") or str(name).startswith("gen_"):
         safe = _generated_skill_slug(name)
     else:
         safe = _safe_skill_slug(name)
-    folders = _BUILTIN_SKILL_DIR.iterdir() if _BUILTIN_SKILL_DIR.exists() else []
-    for folder in folders:
-        if not folder.is_dir():
-            continue
-        skill_md = folder / "SKILL.md"
-        if not skill_md.exists():
-            continue
-        text = skill_md.read_text(encoding="utf-8", errors="ignore")
-        if f"name: {safe}" not in text and folder.name != safe:
-            continue
-        if f"generated_by: {_DOC_SKILL_GENERATOR}" not in text:
-            continue
-        shutil.rmtree(folder, ignore_errors=True)
-        _invalidate_skill_cache()
-        return True
+    for root in (_USER_SKILL_DIR, _BUILTIN_SKILL_DIR):
+        folders = root.iterdir() if root.exists() else []
+        for folder in folders:
+            if not folder.is_dir():
+                continue
+            skill_md = folder / "SKILL.md"
+            if not skill_md.exists():
+                continue
+            text = skill_md.read_text(encoding="utf-8", errors="ignore")
+            if f"name: {safe}" not in text and folder.name != safe:
+                continue
+            if f"generated_by: {_DOC_SKILL_GENERATOR}" not in text:
+                continue
+            shutil.rmtree(folder, ignore_errors=True)
+            _invalidate_skill_cache()
+            return True
     return False
 
 

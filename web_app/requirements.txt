@@ -18,6 +18,9 @@ onnxruntime>=1.16.0
 tqdm>=4.65.0
 matplotlib>=3.7.0
 
+# Integrated coding backend
+aider-chat>=0.86.0
+
 # RAG / Knowledge Base
 FlagEmbedding>=1.2.0
 faiss-cpu>=1.7.4

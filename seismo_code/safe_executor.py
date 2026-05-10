@@ -227,9 +227,17 @@ def execute_code(
     env["SAGE_PROJECT_ROOT"] = project_root
     env["SAGE_OUTDIR"] = tmp
     env["MPLBACKEND"] = "Agg"
-    # Add project root to PYTHONPATH
+    # Add the caller project plus the SAGE repository root to PYTHONPATH.
+    # Science-analysis jobs pass a user workspace as project_root, while the
+    # preamble still needs to import seismo_code from the repository.
     existing_pp = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = f"{project_root}{os.pathsep}{existing_pp}" if existing_pp else project_root
+    repo_root = str(Path(__file__).parent.parent)
+    pp_parts = [project_root]
+    if repo_root not in pp_parts:
+        pp_parts.append(repo_root)
+    if existing_pp:
+        pp_parts.append(existing_pp)
+    env["PYTHONPATH"] = os.pathsep.join(pp_parts)
     # Limit BLAS/OpenMP thread counts to 1 — prevents SIGSEGV caused by
     # inheriting a forked thread pool when the parent loaded numpy/PyTorch.
     env.setdefault("OMP_NUM_THREADS", "1")
@@ -242,6 +250,10 @@ def execute_code(
     if extra_env:
         env.update(extra_env)
 
+    run_cwd = env.get("SAGE_WORKSPACE_ROOT") or tmp
+    if not os.path.isdir(run_cwd):
+        run_cwd = tmp
+
     # Execute
     try:
         python_cmd = python_executable or sys.executable
@@ -250,7 +262,7 @@ def execute_code(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            cwd=tmp,
+            cwd=run_cwd,
             env=env,
             start_new_session=(os.name == "posix"),
         )
@@ -278,17 +290,31 @@ def execute_code(
             if os.path.isfile(fig_path):
                 figures.append(fig_path)
 
-    # Also scan the temp directory for any image/data files not already captured
-    if os.path.isdir(tmp):
-        for fname in sorted(os.listdir(tmp)):
-            fpath = os.path.join(tmp, fname)
-            if fname == "run.py":
-                continue
-            ext = os.path.splitext(fname)[1].lower()
-            if ext in (".png", ".pdf", ".svg") and fpath not in figures:
-                figures.append(fpath)
-            elif ext not in (".py",) and os.path.isfile(fpath) and fpath not in output_files:
-                output_files.append(fpath)
+    # Also scan the temp directory and, when the caller overrides SAGE_OUTDIR,
+    # that shared output directory. This keeps artifacts visible when code writes
+    # to the project output folder instead of the isolated temp directory.
+    scan_dirs = [tmp]
+    outdir = env.get("SAGE_OUTDIR", tmp)
+    if outdir and outdir not in scan_dirs:
+        scan_dirs.append(outdir)
+
+    for scan_dir in scan_dirs:
+        if os.path.isdir(scan_dir):
+            for fname in sorted(os.listdir(scan_dir)):
+                fpath = os.path.join(scan_dir, fname)
+                if fname == "run.py":
+                    continue
+                if not os.path.isfile(fpath):
+                    continue
+                ext = os.path.splitext(fname)[1].lower()
+                if ext in (".png", ".pdf", ".svg") and fpath not in figures:
+                    figures.append(fpath)
+                elif ext not in (".py",) and fpath not in output_files:
+                    output_files.append(fpath)
+
+    for fig in figures:
+        if f"[FIGURE] {fig}" not in stdout:
+            stdout += f"\n[FIGURE] {fig}"
 
     if not keep_dir and not figures and not output_files:
         import shutil
