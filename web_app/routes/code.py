@@ -59,8 +59,17 @@ def chat_code():
                 from seismo_skill import search_skills, invalidate_cache
                 invalidate_cache()
                 try:
-                    hits = search_skills(user_msg, top_k=1)
-                    skill_used = hits[0]['name'] if hits else None
+                    hits = search_skills(user_msg, top_k=3)
+                    skill_names = []
+                    for hit in hits:
+                        name = str(hit.get('name') or '').strip()
+                        if name and name not in skill_names:
+                            skill_names.append(name)
+                        for rel in hit.get('related_skills', []) or []:
+                            rel = str(rel or '').strip()
+                            if rel and rel not in skill_names:
+                                skill_names.append(rel)
+                    skill_used = ', '.join(skill_names[:4]) if skill_names else None
                 except Exception:
                     skill_used = None
 

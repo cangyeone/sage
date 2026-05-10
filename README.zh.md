@@ -662,6 +662,87 @@ print(result)
 
 > **覆盖规则：** 自定义技能与内置技能同名时，自定义版本自动优先生效。
 
+### 从文档目录生成 OpenAI-style SKILL
+
+SAGE 可以把外部文档转换为 OpenAI-style 文件夹型 SKILL。常见流程是：把文档目录放到 `seismo_skill/docs/`，在 Web 端知识库页面选择构建方式，然后由 Skill Builder 生成可复用技能到 `seismo_skill/user_skills/`。
+
+#### 示例：从 GMT 中文文档生成 GMT SKILL
+
+1. **下载 GMT 中文文档**
+
+   访问 [gmt-china/GMT_docs releases](https://github.com/gmt-china/GMT_docs/releases)，下载一个 release 压缩包。建议选择包含源码文档、示例和资源文件的 release asset。
+
+   也可以在终端下载，把 `<release-asset-url>` 替换为 release 页面中对应压缩包的下载地址：
+
+   ```bash
+   cd /path/to/sage
+   mkdir -p seismo_skill/docs
+   curl -L "<release-asset-url>" -o /tmp/GMT_docs.zip
+   unzip /tmp/GMT_docs.zip -d seismo_skill/docs/
+   ```
+
+   确认最终目录类似：
+
+   ```text
+   seismo_skill/docs/GMT_docs-6.5/
+     source/
+     README.md
+     ...
+   ```
+
+2. **启动 Web 服务**
+
+   ```bash
+   python web_app/app.py --port 5010
+   ```
+
+   浏览器打开 `http://localhost:5010/knowledge`。
+
+3. **在 Web 端生成 SKILL**
+
+   在 **技能文档目录** 卡片中：
+
+   - 点击刷新，选择 `GMT_docs-6.5`。
+   - 将 **SKILL 结构** 设为 **OpenAI-style 文件夹 SKILL**。
+   - 如果文档很多，勾选 **RAG/向量辅助构建**。这里的 RAG 只用于构建阶段的相似度检索和聚类，最终产物仍然是 SKILL，不会把整个文档永久当作 RAG 文献。
+   - **目标主题簇数** 可以留空，由系统自动建议；也可以手动填入希望的簇数。
+   - 点击 **开始构建**。
+
+4. **生成结果位置**
+
+   构建完成后，生成的技能位于：
+
+   ```text
+   seismo_skill/user_skills/_gen_gmt_docs_zh/
+     SKILL.md
+     subskills/
+     references/
+     workflows/
+     agents/
+   ```
+
+   其中 `SKILL.md` 是入口文件；`subskills/` 保存按功能聚类后的 GMT 子技能；`references/manifest.md` 记录参与构建的源文件，方便追溯。
+
+5. **验证是否能自动调用**
+
+   在 Chat 或 Code 页面直接提问：
+
+   ```text
+   GMT 的 -J 投影选项怎么用？给我几个常见投影示例。
+   ```
+
+   ```text
+   用 GMT grdimage 绘制地形图，并添加 colorbar，解释参数。
+   ```
+
+   通常不需要显式写 `_gen_gmt_docs_zh`。只要问题中包含 `GMT`、`grdimage`、`makecpt`、`coast`、`-J`、`-R`、`-B` 等关键词，系统会自动把生成的 GMT 文档技能和内置 `gmt_plotting` 技能联合注入。
+
+6. **管理和删除**
+
+   生成型 SKILL 会在知识库/技能管理界面作为技能资产显示，可在界面中删除。删除时会同时移除生成的 SKILL 文件夹和构建元数据。
+
+支持的文档输入包括 PDF、Markdown（`.md`）、reStructuredText（`.rst`）、HTML、纯文本、脚本文件，以及包含多种文件的混合文档目录。
+
 ---
 
 ## seismo_script 工作流系统

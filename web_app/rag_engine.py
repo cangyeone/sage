@@ -822,7 +822,9 @@ class KnowledgeBase:
         count = len(self._chunks)
         if not (self._faiss and self._faiss.n_vectors > 0):
             try:
-                count = max(count, _get_simple_rag().db.count_items())
+                sr = _get_simple_rag()
+                if getattr(sr, "_docs", {}):
+                    count = max(count, sr.db.count_items())
             except Exception:
                 pass
         return count
@@ -835,12 +837,18 @@ class KnowledgeBase:
         n_vecs = self._faiss.n_vectors if self._faiss else 0
         if n_vecs == 0:
             try:
-                n_vecs = _get_simple_rag().db.count_items()
+                sr = _get_simple_rag()
+                if getattr(sr, "_docs", {}):
+                    n_vecs = sr.db.count_items()
             except Exception:
                 pass
+        n_docs = self.n_docs
+        n_chunks = self.n_chunks
+        if n_docs == 0 and n_chunks == 0:
+            n_vecs = 0
         return {
-            "n_docs":    self.n_docs,
-            "n_chunks":  self.n_chunks,
+            "n_docs":    n_docs,
+            "n_chunks":  n_chunks,
             "n_vectors": n_vecs,
             "kb_dir":    str(KB_DIR),
         }

@@ -1,13 +1,17 @@
 ---
 name: cartopy_plotting
 category: visualization
+description: Use Cartopy and Matplotlib for Python-based geographic maps when the user asks for general map plotting or explicitly asks for Cartopy/Matplotlib. Do not choose this skill when the user explicitly asks for GMT.
 keywords: cartopy, matplotlib, map, seismicity map, epicenter, scatter map, location map, geographic plot, station map, cross-section, depth section, magnitude, colormap, 地图, 震中分布, 位置图, 台站分布, 剖面图, 散点图, 经纬度绘图, 地震分布, 绘图, plot map, scatter plot
+prefer_when: cartopy, matplotlib, Python地图, Python 绘图, scatter map, location map
+avoid_when: GMT, gmt, Generic Mapping Tools, 使用GMT, 用GMT, GMT绘制, gmt begin, gmt coast, run_gmt
 ---
 
 # Cartopy / Matplotlib Plotting Skills
 
-**Default choice for all map/geographic plots.**  
-Use cartopy unless the user explicitly asks for GMT.
+Use Cartopy/Matplotlib for Python-based geographic maps when the user asks for a general map, scatter map, station map, or cross-section and does not specify GMT.
+
+Do **not** use this skill when the user explicitly asks for GMT, `gmt`, `Generic Mapping Tools`, `gmt begin`, `gmt coast`, or `run_gmt`; use `gmt_plotting` instead.
 
 ---
 

@@ -171,8 +171,8 @@ def _list_generated_skill_assets() -> list[dict]:
                 if f"generated_by: {_DOC_SKILL_GENERATOR}" not in text:
                     return
             title = _extract_skill_title(skill_md, folder.name) if skill_md.exists() else folder.name.replace(".building", "")
-            subskills = len(list((folder / "subskills").glob("*.md"))) if (folder / "subskills").exists() else 0
-            refs = len(list((folder / "references").glob("*.md"))) if (folder / "references").exists() else 0
+            subskills = len(list((folder / "subskills").rglob("*.md"))) if (folder / "subskills").exists() else 0
+            refs = len([p for p in (folder / "references").rglob("*") if p.is_file()]) if (folder / "references").exists() else 0
             try:
                 mtime = datetime.fromtimestamp(folder.stat().st_mtime).isoformat(timespec="seconds")
             except Exception:

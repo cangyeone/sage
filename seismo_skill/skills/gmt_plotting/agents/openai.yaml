@@ -1,0 +1,4 @@
+display_name: gmt_plotting
+short_description: Built-in SeismicX skill.
+default_prompt: >-
+  Use this skill only when the user request matches its SKILL.md description and keywords. Ground code and explanations in the skill instructions.

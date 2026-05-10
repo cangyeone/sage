@@ -708,37 +708,84 @@ print(result)
 
 ### Building Documentation and Skills
 
-SAGE supports automatic building of documentation and skills from external repositories. You can integrate third-party documentation into the knowledge base and generate corresponding skills.
+SAGE can convert external documentation into OpenAI-style folder skills. The typical workflow is: put a documentation folder under `seismo_skill/docs/`, open the web Knowledge page, choose a skill structure, and let the Skill Builder create a reusable skill under `seismo_skill/user_skills/`.
 
-#### Building from GitHub Repositories
+#### Example: Build a GMT Documentation Skill
 
-1. **Clone Repository to Local Directory**
+1. **Download GMT Chinese documentation**
+
+   Download a release archive from [gmt-china/GMT_docs releases](https://github.com/gmt-china/GMT_docs/releases). Prefer a release archive that contains the built source files, examples, and documentation assets.
+
+   You can also download from the terminal, replacing `<release-asset-url>` with the asset URL from the release page:
+
    ```bash
-   # Example: Clone GMT Chinese documentation
-   git clone https://github.com/gmt-china/GMT_docs.git
+   cd /path/to/sage
+   mkdir -p seismo_skill/docs
+   curl -L "<release-asset-url>" -o /tmp/GMT_docs.zip
+   unzip /tmp/GMT_docs.zip -d seismo_skill/docs/
    ```
 
-2. **Place in seismo_skill/docs Directory**
-   ```bash
-   # Move to SAGE project directory
-   mv GMT_docs ~/path/to/sage/seismo_skill/docs/
+   Make sure the final layout is a single documentation folder, for example:
+
+   ```text
+   seismo_skill/docs/GMT_docs-6.5/
+     source/
+     README.md
+     ...
    ```
 
-3. **Access Knowledge Base Page**
-   - Open web interface: `http://localhost:5000/knowledge`
-   - Click the "Build Skills" button in the main knowledge base card
-   - The system will automatically:
-     - Scan `seismo_skill/docs/` directory
-     - Index all documentation files (PDF, MD, RST, HTML, etc.)
-     - Generate FAISS vector index for RAG retrieval
-     - Create corresponding skill documents based on documentation content
+2. **Start SAGE Web**
 
-4. **Supported Documentation Formats**
-   - PDF documents
-   - Markdown files (.md)
-   - reStructuredText files (.rst)
-   - HTML files (.html, .htm)
-   - Text files (.txt)
+   ```bash
+   python web_app/app.py --port 5010
+   ```
+
+   Open `http://localhost:5010/knowledge`.
+
+3. **Generate the SKILL in the web UI**
+
+   In the **Skill Docs Directory** card:
+
+   - Click refresh and select `GMT_docs-6.5`.
+   - Set **SKILL structure** to **OpenAI-style folder SKILL**.
+   - Enable **RAG/vector-assisted build** if the folder has many files. This uses retrieval and clustering only as build assistance; the final result is still a SKILL, not a permanent RAG index.
+   - Optionally set the target topic cluster count. Leave it blank to let SAGE suggest one automatically.
+   - Click **Start Build**.
+
+4. **Generated output**
+
+   The generated skill is written to:
+
+   ```text
+   seismo_skill/user_skills/_gen_gmt_docs_zh/
+     SKILL.md
+     subskills/
+     references/
+     workflows/
+     agents/
+   ```
+
+   The top-level `SKILL.md` is the entry point. The `subskills/` directory contains clustered reusable GMT subskills, and `references/manifest.md` records the source files used during construction.
+
+5. **Verify the generated SKILL is used**
+
+   Ask in Chat or Code mode:
+
+   ```text
+   GMT 的 -J 投影选项怎么用？给我几个常见投影示例。
+   ```
+
+   ```text
+   用 GMT grdimage 绘制地形图，并添加 colorbar，解释参数。
+   ```
+
+   You do not need to explicitly mention `_gen_gmt_docs_zh`; GMT-related keywords such as `GMT`, `grdimage`, `makecpt`, `coast`, `-J`, `-R`, and `-B` should automatically retrieve the generated documentation skill together with the built-in `gmt_plotting` skill.
+
+6. **Manage or delete generated skills**
+
+   Generated skills appear in the Knowledge/Skill management UI as skill assets and can be deleted from there. Deletion removes both the generated SKILL folder and its build metadata.
+
+Supported documentation formats include PDF, Markdown (`.md`), reStructuredText (`.rst`), HTML, plain text, scripts, and mixed documentation folders.
 
 #### Automatic Skill Generation
 

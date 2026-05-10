@@ -1,8 +1,10 @@
 ---
 name: gmt_plotting
 category: visualization
+description: Use GMT / Generic Mapping Tools for publication-style geoscience maps, topography, coastlines, focal mechanisms, cross-sections, and shell-based GMT plotting. Choose this skill whenever the user explicitly says GMT.
 keywords: GMT, map, seismicity, epicenter distribution, station distribution, fault, topography, terrain, terrain background, 地形底图, focal mechanism, coastline, contour, cross-section, travel time, earthquake catalog, basemap, coast, pscoast, meca, coupe, grdimage, gmt begin, gmt end, run_gmt, 地图, 震中分布, 台站分布, 地形, 地形底图, 震源机制, 海岸线
-related_skills: _gen_gmt_docs_6_5
+prefer_when: GMT, gmt, Generic Mapping Tools, 使用GMT, 用GMT, GMT绘制, gmt begin, gmt coast, run_gmt
+related_skills: _gen_gmt_docs_zh, _gen_gmt_docs_6_5
 workflow: gmt_terrain_map
 ---
 
@@ -11,6 +13,8 @@ workflow: gmt_terrain_map
 ## Description
 
 Use GMT (Generic Mapping Tools) to create professional seismology maps: epicenter distribution maps, station location maps, topographic maps, focal mechanism beachballs, cross-sections, etc.
+
+Use this skill whenever the user explicitly asks for GMT, `gmt`, `Generic Mapping Tools`, `gmt begin`, `gmt coast`, `run_gmt`, or shell-based GMT plotting.
 
 > If the user explicitly requests `地形底图` or `terrain background`, always include a terrain grid (`gmt grdimage`) before coastlines and plot layers.
 

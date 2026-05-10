@@ -382,6 +382,7 @@ def _normalize_skill_meta(meta: dict, body: str, fallback_name: str, source: str
         "trigger_phrases",
         "use_cases",
         "when_to_use",
+        "prefer_when",
     ):
         keywords.extend(_as_list(meta.get(key)))
     if display_name and display_name != name:
@@ -395,6 +396,8 @@ def _normalize_skill_meta(meta: dict, body: str, fallback_name: str, source: str
         "keywords": keywords,
         "rag_sources": _as_list(meta.get("rag_sources")),
         "related_skills": _as_list(meta.get("related_skills") or meta.get("related")),
+        "prefer_when": _as_list(meta.get("prefer_when")),
+        "avoid_when": _as_list(meta.get("avoid_when") or meta.get("do_not_use_when")),
         "workflow": meta.get("workflow", ""),
         "generated_from": meta.get("generated_from", ""),
         "source": meta.get("source", source),
@@ -597,9 +600,11 @@ def _load_folder_skill(folder: Path, source: str) -> Optional[Dict]:
         "format":          "openai_folder_skill",
         "rag_sources":     norm.get("rag_sources", []),
         "generated_from":  norm.get("generated_from", ""),
-        "related_skills":  norm.get("related_skills", []),
-        "workflow":        norm.get("workflow", ""),
-    }
+            "related_skills":  norm.get("related_skills", []),
+            "prefer_when":     norm.get("prefer_when", []),
+            "avoid_when":      norm.get("avoid_when", []),
+            "workflow":        norm.get("workflow", ""),
+        }
 
 
 def _discover_skill_folders(directory: Path) -> List[Path]:
@@ -704,6 +709,8 @@ def _load_from_dir(directory: Path, source: str) -> List[Dict]:
             "rag_sources":    norm.get("rag_sources", []),
             "generated_from": norm.get("generated_from", ""),
             "related_skills": norm.get("related_skills", []),
+            "prefer_when":    norm.get("prefer_when", []),
+            "avoid_when":     norm.get("avoid_when", []),
             "workflow":       norm.get("workflow", ""),
         }
         # 只在该名称还没被文件夹技能占用时才添加（文件夹优先）
@@ -786,6 +793,8 @@ def list_skills() -> List[Dict]:
             "rag_sources":      s.get("rag_sources", []),
             "generated_from":   s.get("generated_from", ""),
             "related_skills":   s.get("related_skills", []),
+            "prefer_when":      s.get("prefer_when", []),
+            "avoid_when":       s.get("avoid_when", []),
             "workflow":         s.get("workflow", ""),
             "ref_names":        list(s.get("references", {}).keys()),
             "ref_count":        len(s.get("references", {})),
@@ -1018,6 +1027,16 @@ def _metadata_score(query: str, skill: Dict) -> float:
         elif any(_tok_min_len(tok) and tok in kw_lower for tok in query_tokens):
             score += 3.0
 
+    for phrase in skill.get("prefer_when", []) or []:
+        phrase_lower = str(phrase).strip().lower()
+        if phrase_lower and phrase_lower in query_lower:
+            score += 8.0
+
+    for phrase in skill.get("avoid_when", []) or []:
+        phrase_lower = str(phrase).strip().lower()
+        if phrase_lower and phrase_lower in query_lower:
+            score -= 12.0
+
     name_lower = str(skill.get("name", "")).lower()
     if name_lower and name_lower in query_lower:
         score += 5.0
@@ -1064,29 +1083,20 @@ def _candidate_skills(query: str, max_candidates: int = 12) -> List[Dict]:
     if not skills:
         return []
 
-    candidates: List[Dict] = []
-    seen: set[str] = set()
+    embedding_scores: Dict[str, float] = {}
+    for score, skill in _embedding_rank_skills(query, skills, max_candidates=max_candidates * 2):
+        embedding_scores[str(skill.get("name", ""))] = max(0.0, float(score))
 
-    for _, skill in _embedding_rank_skills(query, skills, max_candidates=max_candidates):
-        if skill["name"] not in seen:
-            candidates.append(skill)
-            seen.add(skill["name"])
+    ranked: List[Tuple[float, Dict]] = []
+    for skill in skills:
+        meta_score = _metadata_score(query, skill)
+        emb_score = embedding_scores.get(str(skill.get("name", "")), 0.0)
+        combined = meta_score * 2.0 + emb_score * 6.0
+        if combined > 0:
+            ranked.append((combined, skill))
 
-    lexical = sorted(
-        ((_metadata_score(query, skill), skill) for skill in skills),
-        key=lambda item: item[0],
-        reverse=True,
-    )
-    for score, skill in lexical:
-        if score <= 0 and candidates:
-            continue
-        if skill["name"] not in seen:
-            candidates.append(skill)
-            seen.add(skill["name"])
-        if len(candidates) >= max_candidates:
-            break
-
-    return candidates[:max_candidates]
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return [skill for _, skill in ranked[:max_candidates]]
 
 
 def _parse_llm_skill_matches(raw: str, candidates: List[Dict]) -> List[str]:
@@ -1122,6 +1132,8 @@ def _llm_match_skills(query: str, candidates: List[Dict], top_k: int) -> List[st
     catalog_lines = []
     for idx, skill in enumerate(candidates, 1):
         keywords = ", ".join(str(x) for x in skill.get("keywords", [])[:12])
+        prefer_when = ", ".join(str(x) for x in skill.get("prefer_when", [])[:8])
+        avoid_when = ", ".join(str(x) for x in skill.get("avoid_when", [])[:8])
         desc = str(skill.get("description", "")).replace("\n", " ").strip()
         refs = ", ".join(
             str(r.get("name", "")) for r in skill.get("reference_manifest", [])[:6]
@@ -1131,6 +1143,8 @@ def _llm_match_skills(query: str, candidates: List[Dict], top_k: int) -> List[st
             f"[{idx}] name={skill.get('name')}\n"
             f"description={desc}\n"
             f"keywords={keywords}\n"
+            f"prefer_when={prefer_when}\n"
+            f"avoid_when={avoid_when}\n"
             f"references={refs}"
         )
     prompt = f"""你是 SeismicX 的技能选择器。请根据用户请求，从候选 SKILL 中选择最相关的 {top_k} 个。

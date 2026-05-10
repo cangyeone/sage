@@ -2012,7 +2012,7 @@ def chat_rag():
         sl = get_skill_loader()
         if sl is not None:
             skill_ctx, skill_rag_ctx = sl.build_skill_context_with_rag(
-                user_msg, max_skill_chars=3000, max_rag_chars=2500, top_k=2
+                user_msg, max_skill_chars=5000, max_rag_chars=3000, top_k=4
             )
             if skill_ctx:
                 context_parts.append("===== 可用技能与函数示例 =====\n" + skill_ctx)
@@ -2246,7 +2246,7 @@ def _build_rag_messages(data: dict):
         sl = get_skill_loader()
         if sl is not None:
             skill_ctx, skill_rag_ctx = sl.build_skill_context_with_rag(
-                user_msg, max_skill_chars=3000, max_rag_chars=2500, top_k=2
+                user_msg, max_skill_chars=5000, max_rag_chars=3000, top_k=4
             )
             if skill_ctx:
                 context_parts.append("===== 可用技能与函数示例 =====\n" + skill_ctx)
