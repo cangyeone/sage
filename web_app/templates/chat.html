@@ -483,7 +483,7 @@ const I18N = {
     qbtn_formula: '解读公式', qbtn_pick: '拾取震相', qbtn_clear: '清空',
     web_on: '联网：开', web_off: '联网：关', web_sources: '检索源',
     attach_title: '上传 PDF', img_upload_title: '上传图片（VL 模型）', input_placeholder: '输入问题或指令…',
-    think_tip: '显示或折叠模型思考过程',
+    think_tip: '请求模型输出可折叠的思考摘要',
     llm_tip: '查看或切换当前 LLM 后端',
     // Quick action messages
     quick_qa_msg: '如何获取 IRIS 波形数据？',
@@ -542,7 +542,7 @@ const I18N = {
     qbtn_formula: 'Explain formula', qbtn_pick: 'Phase picking', qbtn_clear: 'Clear',
     web_on: 'Web: On', web_off: 'Web: Off', web_sources: 'Sources',
     attach_title: 'Upload PDF', img_upload_title: 'Upload image (VL model)', input_placeholder: 'Type a question or command…',
-    think_tip: 'Show or collapse model reasoning',
+    think_tip: 'Ask the model for a collapsible reasoning summary',
     llm_tip: 'View or switch the current LLM backend',
     // Quick action messages
     quick_qa_msg: 'How do I fetch waveform data from IRIS?',
@@ -2221,7 +2221,9 @@ class ThinkParser {
   }
 
   push(chunk) {
-    this._buf += chunk;
+    this._buf += String(chunk || '')
+      .replace(/<\s*(think|thinking|reasoning)\s*>/gi, '<think>')
+      .replace(/<\s*\/\s*(think|thinking|reasoning)\s*>/gi, '</think>');
     const OPEN  = '<think>';
     const CLOSE = '</think>';
     while (true) {
@@ -2253,6 +2255,21 @@ class ThinkParser {
     if (this._inThink) this.thinkText   += this._buf;
     else               this.contentText += this._buf;
     this._buf = '';
+  }
+}
+
+function keepOrPromoteThink(parser, streamer, keepThink) {
+  if (!parser.contentText.trim() && parser.thinkText.trim()) {
+    if (keepThink) {
+      streamer.updateThink && streamer.updateThink(parser.thinkText);
+      parser.contentText = currentLang === 'zh'
+        ? '（模型只返回了思考摘要，未返回最终回答。）'
+        : '(The model returned only a reasoning summary and no final answer.)';
+    } else {
+      parser.contentText = parser.thinkText;
+      parser.thinkText = '';
+      streamer.hideThink && streamer.hideThink();
+    }
   }
 }
 
@@ -2458,15 +2475,9 @@ async function streamToMsg(url, body) {
     return {answer: handoffMsg, sources, errored: false, handoff};
   }
 
-  // Guard: some models emit the entire reply inside <think>…</think> with nothing
-  // outside (especially when think mode is on but the model ignores the instruction).
-  // In that case promote thinkText → contentText so the user sees the answer.
-  if (!parser.contentText.trim() && parser.thinkText.trim()) {
-    parser.contentText = parser.thinkText;
-    parser.thinkText   = '';
-    // Hide the (now-empty) think block
-    streamer.hideThink && streamer.hideThink();
-  }
+  // Some models emit the entire reply inside <think>…</think>. If the user
+  // explicitly enabled think mode, keep that block visible instead of hiding it.
+  keepOrPromoteThink(parser, streamer, !!(body && body.enable_think));
 
   streamer.finalise(parser.contentText, sources);
 
@@ -2607,11 +2618,7 @@ async function pollChatJobToBubble(jobId, meta={}) {
       const parser = new ThinkParser();
       parser.push(raw);
       parser.flush();
-      if (!parser.contentText.trim() && parser.thinkText.trim()) {
-        parser.contentText = parser.thinkText;
-        parser.thinkText = '';
-        streamer.hideThink && streamer.hideThink();
-      }
+      keepOrPromoteThink(parser, streamer, !!meta.enable_think);
       streamer.updateThink(parser.thinkText);
       streamer.updateContent(parser.contentText);
     }
@@ -2620,11 +2627,7 @@ async function pollChatJobToBubble(jobId, meta={}) {
       const parser = new ThinkParser();
       parser.push(pd.answer || '');
       parser.flush();
-      if (!parser.contentText.trim() && parser.thinkText.trim()) {
-        parser.contentText = parser.thinkText;
-        parser.thinkText = '';
-        streamer.hideThink && streamer.hideThink();
-      }
+      keepOrPromoteThink(parser, streamer, !!meta.enable_think);
       streamer.finalise(parser.contentText || (currentLang === 'zh' ? '（无回复）' : '(No response)'), sources);
       clearPendingJob(meta.session_id || SESSION_ID);
       if (activeChatJobId === jobId) activeChatJobId = '';
@@ -2658,11 +2661,11 @@ async function pollChatJobToBubble(jobId, meta={}) {
 
 function normaliseThinkAnswer(text) {
   const raw = String(text || '');
-  const thinkRe = /<think>([\s\S]*?)<\/think>/i;
+  const thinkRe = /<\s*(think|thinking|reasoning)\s*>([\s\S]*?)<\s*\/\s*\1\s*>/i;
   const m = raw.match(thinkRe);
   if (!m) return raw;
   const outside = raw.replace(thinkRe, '').trim();
-  return outside || m[1].trim();
+  return outside || m[2].trim();
 }
 
 async function sendRag(text) {
@@ -2685,7 +2688,7 @@ async function sendRag(text) {
       ...chatWebSearchPayload(),
     };
     const jobId = await startRecoverableChatJob(body);
-    const ragResult = await pollChatJobToBubble(jobId, {session_id: SESSION_ID});
+    const ragResult = await pollChatJobToBubble(jobId, {session_id: SESSION_ID, enable_think: thinkEnabled});
     if (ragResult.detached) return;
     answer = ragResult.answer || '';
     sources = ragResult.sources || [];
@@ -2761,7 +2764,7 @@ async function sendChainRagCode(originalText) {
       ...chatWebSearchPayload(),
     };
     const jobId = await startRecoverableChatJob(body);
-    const {answer: _ra, sources: _rs} = await pollChatJobToBubble(jobId, {session_id: SESSION_ID});
+    const {answer: _ra, sources: _rs} = await pollChatJobToBubble(jobId, {session_id: SESSION_ID, enable_think: thinkEnabled});
     if (SESSION_ID !== body.session_id) return;
     ragAnswer  = _ra || '';
     ragSources = _rs || [];
@@ -2835,7 +2838,7 @@ async function sendNormal(text, images=[]) {
     };
     if (images && images.length > 0) body.images = images;
     const jobId = await startRecoverableChatJob(body);
-    const result = await pollChatJobToBubble(jobId, {session_id: SESSION_ID});
+    const result = await pollChatJobToBubble(jobId, {session_id: SESSION_ID, enable_think: thinkEnabled});
     if (result.detached) return;
     answer = result.answer || '';
     sources = result.sources || [];
@@ -3389,7 +3392,10 @@ async function _resumePendingJob() {
 
   if (pending.kind === 'chat') {
     hideTyping();
-    const result = await pollChatJobToBubble(job_id, {session_id: SESSION_ID});
+    const result = await pollChatJobToBubble(job_id, {
+      session_id: SESSION_ID,
+      enable_think: !!(pending.body && pending.body.enable_think),
+    });
     if (result.answer) {
       chatHistory.push({role:'assistant', content: result.answer});
       _persistHistory();

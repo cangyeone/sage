@@ -2051,6 +2051,8 @@ def chat_rag():
             )
 
     system += _scientific_grounding_policy(bool(data.get("enable_web_search")))
+    if bool(data.get("enable_think", False)):
+        system += _think_summary_policy()
     if context_parts:
         system += "\n\n===== Reference passages =====\n" + "\n\n".join(context_parts)
 
@@ -2163,6 +2165,15 @@ def _scientific_grounding_policy(web_enabled: bool = False) -> str:
         "- Never present uncited guesses as literature facts.\n"
         f"- {source_rule}"
     )
+
+
+def _think_summary_policy() -> str:
+    return (
+        "\n\n当启用思考模式时，请在最终回答前输出一个简短、可公开展示的推理摘要，"
+        "并严格放在 <think>...</think> 标签内。摘要只写依据、检查点、计划或自检结果，"
+        "不要暴露隐藏推理链。标签外只输出给用户看的最终回答。"
+    )
+
 
 def _build_rag_messages(data: dict):
     """
@@ -2292,10 +2303,7 @@ def _build_rag_messages(data: dict):
     enable_think = bool(data.get("enable_think", False))
     
     if enable_think:
-        system += (
-            "\n\n如果需要推理，请严格把中间思考放在 <think>...</think> 标签内；"
-            "标签外只输出给用户看的最终回答。"
-        )
+        system += _think_summary_policy()
 
     if context_parts:
         system += "\n\n===== Reference passages =====\n" + "\n\n".join(context_parts)
@@ -2383,10 +2391,7 @@ def chat_stream():
     )
     system = append_user_profile_to_system(system)
     if enable_think:
-        system += (
-            "\n\n如果需要推理，请严格把中间思考放在 <think>...</think> 标签内；"
-            "标签外只输出给用户看的最终回答。"
-        )
+        system += _think_summary_policy()
 
     workspace_path = data.get("workspace", "")
     if workspace_path:
@@ -2451,10 +2456,7 @@ def _build_plain_messages(data: dict):
     system += _scientific_grounding_policy(bool(data.get("enable_web_search")))
     system = append_user_profile_to_system(system)
     if enable_think:
-        system += (
-            '\n\n如果需要推理，请严格把中间思考放在 <think>...</think> 标签内；'
-            '标签外只输出给用户看的最终回答。'
-        )
+        system += _think_summary_policy()
 
     workspace_path = data.get('workspace', '')
     if workspace_path:
