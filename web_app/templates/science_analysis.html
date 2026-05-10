@@ -6,6 +6,7 @@
 <title>科学分析 Agent alpha — SeismicX</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
 <style>
 :root{--accent:#2563eb;--accent2:#16a34a;--grad:linear-gradient(135deg,var(--accent),var(--accent2));--bg:#f5f7fb;}
 *{box-sizing:border-box} body{height:100vh;margin:0;background:var(--bg);display:flex;flex-direction:column;overflow:hidden;color:#222;font-size:.94rem}
@@ -42,7 +43,7 @@
 .tab-btn{border:1px solid #dbe2f1;background:#fff;border-radius:18px;padding:.32rem .7rem;font-size:.82rem}
 .tab-btn.active{background:#eaf1ff;color:#1d4ed8;border-color:#93b4ff;font-weight:700}
 .tab-pane{display:none;padding:1rem}.tab-pane.active{display:block}
-.md{line-height:1.7}.md h1,.md h2,.md h3{margin-top:1rem}.md pre{background:#f6f8fa;border:1px solid #e5e7eb;border-radius:8px;padding:.7rem;overflow:auto;white-space:pre-wrap}
+.md{line-height:1.75;font-size:.98rem;overflow-wrap:anywhere}.md h1{font-size:1.7rem;line-height:1.25;margin:1rem 0 .75rem;letter-spacing:0}.md h2{font-size:1.35rem;line-height:1.3;margin:1.1rem 0 .55rem;letter-spacing:0}.md h3{font-size:1.08rem;line-height:1.35;margin:1rem 0 .45rem;letter-spacing:0}.md p{margin:.55rem 0}.md ul,.md ol{padding-left:1.35rem}.md pre{background:#f6f8fa;border:1px solid #e5e7eb;border-radius:8px;padding:.7rem;overflow:auto;white-space:pre-wrap}.md code{background:#f3f4f6;border-radius:5px;padding:.08rem .28rem;color:#db2777}.md pre code{background:transparent;color:inherit;padding:0}.md table{width:100%;border-collapse:collapse;margin:.75rem 0;font-size:.9rem}.md th,.md td{border:1px solid #d9def0;padding:.45rem .55rem;vertical-align:top}.md th{background:#f1f4ff}.md img{max-width:100%;height:auto;display:block;margin:.85rem auto;border:1px solid #e5e7eb;border-radius:8px}.md .katex-display{overflow-x:auto;overflow-y:hidden;margin:.65rem 0}.paper-actions{display:flex;gap:.45rem;flex-wrap:wrap;margin:.4rem 0 .8rem}.paper-actions a,.paper-actions button{border:1px solid #c7d2fe;border-radius:18px;padding:.28rem .65rem;text-decoration:none;background:#eef2ff;color:#1d4ed8;font-size:.82rem}.paper-actions button{cursor:pointer}
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:.6rem;margin-bottom:.8rem}
 .stat{background:#f8fafc;border:1px solid #e5e7eb;border-radius:10px;padding:.6rem}.stat b{display:block;font-size:1.25rem;color:#1d4ed8}
 .fig-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:.8rem}.fig-card{border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;background:#fff}.fig-card img{width:100%;display:block;cursor:pointer}.fig-card div{padding:.45rem .6rem;font-size:.78rem;color:#555}
@@ -164,6 +165,8 @@
   </main>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/marked@4.3.0/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
 <script>
 const STORE_KEY='sage_science_alpha_projects_v1';
 const ACTIVE_KEY='sage_science_alpha_active_project';
@@ -174,7 +177,79 @@ function tr(k){return (T[currentLang]||T.zh)[k]||k}
 function applyLang(){document.querySelectorAll('[data-i18n]').forEach(e=>e.textContent=tr(e.dataset.i18n));document.querySelectorAll('[data-i18n-placeholder]').forEach(e=>e.placeholder=tr(e.dataset.i18nPlaceholder));document.getElementById('langLabel').textContent=currentLang==='zh'?'EN':'中'}
 function toggleLang(){currentLang=currentLang==='zh'?'en':'zh';localStorage.setItem('seismicx_lang',currentLang);applyLang()}
 function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
-function renderMd(s){let x=esc(s||'');x=x.replace(/^### (.*)$/gm,'<h3>$1</h3>').replace(/^## (.*)$/gm,'<h2>$1</h2>').replace(/^# (.*)$/gm,'<h1>$1</h1>');x=x.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>').replace(/`([^`]+)`/g,'<code>$1</code>');return '<div class="md">'+x.replace(/\n\n/g,'</p><p>').replace(/\n/g,'<br>')+'</div>'}
+function normalizeScienceMarkdown(s){return String(s||'').replace(/M\$_\\(?:text|mathrm)\{([A-Za-z]+)\}\$/g,'$M_{\\mathrm{$1}}$').replace(/M\$_\{([A-Za-z]+)\}\$/g,'$M_{$1}$').replace(/M\$_([A-Za-z]+)\$/g,'$M_{$1}$')}
+function resolveArtifactUrl(href,res){
+  const raw=String(href||'').trim().replace(/^<|>$/g,'');
+  if(!raw||raw.startsWith('http://')||raw.startsWith('https://')||raw.startsWith('data:'))return raw;
+  if(raw.startsWith('/api/science_analysis_agent/artifact'))return raw;
+  const figs=(res&&res.generated_figures)||[];
+  const hit=figs.find(fp=>String(fp).split('/').pop()===raw.split('/').pop());
+  const path=raw.startsWith('/')?raw:(hit||raw);
+  return `/api/science_analysis_agent/artifact?path=${encodeURIComponent(path)}`;
+}
+function injectReferencedFigures(text,res){
+  const figs=(res&&res.generated_figures)||[];
+  if(!figs.length)return text;
+  const inserted=new Set();
+  const imageRe=/!\[[^\]]*\]\(([^)\n]+)\)/g;
+  let m;
+  while((m=imageRe.exec(text))!==null){
+    inserted.add(String(m[1]||'').trim().replace(/^<|>$/g,'').split('/').pop());
+  }
+  const lines=String(text||'').split('\n');
+  for(const fp of figs){
+    const name=String(fp).split('/').pop();
+    if(!name||inserted.has(name)||!text.includes(name))continue;
+    const imageLine=`![${name.replace(/\.[^.]+$/,'')}](${name})`;
+    const idx=lines.findIndex(line=>line.includes(name));
+    if(idx>=0){
+      lines.splice(idx+1,0,'',imageLine,'');
+      inserted.add(name);
+    }
+  }
+  return lines.join('\n');
+}
+function protectMath(text){
+  const parts=[];
+  const stash=(expr,display)=>{const token=`@@SAGE_MATH_${parts.length}@@`;parts.push({token,expr,display});return token};
+  let out=String(text||'');
+  out=out.replace(/\$\$([\s\S]+?)\$\$/g,(_,expr)=>stash(expr,true));
+  out=out.replace(/\\\[([\s\S]+?)\\\]/g,(_,expr)=>stash(expr,true));
+  out=out.replace(/\\\(([\s\S]+?)\\\)/g,(_,expr)=>stash(expr,false));
+  out=out.replace(/(^|[^\\$])\$([^$\n]+?)\$/g,(m,prefix,expr)=>prefix+stash(expr,false));
+  return {text:out,parts};
+}
+function renderMath(expr,display){
+  if(typeof katex==='undefined')return esc(display?`$$${expr}$$`:`$${expr}$`);
+  try{return katex.renderToString(expr,{displayMode:display,throwOnError:false,strict:'ignore',trust:false})}
+  catch{return esc(display?`$$${expr}$$`:`$${expr}$`)}
+}
+function restoreMath(html,parts){let out=html;for(const p of parts){out=out.split(p.token).join(renderMath(p.expr,p.display))}return out}
+function fallbackRenderMd(text){let x=esc(text||'');x=x.replace(/^### (.*)$/gm,'<h3>$1</h3>').replace(/^## (.*)$/gm,'<h2>$1</h2>').replace(/^# (.*)$/gm,'<h1>$1</h1>');x=x.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>').replace(/`([^`]+)`/g,'<code>$1</code>');return x.replace(/\n\n/g,'</p><p>').replace(/\n/g,'<br>')}
+function renderMd(s,res){
+  const raw=injectReferencedFigures(normalizeScienceMarkdown(s),res);
+  if(!raw.trim())return '<div class="empty">Empty</div>';
+  const protectedMath=protectMath(raw);
+  let html='';
+  if(typeof marked!=='undefined'){
+    const renderer=new marked.Renderer();
+    renderer.image=(href,title,text)=>{
+      const src=resolveArtifactUrl(href,res);
+      const titleAttr=title?` title="${esc(title)}"`:'';
+      return `<img src="${src}" alt="${esc(text||'figure')}"${titleAttr}>`;
+    };
+    renderer.link=(href,title,text)=>{
+      const url=String(href||'').startsWith('/')?resolveArtifactUrl(href,res):href;
+      const titleAttr=title?` title="${esc(title)}"`:'';
+      return `<a href="${esc(url||'#')}"${titleAttr} target="_blank" rel="noopener noreferrer">${text}</a>`;
+    };
+    try{html=marked.parse(protectedMath.text,{gfm:true,breaks:false,headerIds:false,mangle:false,renderer})}
+    catch{html=fallbackRenderMd(protectedMath.text)}
+  }else{
+    html=fallbackRenderMd(protectedMath.text);
+  }
+  return '<div class="md">'+restoreMath(html,protectedMath.parts)+'</div>';
+}
 function loadProjects(){projects=JSON.parse(localStorage.getItem(STORE_KEY)||'[]');if(!projects.length)newProject(false);activeId=localStorage.getItem(ACTIVE_KEY)||projects[0].id;renderProjects();loadActive()}
 function persist(){localStorage.setItem(STORE_KEY,JSON.stringify(projects));localStorage.setItem(ACTIVE_KEY,activeId)}
 function newProject(render=true){const id='sci_'+Math.random().toString(36).slice(2,10);projects.unshift({id,name:currentLang==='zh'?'未命名科学分析':'Untitled science analysis',files:[],state:{workspace_root:'./examples/science_analysis_agent',literature_root:'',output_dir:'outputs/science_analysis_agent',authorized_roots:''}});activeId=id;persist();if(render){renderProjects();loadActive()}}
@@ -194,8 +269,10 @@ async function sendGuidance(){const p=active();const msg=guidanceInput.value.tri
 function poll(jobId){if(pollTimer)clearInterval(pollTimer);pollTimer=setInterval(async()=>{const r=await fetch('/api/science_analysis_agent/poll/'+jobId);const d=await r.json();if(!d.ok)return;renderProgress(d.progress||[]);if(d.status==='done'){clearInterval(pollTimer);spinner.style.display='none';runBtn.disabled=false;guidanceBtn.disabled=true;const p=active();p.result=d.result;p.last_output_dir=d.output_dir;persist();renderResults(d.result||{})}else if(d.status==='error'){clearInterval(pollTimer);spinner.style.display='none';runBtn.disabled=false;guidanceBtn.disabled=true;progressLog.innerHTML+=`<div class="log-line" style="border-left-color:#fecaca">${esc(d.error)}</div>`}},1300)}
 function renderProgress(items){progressLog.innerHTML=(items||[]).map(x=>`<div class="log-line"><b>${esc(x.phase||'step')}</b> ${esc(x.message||'')}</div>`).join('')||`<div class="empty">${tr('idle')}</div>`;progressLog.scrollTop=progressLog.scrollHeight}
 function renderSavedResult(res){if(res)renderResults(res)}
-function renderResults(res){const stats=[['Iterations',res.iterations_run||0],['Evidence',(res.evidence_table||[]).length],['Figures',(res.generated_figures||[]).length],['Tools',(res.tool_log||[]).length]];tab_report.innerHTML='<div class="stat-grid">'+stats.map(s=>`<div class="stat"><b>${s[1]}</b>${s[0]}</div>`).join('')+'</div>'+(res.final_report?renderMd(res.final_report):`<div class="empty">${tr('no_report')}</div>`);renderPaper(res);renderFigures(res);renderEvidence(res);renderTools(res);renderMissing(res)}
-function renderPaper(res){let html='';if(res.markdown_paper_path)html+=`<p><b>Markdown:</b> <code>${esc(res.markdown_paper_path)}</code></p>`;if(res.markdown_paper)html+=renderMd(res.markdown_paper);if(res.latex_path)html+=`<p><b>LaTeX:</b> <code>${esc(res.latex_path)}</code></p>`;if(res.latex_bib_path)html+=`<p><b>BibTeX:</b> <code>${esc(res.latex_bib_path)}</code></p>`;if(res.latex_pdf)html+=`<p><b>PDF:</b> <code>${esc(res.latex_pdf)}</code></p>`;if(res.paper_html)html+=`<p><b>HTML:</b> <code>${esc(res.paper_html)}</code></p>`;if(res.latex_paper)html+=`<h3>LaTeX Draft</h3><pre>${esc(res.latex_paper)}</pre>`;const qs=(res.scientific_questions||[]).map(q=>`<li>${esc(q)}</li>`).join('');if(qs)html+=`<h3>Scientific questions</h3><ul>${qs}</ul>`;tab_paper.innerHTML=html||`<div class="empty">${tr('no_paper')}</div>`}
+function renderResults(res){const stats=[['Iterations',res.iterations_run||0],['Evidence',(res.evidence_table||[]).length],['Figures',(res.generated_figures||[]).length],['Tools',(res.tool_log||[]).length]];tab_report.innerHTML='<div class="stat-grid">'+stats.map(s=>`<div class="stat"><b>${s[1]}</b>${s[0]}</div>`).join('')+'</div>'+(res.final_report?renderMd(res.final_report,res):`<div class="empty">${tr('no_report')}</div>`);renderPaper(res);renderFigures(res);renderEvidence(res);renderTools(res);renderMissing(res)}
+function artifactLink(path){return `/api/science_analysis_agent/artifact?path=${encodeURIComponent(path)}`}
+async function exportPaperPdf(){const p=active();const res=p?.result;if(!p||!res)return;const btn=document.getElementById('exportPdfBtn');if(btn){btn.disabled=true;btn.textContent='Exporting...'}const body={session_id:p.id,workspace_root:workspaceRoot.value,output_dir:res._run_output_dir||p.last_output_dir||p.output_dir||outputDir.value,markdown_paper:res.markdown_paper||'',markdown_paper_path:res.markdown_paper_rendered_path||res.markdown_paper_path||'',generated_figures:res.generated_figures||[]};try{const r=await fetch('/api/science_analysis_agent/export_pdf',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();if(!d.ok)throw new Error(d.error||'Export failed');p.result={...res,...d.result};p.last_output_dir=d.output_dir||p.last_output_dir;persist();renderResults(p.result)}catch(e){if(btn){btn.disabled=false;btn.textContent='Generate PDF'}alert(e.message||e)}}
+function renderPaper(res){let html='';const pdf=res.paper_pdf||res.markdown_pdf||res.latex_pdf;const actions=[];if(pdf)actions.push(`<a href="${artifactLink(pdf)}" target="_blank"><i class="bi bi-file-earmark-pdf"></i> PDF</a>`);else if(res.markdown_paper||res.markdown_paper_path)actions.push(`<button id="exportPdfBtn" onclick="exportPaperPdf()"><i class="bi bi-file-earmark-pdf"></i> Generate PDF</button>`);if(res.paper_html)actions.push(`<a href="${artifactLink(res.paper_html)}" target="_blank"><i class="bi bi-filetype-html"></i> HTML</a>`);if(res.markdown_paper_rendered_path||res.markdown_paper_path)actions.push(`<a href="${artifactLink(res.markdown_paper_rendered_path||res.markdown_paper_path)}" target="_blank"><i class="bi bi-markdown"></i> Markdown</a>`);if(actions.length)html+=`<div class="paper-actions">${actions.join('')}</div>`;if(res.paper_pdf_error)html+=`<p class="text-warning small">PDF export warning: ${esc(res.paper_pdf_error)}</p>`;if(res.markdown_paper_path)html+=`<p><b>Markdown:</b> <code>${esc(res.markdown_paper_path)}</code></p>`;if(res.markdown_paper)html+=renderMd(res.markdown_paper,res);if(res.latex_path)html+=`<p><b>LaTeX:</b> <code>${esc(res.latex_path)}</code></p>`;if(res.latex_bib_path)html+=`<p><b>BibTeX:</b> <code>${esc(res.latex_bib_path)}</code></p>`;if(pdf)html+=`<p><b>PDF:</b> <code>${esc(pdf)}</code></p>`;if(res.paper_html)html+=`<p><b>HTML:</b> <code>${esc(res.paper_html)}</code></p>`;if(res.latex_paper)html+=`<h3>LaTeX Draft</h3><pre>${esc(res.latex_paper)}</pre>`;const qs=(res.scientific_questions||[]).map(q=>`<li>${esc(q)}</li>`).join('');if(qs)html+=`<h3>Scientific questions</h3><ul>${qs}</ul>`;tab_paper.innerHTML=html||`<div class="empty">${tr('no_paper')}</div>`}
 function renderFigures(res){const figs=res.generated_figures||[];const data=res._figure_data||{};tab_figures.innerHTML=figs.length?`<div class="fig-grid">${figs.map(fp=>{const name=fp.split('/').pop();const src=data[fp]||data[name]?`data:image/png;base64,${data[fp]||data[name]}`:`/api/science_analysis_agent/artifact?path=${encodeURIComponent(fp)}`;return `<div class="fig-card"><img src="${src}" onclick="window.open('${src}','_blank')"><div>${esc(name)}</div></div>`}).join('')}</div>`:`<div class="empty">${tr('no_figures')}</div>`}
 function renderEvidence(res){const ev=res.evidence_table||[];const stats=res.statistical_results||[];let html=stats.map(s=>`<div class="ev"><b>${esc(s.title||s.artifact_id||'stat')}</b><pre>${esc(s.content||s.summary||'')}</pre></div>`).join('');html+=ev.map(e=>`<div class="ev"><span class="ev-id">${esc(e.evidence_id||'E')}</span> <b>${esc(e.source_type||'source')}</b><p>${esc(e.observation||'')}</p><p class="muted">${esc(e.source||'')} ${e.source_excerpt?'- '+esc(e.source_excerpt):''}</p></div>`).join('');tab_evidence.innerHTML=html||`<div class="empty">${tr('no_evidence')}</div>`}
 function renderTools(res){const logs=res.tool_log||[];tab_tools.innerHTML=logs.length?logs.map(t=>`<div class="ev"><b>${esc(t.tool||'tool')}.${esc(t.method||'')}</b><p>${esc(t.reason||'')}</p><pre>${esc(t.result_summary||t.error||'')}</pre></div>`).join(''):`<div class="empty">${tr('no_tools')}</div>`}

@@ -347,6 +347,167 @@ def _science_resolve_workspace_root(value: str | Path | None, session_id: str = 
     return repo_candidate
 
 
+def _science_normalize_markdown_text(text: str) -> str:
+    """Normalize common LaTeX fragments before web/PDF rendering."""
+    value = str(text or "")
+    value = _re.sub(r"M\$_\\(?:text|mathrm)\{([A-Za-z]+)\}\$", r"$M_{\\mathrm{\1}}$", value)
+    value = _re.sub(r"M\$_\{([A-Za-z]+)\}\$", r"$M_{\1}$", value)
+    value = _re.sub(r"M\$_([A-Za-z]+)\$", r"$M_{\1}$", value)
+    return _drop_incomplete_fenced_tail(value)
+
+
+def _science_rewrite_markdown_image_paths(markdown_text: str, output_dir: Path, figures: list | None = None) -> str:
+    """Resolve Markdown image paths to local files so frontend and PDF export can load them."""
+    output_dir = Path(output_dir).expanduser()
+    by_name: dict[str, Path] = {}
+    for item in figures or []:
+        try:
+            p = Path(str(item)).expanduser()
+            if p.exists() and p.is_file():
+                by_name[p.name] = p.resolve()
+        except Exception:
+            continue
+    try:
+        for p in output_dir.rglob("*"):
+            if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".svg"} and p.is_file():
+                by_name.setdefault(p.name, p.resolve())
+    except Exception:
+        pass
+
+    def _replace(match: _re.Match) -> str:
+        alt, raw_href = match.group(1), match.group(2).strip()
+        if not raw_href or raw_href.startswith(("http://", "https://", "data:")):
+            return match.group(0)
+        href = raw_href.strip("<>")
+        candidate = Path(href).expanduser()
+        if candidate.is_absolute() and candidate.exists():
+            resolved = candidate.resolve()
+        else:
+            resolved = by_name.get(Path(href).name)
+            if resolved is None:
+                local = output_dir / href
+                if local.exists():
+                    resolved = local.resolve()
+        if not resolved:
+            return match.group(0)
+        title = ""
+        if " " in raw_href and raw_href.count('"') >= 2:
+            title = " " + raw_href[raw_href.find('"'):]
+        return f"![{alt}]({resolved}{title})"
+
+    text = _re.sub(r"!\[([^\]]*)\]\(([^)\n]+)\)", _replace, markdown_text)
+
+    inserted_names = {
+        Path(m.group(1).strip().strip("<>")).name
+        for m in _re.finditer(r"!\[[^\]]*\]\(([^)\n]+)\)", text)
+    }
+    lines = text.splitlines()
+    for name, resolved in sorted(by_name.items()):
+        if name in inserted_names or name not in text:
+            continue
+        image_line = f"![{Path(name).stem}]({resolved})"
+        for idx, line in enumerate(lines):
+            if name in line:
+                lines[idx + 1:idx + 1] = ["", image_line, ""]
+                inserted_names.add(name)
+                break
+    return "\n".join(lines)
+
+
+def _science_finalize_result_artifacts(result: dict, output_dir: Path, progress_cb=None) -> None:
+    """Create render-ready Markdown/HTML/PDF artifacts for Science Agent outputs."""
+    if not isinstance(result, dict):
+        return
+    output_dir = Path(output_dir).expanduser()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    md_text = result.get("markdown_paper") or ""
+    md_path = Path(str(result.get("markdown_paper_path") or "")).expanduser()
+    if not md_text and md_path.exists():
+        try:
+            md_text = md_path.read_text(encoding="utf-8")
+        except Exception:
+            md_text = ""
+    if not md_text:
+        return
+
+    md_text = _science_normalize_markdown_text(md_text)
+    md_text = _science_rewrite_markdown_image_paths(md_text, output_dir, result.get("generated_figures") or [])
+    result["markdown_paper"] = md_text
+
+    rendered_md = output_dir / "science_paper_rendered.md"
+    try:
+        rendered_md.write_text(md_text, encoding="utf-8")
+        result["markdown_paper_rendered_path"] = str(rendered_md)
+    except Exception as exc:
+        result["markdown_render_error"] = str(exc)
+
+    try:
+        import markdown as _markdown
+        body = _markdown.markdown(
+            md_text,
+            extensions=["extra", "tables", "fenced_code", "sane_lists"],
+            output_format="html5",
+        )
+        html_path = output_dir / "science_paper_rendered.html"
+        html_path.write_text(
+            "<!doctype html><html><head><meta charset='utf-8'>"
+            "<style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.65;"
+            "max-width:920px;margin:32px auto;padding:0 28px;color:#222}h1{font-size:28px;line-height:1.25}"
+            "h2{font-size:22px;margin-top:1.4em}h3{font-size:18px;margin-top:1.2em}"
+            "img{max-width:100%;height:auto;display:block;margin:16px auto;border:1px solid #ddd}"
+            "table{border-collapse:collapse;width:100%;margin:14px 0}th,td{border:1px solid #ddd;padding:6px 8px}"
+            "pre{background:#f6f8fa;padding:12px;border-radius:8px;overflow:auto}code{background:#f3f4f6;padding:1px 4px}</style>"
+            "</head><body>" + body + "</body></html>",
+            encoding="utf-8",
+        )
+        result["paper_html"] = str(html_path)
+    except Exception as exc:
+        result["paper_html_error"] = str(exc)
+
+    existing_pdf = str(result.get("latex_pdf") or result.get("paper_pdf") or "").strip()
+    if existing_pdf and Path(existing_pdf).expanduser().exists():
+        result["paper_pdf"] = existing_pdf
+        return
+
+    pdf_path = output_dir / "science_paper_rendered.pdf"
+    rendered_md_path = result.get("markdown_paper_rendered_path")
+    if not rendered_md_path:
+        return
+    pandoc = None
+    try:
+        import shutil as _shutil
+        pandoc = _shutil.which("pandoc")
+    except Exception:
+        pandoc = None
+    if not pandoc:
+        result["paper_pdf_error"] = "pandoc not found; HTML export is available instead."
+        return
+    cmd = [
+        pandoc,
+        rendered_md_path,
+        "-o",
+        str(pdf_path),
+        "--pdf-engine=xelatex",
+        "-V",
+        "CJKmainfont=Songti SC",
+        "-V",
+        "mainfont=Times New Roman",
+    ]
+    try:
+        proc = subprocess.run(cmd, cwd=str(output_dir), capture_output=True, text=True, timeout=90, check=False)
+        if proc.returncode != 0:
+            cmd2 = [pandoc, rendered_md_path, "-o", str(pdf_path), "--pdf-engine=xelatex"]
+            proc = subprocess.run(cmd2, cwd=str(output_dir), capture_output=True, text=True, timeout=90, check=False)
+        if proc.returncode == 0 and pdf_path.exists() and pdf_path.stat().st_size > 0:
+            result["paper_pdf"] = str(pdf_path)
+            if progress_cb:
+                progress_cb({"phase": "paper", "message": f"已生成 PDF: {pdf_path}"})
+        else:
+            result["paper_pdf_error"] = (proc.stderr or proc.stdout or "pandoc failed")[-1200:]
+    except Exception as exc:
+        result["paper_pdf_error"] = str(exc)
+
+
 def _clean_conversation_title(value: str) -> str:
     title = str(value or "").strip()
     if title in {"新对话", "旧对话", "New chat", "Old chat"}:
@@ -1453,6 +1614,7 @@ def science_analysis_agent():
                 result.setdefault("_session_id", session_id)
                 result.setdefault("_agent_kind", "science_analysis")
                 result.setdefault("_workspace_root", workspace_root_str)
+                _science_finalize_result_artifacts(result, effective_output_dir, _prog)
             _science_agent_jobs[job_id]["status"] = "done"
             _science_agent_jobs[job_id]["result"] = result
         except Exception as exc:
@@ -1595,6 +1757,49 @@ def science_analysis_agent_artifact():
     if p.suffix.lower() == '.svg':
         return send_file(str(resolved), mimetype='image/svg+xml')
     return send_file(str(resolved))
+
+
+@bp.route('/api/science_analysis_agent/export_pdf', methods=['POST'])
+def science_analysis_agent_export_pdf():
+    """Export an already-generated Markdown science paper to HTML/PDF."""
+    data = request.json or {}
+    session_id = _clean_conversation_id(data.get("session_id") or "default_science")
+    workspace_root = _science_resolve_workspace_root(data.get("workspace_root"), session_id)
+    output_raw = str(data.get("output_dir") or data.get("_run_output_dir") or "").strip()
+    if output_raw:
+        out = Path(output_raw).expanduser()
+        if not out.is_absolute():
+            out = workspace_root / out
+    else:
+        out = workspace_root / "outputs" / "science_analysis_agent" / session_id / "manual_export"
+    try:
+        out_resolved = out.resolve()
+        ws_resolved = workspace_root.resolve()
+        if ws_resolved not in [out_resolved, *out_resolved.parents]:
+            out = ws_resolved / "outputs" / "science_analysis_agent" / session_id / "manual_export"
+    except Exception:
+        out = workspace_root / "outputs" / "science_analysis_agent" / session_id / "manual_export"
+    result = {
+        "markdown_paper": data.get("markdown_paper") or "",
+        "markdown_paper_path": data.get("markdown_paper_path") or "",
+        "generated_figures": data.get("generated_figures") or [],
+    }
+    logs = []
+    _science_finalize_result_artifacts(result, out, lambda d: logs.append(d))
+    if not (result.get("paper_pdf") or result.get("paper_html")):
+        return jsonify({"ok": False, "error": result.get("paper_pdf_error") or result.get("paper_html_error") or "No paper content to export"}), 400
+    _science_agent_jobs[f"export_{session_id}"] = {
+        "status": "done",
+        "progress": logs,
+        "guidance": [],
+        "result": result,
+        "error": None,
+        "ts": _time.time(),
+        "session_id": session_id,
+        "workspace_root": str(workspace_root),
+        "output_dir": str(out),
+    }
+    return jsonify({"ok": True, "result": result, "logs": logs, "output_dir": str(out)})
 
 
 # ── EvidenceGeoAgent — file upload for workspace ───────────────────────────
