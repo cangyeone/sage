@@ -2221,7 +2221,8 @@ class ThinkParser {
   }
 
   push(chunk) {
-    this._buf += String(chunk || '')
+    this._buf += String(chunk || '');
+    this._buf = this._buf
       .replace(/<\s*(think|thinking|reasoning)\s*>/gi, '<think>')
       .replace(/<\s*\/\s*(think|thinking|reasoning)\s*>/gi, '</think>');
     const OPEN  = '<think>';

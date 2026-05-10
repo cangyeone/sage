@@ -35,7 +35,7 @@ SAGE is an earthquake science AI platform integrating **natural language interac
 - [Installation](#installation)
   - [System Requirements](#system-requirements)
   - [Basic Installation](#basic-installation)
-  - [pnsn Phase Picking Module Installation](#pnsn-phase-picking-module-installation)
+  - [pnsn Phase Picking Module Location](#pnsn-phase-picking-module-location)
   - [RAG Dependencies](#rag-dependencies)
     - [Alternative: Download BGE-M3 via ModelScope (recommended for users in China)](#alternative-download-bge-m3-via-modelscope-recommended-for-users-in-china)
 - [Configuring LLM Backend](#configuring-llm-backend)
@@ -183,20 +183,17 @@ cd sage
 # If you already cloned without submodules, run:
 # git submodule update --init --recursive
 
-# 2. Clone the pnsn phase picking module (must be placed under sage/ directory)
-git clone https://github.com/cangyeone/pnsn.git
-
-# 3. Install SAGE dependencies
+# 2. Install SAGE dependencies
 pip install -r requirements.txt
 
-# 4. Start Ollama and pull model (choose one)
+# 3. Start Ollama and pull model (choose one)
 ollama serve &
 ollama pull qwen3:8b          # Lightweight, ~6 GB
 
-# 5. Start Web service
+# 4. Start Web service
 python web_app/app.py --port 5010
 
-# 6. Access via browser
+# 5. Access via browser
 open http://localhost:5010
 ```
 
@@ -232,27 +229,32 @@ pip install matplotlib plotly                         # Visualization
 pip install FlagEmbedding faiss-cpu pdfminer.six PyMuPDF  # RAG Knowledge Base
 ```
 
-### pnsn Phase Picking Module Installation
+### pnsn Phase Picking Module Location
 
-pnsn is a deep learning model library specifically for phase picking, developed by [cangyeone](https://github.com/cangyeone). **Must clone it to the `sage/` main directory**, because SAGE calls its scripts and model files through relative paths.
+pnsn is a deep learning model library specifically for phase picking, developed by [cangyeone](https://github.com/cangyeone). In SAGE, pnsn is managed as part of the OpenAI-style skill `pnsn_phase_detection`; the expected location is `seismo_skill/skills/pnsn_phase_detection/pnsn/`, so the code, configuration, and model files stay with the skill.
 
 ```bash
-# Execute in sage/ directory
-git clone https://github.com/cangyeone/pnsn.git
+# Only needed if the skill-local pnsn folder is missing
+git clone https://github.com/cangyeone/pnsn.git \
+  seismo_skill/skills/pnsn_phase_detection/pnsn
 ```
 
-The current pnsn repository does not provide a separate `requirements.txt` and does not need to be installed as a Python package for SAGE usage. Install SAGE's top-level dependencies with `pip install -r requirements.txt`; SAGE then directly calls files such as `pnsn/picker.py`, `pnsn/fastlinker.py`, and `pnsn/pickers/*.jit`.
+The current pnsn repository does not provide a separate `requirements.txt` and does not need to be installed as a Python package for SAGE usage. Install SAGE's top-level dependencies with `pip install -r requirements.txt`; SAGE then directly calls files such as `seismo_skill/skills/pnsn_phase_detection/pnsn/picker.py`, `fastlinker.py`, and `pickers/*.jit`.
 
 **Directory Structure Confirmation:**
 
 ```
 sage/
-├── pnsn/               ← Must be in this location
-│   ├── picker.py
-│   ├── fastlinker.py
-│   ├── gammalink.py
-│   ├── pickers/        ← JIT / ONNX model files
-│   └── config/
+├── seismo_skill/
+│   └── skills/
+│       └── pnsn_phase_detection/
+│           ├── SKILL.md
+│           └── pnsn/       ← Skill-local pnsn code and models
+│               ├── picker.py
+│               ├── fastlinker.py
+│               ├── gammalink.py
+│               ├── pickers/  ← JIT / ONNX model files
+│               └── config/
 ├── web_app/
 └── ...
 ```
@@ -473,7 +475,7 @@ python seismic_cli.py chat
 # Single station picking
 python seismic_cli.py pick \
     -i /data/station/ \
-    -m pnsn/pickers/pnsn.v3.jit
+    -m seismo_skill/skills/pnsn_phase_detection/pnsn/pickers/pnsn.v3.jit
 
 # Batch picking (all waveform files in directory)
 python seismic_cli.py pick \
@@ -1609,12 +1611,16 @@ sage/
 ├── seismo_tools/                 # External tool registry
 │   └── tool_registry.py          # HypoDD / VELEST / HASH etc.
 │
-├── pnsn/                         # ← Needs separate clone (see installation instructions)
-│   ├── picker.py                 # Phase picking entry point
-│   ├── fastlinker.py             # FastLink event association
-│   ├── gammalink.py              # Gamma event association
-│   ├── pickers/                  # JIT / ONNX model files
-│   └── config/                   # Picker parameter configuration
+├── seismo_skill/
+│   └── skills/
+│       └── pnsn_phase_detection/ # OpenAI-style PNSN phase picking skill
+│           ├── SKILL.md
+│           └── pnsn/             # Skill-local pnsn code and models
+│               ├── picker.py
+│               ├── fastlinker.py
+│               ├── gammalink.py
+│               ├── pickers/      # JIT / ONNX model files
+│               └── config/       # Picker parameter configuration
 │
 ├── conversational_agent.py       # Conversation Agent core (intent classification + skill execution)
 ├── config_manager.py             # LLM configuration management

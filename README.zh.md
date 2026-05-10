@@ -30,7 +30,7 @@ SAGE 是集**自然语言交互**、**智能震相拾取**、**统计分析**、
 - [安装](#安装)
   - [系统要求](#系统要求)
   - [基础安装](#基础安装)
-  - [pnsn 震相拾取模块](#pnsn-震相拾取模块安装)
+  - [pnsn 震相拾取模块](#pnsn-震相拾取模块位置)
   - [RAG 功能依赖](#rag-功能依赖)
 - [配置 LLM 后端](#配置-llm-后端)
 - [Web 界面](#web-界面)
@@ -139,20 +139,17 @@ cd sage
 # 如果已经普通 clone 过，补拉子模块：
 # git submodule update --init --recursive
 
-# 2. 克隆 pnsn 震相拾取模块（必须放在 sage/ 目录下）
-git clone https://github.com/cangyeone/pnsn.git
-
-# 3. 安装 SAGE 依赖
+# 2. 安装 SAGE 依赖
 pip install -r requirements.txt
 
-# 4. 启动 Ollama 并拉取模型（选一个）
+# 3. 启动 Ollama 并拉取模型（选一个）
 ollama serve &
 ollama pull qwen3:8b          # 轻量，约 6 GB
 
-# 5. 启动 Web 服务
+# 4. 启动 Web 服务
 python web_app/app.py --port 5010
 
-# 6. 浏览器访问
+# 5. 浏览器访问
 open http://localhost:5010
 ```
 
@@ -188,27 +185,32 @@ pip install matplotlib plotly                         # 可视化
 pip install FlagEmbedding faiss-cpu pdfminer.six PyMuPDF  # RAG 知识库
 ```
 
-### pnsn 震相拾取模块安装
+### pnsn 震相拾取模块位置
 
-pnsn 是专门用于震相拾取的深度学习模型库，由 [cangyeone](https://github.com/cangyeone) 开发。**必须将其克隆到 `sage/` 主目录下**，因为 SAGE 通过相对路径调用其中的脚本和模型文件。
+pnsn 是专门用于震相拾取的深度学习模型库，由 [cangyeone](https://github.com/cangyeone) 开发。在 SAGE 中，pnsn 作为 OpenAI-style 技能 `pnsn_phase_detection` 的组成部分管理，推荐位置为 `seismo_skill/skills/pnsn_phase_detection/pnsn/`，这样代码、配置和模型文件都跟随技能统一管理。
 
 ```bash
-# 在 sage/ 目录下执行
-git clone https://github.com/cangyeone/pnsn.git
+# 仅当技能目录下缺少 pnsn 时需要执行
+git clone https://github.com/cangyeone/pnsn.git \
+  seismo_skill/skills/pnsn_phase_detection/pnsn
 ```
 
-当前 pnsn 仓库没有单独的 `requirements.txt`，用于 SAGE 时也不需要把 pnsn 安装成 Python 包。只需安装 SAGE 顶层依赖 `pip install -r requirements.txt`；SAGE 会直接调用 `pnsn/picker.py`、`pnsn/fastlinker.py`、`pnsn/pickers/*.jit` 等文件。
+当前 pnsn 仓库没有单独的 `requirements.txt`，用于 SAGE 时也不需要把 pnsn 安装成 Python 包。只需安装 SAGE 顶层依赖 `pip install -r requirements.txt`；SAGE 会直接调用 `seismo_skill/skills/pnsn_phase_detection/pnsn/picker.py`、`fastlinker.py`、`pickers/*.jit` 等文件。
 
 **目录结构确认：**
 
 ```
 sage/
-├── pnsn/               ← 必须在此位置
-│   ├── picker.py
-│   ├── fastlinker.py
-│   ├── gammalink.py
-│   ├── pickers/        ← JIT / ONNX 模型文件
-│   └── config/
+├── seismo_skill/
+│   └── skills/
+│       └── pnsn_phase_detection/
+│           ├── SKILL.md
+│           └── pnsn/       ← 技能内置 pnsn 代码和模型
+│               ├── picker.py
+│               ├── fastlinker.py
+│               ├── gammalink.py
+│               ├── pickers/  ← JIT / ONNX 模型文件
+│               └── config/
 ├── web_app/
 └── ...
 ```
@@ -429,7 +431,7 @@ python seismic_cli.py chat
 # 单台拾取
 python seismic_cli.py pick \
     -i /data/station/ \
-    -m pnsn/pickers/pnsn.v3.jit
+    -m seismo_skill/skills/pnsn_phase_detection/pnsn/pickers/pnsn.v3.jit
 
 # 批量拾取（目录下所有波形文件）
 python seismic_cli.py pick \
@@ -1511,12 +1513,16 @@ sage/
 ├── seismo_tools/                 # 外部工具注册表
 │   └── tool_registry.py          # HypoDD / VELEST / HASH 等
 │
-├── pnsn/                         # ← 需单独 clone（见安装说明）
-│   ├── picker.py                 # 震相拾取入口
-│   ├── fastlinker.py             # FastLink 震相关联
-│   ├── gammalink.py              # Gamma 震相关联
-│   ├── pickers/                  # JIT / ONNX 模型文件
-│   └── config/                   # 拾取器参数配置
+├── seismo_skill/
+│   └── skills/
+│       └── pnsn_phase_detection/ # OpenAI-style PNSN 震相拾取技能
+│           ├── SKILL.md
+│           └── pnsn/             # 技能内置 pnsn 代码和模型
+│               ├── picker.py
+│               ├── fastlinker.py
+│               ├── gammalink.py
+│               ├── pickers/      # JIT / ONNX 模型文件
+│               └── config/       # 拾取器参数配置
 │
 ├── conversational_agent.py       # 对话 Agent 核心（意图分类 + 技能执行）
 ├── config_manager.py             # LLM 配置管理
