@@ -11,7 +11,7 @@
 
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Python-3.9%2B-blue" alt="Python"/>
+  <img src="https://img.shields.io/badge/Python-3.9--3.12-blue" alt="Python"/>
   <img src="https://img.shields.io/badge/Framework-Flask-lightgrey" alt="Flask"/>
   <img src="https://img.shields.io/badge/LLM-Ollama%20%7C%20OpenAI%20Compatible-green" alt="LLM"/>
   <img src="https://img.shields.io/badge/RAG-BGE--M3%20%2B%20FAISS-orange" alt="RAG"/>
@@ -158,7 +158,7 @@ python web_app/app.py --port 5010
 | Resource | Minimum Requirements | Recommended Configuration |
 |------|---------|---------|
 | **Operating System** | macOS / Linux / Windows | macOS 13+ / Ubuntu 22.04+ |
-| **Python** | 3.9 | 3.10 / 3.11 |
+| **Python** | 3.9 | 3.10 / 3.11 / 3.12 (avoid 3.13+ for now) |
 | **Memory (RAM)** | 8 GB | 16 GB+ (for running local LLM) |
 | **Storage Space** | 5 GB | 30 GB+ (models + knowledge base) |
 | **GPU** | Optional | CUDA 11.8+ or Apple Metal (for accelerated inference) |

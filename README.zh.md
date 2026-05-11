@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Python-3.9%2B-blue" alt="Python"/>
+  <img src="https://img.shields.io/badge/Python-3.9--3.12-blue" alt="Python"/>
   <img src="https://img.shields.io/badge/Framework-Flask-lightgrey" alt="Flask"/>
   <img src="https://img.shields.io/badge/LLM-Ollama%20%7C%20OpenAI%20Compatible-green" alt="LLM"/>
   <img src="https://img.shields.io/badge/RAG-BGE--M3%20%2B%20FAISS-orange" alt="RAG"/>
@@ -156,7 +156,7 @@ python web_app/app.py --port 5010
 | 资源 | 最低要求 | 推荐配置 |
 |------|---------|---------|
 | **操作系统** | macOS / Linux / Windows | macOS 13+ / Ubuntu 22.04+ |
-| **Python** | 3.9 | 3.10 / 3.11 |
+| **Python** | 3.9 | 3.10 / 3.11 / 3.12（暂不建议 3.13+） |
 | **内存 (RAM)** | 8 GB | 16 GB+（运行本地 LLM） |
 | **存储空间** | 5 GB | 30 GB+（模型 + 知识库） |
 | **GPU** | 可选 | CUDA 11.8+ 或 Apple Metal（加速推理） |

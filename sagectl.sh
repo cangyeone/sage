@@ -30,7 +30,7 @@ mkdir -p "$LOG_DIR"
 
 info() { printf '\033[1;34m[info]\033[0m %s\n' "$*"; }
 ok() { printf '\033[1;32m[ok]\033[0m %s\n' "$*"; }
-warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
 fail() { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
 
 usage() {
@@ -57,6 +57,7 @@ Environment overrides:
   SAGE_PORT=5011 ./sagectl.sh start
   SAGE_HOST=0.0.0.0 ./sagectl.sh start
   SAGE_AUTO_OPEN=0 ./sagectl.sh up
+  SAGE_PYTHON=/Users/anaconda3/bin/python ./sagectl.sh start
   SAGE_VENV=/path/to/venv ./sagectl.sh setup
 
 Runtime files:
@@ -64,25 +65,95 @@ Runtime files:
 EOF
 }
 
+python_candidates() {
+  local seen="" py
+  for py in "${SAGE_PYTHON:-}" "$(command -v python 2>/dev/null || true)" "$(command -v python3 2>/dev/null || true)" "$SAGE_VENV/bin/python"; do
+    [[ -n "$py" && -x "$py" ]] || continue
+    case ":$seen:" in
+      *":$py:"*) ;;
+      *) seen="${seen:+$seen:}$py"; printf '%s\n' "$py" ;;
+    esac
+  done
+}
+
+python_supported() {
+  local py="$1"
+  "$py" - <<'PY' >/dev/null 2>&1
+import sys
+raise SystemExit(0 if (3, 9) <= sys.version_info[:2] < (3, 13) else 1)
+PY
+}
+
+python_version_text() {
+  local py="$1"
+  "$py" - <<'PY' 2>/dev/null || true
+import sys
+print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
+PY
+}
+
+deps_ready_for() {
+  local py="$1"
+  "$py" - <<'PY' >/dev/null 2>&1
+import flask
+import flask_cors
+import numpy
+import pandas
+import scipy
+import requests
+import matplotlib
+import plotly
+import pdfminer
+import fitz
+import jieba
+import openai
+import ollama
+PY
+}
+
 python_cmd() {
-  if [[ -x "$SAGE_VENV/bin/python" ]]; then
-    printf '%s\n' "$SAGE_VENV/bin/python"
-  elif command -v python3 >/dev/null 2>&1; then
-    command -v python3
-  elif command -v python >/dev/null 2>&1; then
-    command -v python
-  else
-    fail "Python not found. Please install Python 3.9+ first."
+  local py first_supported="" first_any=""
+  while IFS= read -r py; do
+    [[ -n "$first_any" ]] || first_any="$py"
+    if python_supported "$py"; then
+      [[ -n "$first_supported" ]] || first_supported="$py"
+      if deps_ready_for "$py"; then
+        printf '%s\n' "$py"
+        return
+      fi
+    fi
+  done < <(python_candidates)
+
+  if [[ -n "$first_supported" ]]; then
+    printf '%s\n' "$first_supported"
+    return
   fi
+  if [[ -n "$first_any" ]]; then
+    warn "Found Python $(python_version_text "$first_any"), but SAGE dependencies are best supported on Python 3.9-3.12."
+    printf '%s\n' "$first_any"
+    return
+  fi
+  fail "Python not found. Please install Python 3.9-3.12 first."
 }
 
 ensure_venv() {
-  if [[ -x "$SAGE_VENV/bin/python" ]]; then
+  local py
+  if [[ -x "$SAGE_VENV/bin/python" ]] && python_supported "$SAGE_VENV/bin/python"; then
     ok "Using virtualenv: $SAGE_VENV"
     return
   fi
-  local py
-  py="$(python_cmd)"
+  if [[ -x "$SAGE_VENV/bin/python" ]]; then
+    warn "Existing virtualenv uses Python $(python_version_text "$SAGE_VENV/bin/python"), which is not supported by several SAGE dependencies. Recreating it."
+    rm -rf "$SAGE_VENV"
+  fi
+  py=""
+  while IFS= read -r candidate; do
+    if python_supported "$candidate"; then
+      py="$candidate"
+      break
+    fi
+  done < <(python_candidates)
+  [[ -n "$py" ]] || fail "No supported Python found. Please use Python 3.9-3.12, e.g. conda activate base, then rerun."
   info "Creating virtualenv: $SAGE_VENV"
   "$py" -m venv "$SAGE_VENV"
   ok "Virtualenv created"
@@ -91,9 +162,7 @@ ensure_venv() {
 deps_ready() {
   local py
   py="$(python_cmd)"
-  "$py" - <<'PY' >/dev/null 2>&1
-import flask
-PY
+  python_supported "$py" && deps_ready_for "$py"
 }
 
 write_env_file() {
@@ -102,6 +171,7 @@ SAGE_HOST=$SAGE_HOST
 SAGE_PORT=$SAGE_PORT
 SAGE_URL=http://$SAGE_HOST:$SAGE_PORT
 SAGE_VENV=$SAGE_VENV
+SAGE_PYTHON=$(python_cmd)
 SAGE_RUNTIME_DIR=$SAGE_RUNTIME_DIR
 WEB_LOG=$WEB_LOG
 PID_FILE=$PID_FILE
@@ -109,9 +179,14 @@ EOF
 }
 
 install_deps() {
+  if deps_ready; then
+    ok "Python environment already has required web dependencies: $(python_cmd)"
+    write_env_file
+    return
+  fi
   ensure_venv
   local py
-  py="$(python_cmd)"
+  py="$SAGE_VENV/bin/python"
   info "Upgrading pip toolchain"
   "$py" -m pip install --upgrade pip setuptools wheel
 
@@ -172,7 +247,7 @@ start_web() {
     fail "Port $SAGE_PORT is already in use by PID $existing. Stop it or use SAGE_PORT=5011 ./sagectl.sh start"
   fi
 
-  if [[ ! -x "$SAGE_VENV/bin/python" ]] || ! deps_ready; then
+  if ! deps_ready; then
     warn "Python environment is not ready; running setup first"
     install_deps
   fi
@@ -320,7 +395,12 @@ doctor() {
 }
 
 up() {
-  install_deps
+  if deps_ready; then
+    ok "Python environment is ready: $(python_cmd)"
+    write_env_file
+  else
+    install_deps
+  fi
   configure_sage
   start_web
   if [[ "$SAGE_AUTO_OPEN" == "1" ]]; then
