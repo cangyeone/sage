@@ -229,6 +229,14 @@ def _science_numeric_text_score(text: str) -> float:
 def _science_guess_file_role(path: Path, preview: str) -> str:
     name = path.name.lower()
     ext = path.suffix.lower()
+    norm_parts = {str(part).lower() for part in path.parts}
+    if (
+        "parameter_optimization" in norm_parts
+        or "parameter_optimization" in name
+        or name in {"best_parameters.json", "optimization_history.csv", "optimization_report.md", "optimization_job_summary.json"}
+        or "optimization" in name
+    ):
+        return "parameter_optimization_evidence"
     if "article" in path.parts and ext in {".pdf", ".aux", ".log", ".blg", ".bbl"}:
         return "article_template_output"
     if "article" in path.parts and ext in {".tex", ".bib", ".cls", ".sty"}:
@@ -275,6 +283,8 @@ def _science_build_file_profiles(root: Path, max_files: int = 160) -> list[dict]
         score = 5
         if any(k in p.name for k in ("数据说明", "说明", "字段")) or "readme" in name:
             score = 0
+        elif "science_analysis_inputs" in p.parts or "parameter_optimization" in str(p).lower() or "optimization" in name:
+            score = 1
         elif ext in {".csv", ".tsv", ".xlsx", ".xls", ".txt", ".dat", ".json", ".h5", ".hdf5", ".nc", ".sac", ".mseed"}:
             score = 1
         elif ext == ".pdf":
@@ -1328,9 +1338,10 @@ def science_analysis_agent():
                 "11. 交互式迭代：如果用户后续提出修改、补充或新假设，基于上一轮结果继续研究，不要从零开始。",
                 "12. 所有读写、脚本、图表、报告、LaTeX 和临时文件都必须限制在用户指定的项目工作目录内；不要写到项目目录之外。",
                 "13. 必须使用上面的文件画像判断文件作用：numeric_text_data/structured_data/waveform_data 都应视为候选数据；reference_paper_or_report 视为参考文献；data_description_or_project_notes 视为数据说明。不要因为文件扩展名是 .txt/.doc/.pdf 就忽略它。",
-                "14. 所有结论必须有来源依据：数据文件、统计输出、图件、RAG chunk、web 文献或工具输出。证据不足就明确说明。",
-                "15. 不要把中间猜测写成事实；报告中保留“已验证/待验证/缺失信息”状态。",
-                "16. 这不是数据质量分析页面：不要把质量分级、字段清单、参数直方图、基础计数作为主线；这些只能进入补充 QC 文件。主线必须围绕科学问题，例如断层几何、弱层/低速体、应力转移、分段破裂、流体或应变释放机制。",
+                "14. 参数优化复用：如果项目中存在 `science_analysis_inputs/parameter_optimization/`、`parameter_optimization_run.md/json`、`best_parameters.json`、`optimization_history.csv` 或 `optimization_report.md`，必须把它们视为实验/方法证据；可以据此撰写参数优化方法、结果、消融/敏感性分析和论文补充材料，但必须标注 dry-run/失败/缺失信息。",
+                "15. 所有结论必须有来源依据：数据文件、统计输出、图件、参数优化运行记录、RAG chunk、web 文献或工具输出。证据不足就明确说明。",
+                "16. 不要把中间猜测写成事实；报告中保留“已验证/待验证/缺失信息”状态。",
+                "17. 这不是数据质量分析页面：不要把质量分级、字段清单、参数直方图、基础计数作为主线；这些只能进入补充 QC 文件。主线必须围绕科学问题，例如断层几何、弱层/低速体、应力转移、分段破裂、流体或应变释放机制。",
             ]
             if project_context:
                 prompt_parts += ["", "===== Project shared context =====", project_context[:16000]]
