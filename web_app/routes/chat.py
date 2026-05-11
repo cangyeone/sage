@@ -314,50 +314,83 @@ def _science_build_file_profiles(root: Path, max_files: int = 160) -> list[dict]
     return profiles
 
 
-def _science_profiles_to_prompt(profiles: list[dict], role_summary: str = "") -> str:
+def _science_profiles_to_prompt(profiles: list[dict], role_summary: str = "", language: str = "zh") -> str:
+    is_en = str(language or "").lower().startswith("en")
     if not profiles:
-        return "No readable project files were found."
+        return "No readable project files were found." if is_en else "未发现可读取的项目文件。"
     lines = []
     if role_summary:
-        lines += ["===== LLM file-role assessment =====", role_summary.strip(), ""]
-    lines.append("===== Project file profiles with previews =====")
+        lines += [
+            "===== LLM file-role assessment =====" if is_en else "===== LLM 文件作用评估 =====",
+            role_summary.strip(),
+            "",
+        ]
+    lines.append("===== Project file profiles with previews =====" if is_en else "===== 项目文件画像与内容预览 =====")
     for idx, item in enumerate(profiles, 1):
         preview = (item.get("preview") or "").strip()
-        preview = preview if preview else "[no text preview extracted; use filename, suffix, metadata, or multimodal tools if needed]"
+        preview = preview if preview else (
+            "[no text preview extracted; use filename, suffix, metadata, or multimodal tools if needed]"
+            if is_en else
+            "[未抽取到文本预览；需要时请结合文件名、扩展名、元数据或多模态工具判断]"
+        )
         lines += [
             f"\n### [{idx}] {item.get('path')}",
             f"- suffix: {item.get('suffix')}  size: {item.get('size')} bytes",
             f"- rough_role_hint: {item.get('role_hint')}  numeric_score: {item.get('numeric_score')}",
-            "- preview:",
+            "- preview:" if is_en else "- 预览:",
             preview[:2200],
         ]
     return "\n".join(lines)
 
 
-def _science_llm_role_summary(profiles: list[dict], data_description: str = "") -> str:
+def _science_llm_role_summary(profiles: list[dict], data_description: str = "", language: str = "zh") -> str:
     """Ask the configured LLM to classify project files. Returns raw text, no JSON dependency."""
     if not profiles:
         return ""
+    is_en = str(language or "").lower().startswith("en")
     brief_parts = []
     for item in profiles[:60]:
-        brief_parts.append(
-            f"文件: {item.get('path')}\n"
-            f"后缀: {item.get('suffix')}  初步提示: {item.get('role_hint')}\n"
-            f"内容片段:\n{(item.get('preview') or '')[:900]}"
-        )
-    messages = [
-        {"role": "system", "content": (
-            "你是科研数据管家。请根据文件名、扩展名和内容片段判断每个文件在科研项目中的作用。"
-            "不要编造未出现的信息；不确定时写“待验证”。直接输出 Markdown 表格和简短建议，不要输出 JSON。"
-        )},
-        {"role": "user", "content": (
-            "用户提供的数据说明：\n"
-            f"{data_description or '(未提供)'}\n\n"
-            "请把下面文件分为：数据、数据说明/字段说明、参考论文、代码/脚本、图像/表格、其他。"
-            "同时指出后续分析应优先读取哪些文件。\n\n"
-            + "\n\n---\n\n".join(brief_parts)
-        )},
-    ]
+        if is_en:
+            brief_parts.append(
+                f"File: {item.get('path')}\n"
+                f"Suffix: {item.get('suffix')}  Initial hint: {item.get('role_hint')}\n"
+                f"Content preview:\n{(item.get('preview') or '')[:900]}"
+            )
+        else:
+            brief_parts.append(
+                f"文件: {item.get('path')}\n"
+                f"后缀: {item.get('suffix')}  初步提示: {item.get('role_hint')}\n"
+                f"内容片段:\n{(item.get('preview') or '')[:900]}"
+            )
+    if is_en:
+        messages = [
+            {"role": "system", "content": (
+                "You are a scientific data steward. Classify each file's role in the research project "
+                "from filename, extension, and content preview. Do not invent missing information; write "
+                "'to be verified' when uncertain. Output a Markdown table and short reading advice only, not JSON."
+            )},
+            {"role": "user", "content": (
+                "User-provided data description:\n"
+                f"{data_description or '(not provided)'}\n\n"
+                "Classify the following files as: data, data notes/field description, reference paper, "
+                "code/script, image/table, or other. Also identify which files should be read first.\n\n"
+                + "\n\n---\n\n".join(brief_parts)
+            )},
+        ]
+    else:
+        messages = [
+            {"role": "system", "content": (
+                "你是科研数据管家。请根据文件名、扩展名和内容片段判断每个文件在科研项目中的作用。"
+                "不要编造未出现的信息；不确定时写“待验证”。直接输出 Markdown 表格和简短建议，不要输出 JSON。"
+            )},
+            {"role": "user", "content": (
+                "用户提供的数据说明：\n"
+                f"{data_description or '(未提供)'}\n\n"
+                "请把下面文件分为：数据、数据说明/字段说明、参考论文、代码/脚本、图像/表格、其他。"
+                "同时指出后续分析应优先读取哪些文件。\n\n"
+                + "\n\n---\n\n".join(brief_parts)
+            )},
+        ]
     try:
         return llm_call(messages, get_llm_config(), max_tokens=1800)
     except Exception as exc:
@@ -1201,10 +1234,13 @@ def _science_agent_gc():
 def science_analysis_agent():
     """Start an async autonomous scientific analysis job."""
     data = request.json or {}
+    language = "en" if str(data.get("language") or "").lower().startswith("en") else "zh"
+    is_en = language == "en"
     question = (data.get("question") or "").strip()
     data_description = (data.get("data_description") or "").strip()
     if not question and not data_description:
-        return jsonify({"ok": False, "error": "question or data_description is required"}), 400
+        error = "A research task or data description is required." if is_en else "需要提供研究任务或数据说明。"
+        return jsonify({"ok": False, "error": error}), 400
 
     _science_agent_gc()
     job_id = "sci_" + _uuid.uuid4().hex[:10]
@@ -1240,6 +1276,9 @@ def science_analysis_agent():
                 _sys.path.insert(0, _root)
             _agent_backend = "seismo_agent"
 
+            def _t(zh: str, en: str) -> str:
+                return en if is_en else zh
+
             ws_cfg = get_workspace_config()
             authorized_roots = []
             if ws_cfg.get("enabled"):
@@ -1268,15 +1307,28 @@ def science_analysis_agent():
             file_role_summary = ""
             try:
                 root_path = Path(workspace_root_str).expanduser()
-                _prog({"phase": "file_profile", "message": f"Scanning project files in {root_path}"})
+                _prog({
+                    "phase": "file_profile",
+                    "message": _t(f"正在扫描项目文件：{root_path}", f"Scanning project files in {root_path}"),
+                })
                 file_profiles = _science_build_file_profiles(root_path)
-                _prog({"phase": "file_profile", "message": f"Profiled {len(file_profiles)} project files"})
+                _prog({
+                    "phase": "file_profile",
+                    "message": _t(f"已完成 {len(file_profiles)} 个项目文件画像", f"Profiled {len(file_profiles)} project files"),
+                })
                 if file_profiles:
-                    file_role_summary = _science_llm_role_summary(file_profiles, data_description)
-                    _prog({"phase": "file_profile", "message": "Prepared LLM-assisted file-role assessment"})
+                    file_role_summary = _science_llm_role_summary(file_profiles, data_description, language=language)
+                    _prog({
+                        "phase": "file_profile",
+                        "message": _t("已完成 LLM 辅助文件作用评估", "Prepared LLM-assisted file-role assessment"),
+                    })
             except Exception as exc:
                 file_profiles = []
-                file_role_summary = f"[file profiling failed: {exc}]"
+                file_role_summary = (
+                    f"[file profiling failed: {exc}]"
+                    if is_en else
+                    f"[文件画像失败：{exc}]"
+                )
             literature_sources = []
             seen_lit_keys = set()
             for p in file_profiles:
@@ -1299,32 +1351,73 @@ def science_analysis_agent():
             if literature_sources:
                 _prog({
                     "phase": "literature",
-                    "message": f"Detected {len(literature_sources)} local PDF literature files",
+                    "message": _t(
+                        f"检测到 {len(literature_sources)} 个本地 PDF 文献输入",
+                        f"Detected {len(literature_sources)} local PDF literature files",
+                    ),
                 })
 
             profile = get_user_profile_context(max_chars=2500)
             project_context = (data.get("project_context") or "").strip()
-            prompt_parts = [
-                "你是 Scientific Analysis Agent alpha，不是参数优化专用助手。",
-                "目标是把用户提供的数据说明、工作目录数据、本地/在线文献和知识库证据，转化为可复现的科学分析、报告和论文草稿。",
-                f"项目根目录：{workspace_root_str}",
-                "编程执行时当前工作目录就是项目根目录；请使用项目相对路径（如 data/xxx、literature/xxx、docs/xxx）访问文件。",
-                f"所有输出必须写入：{effective_output_dir}",
-                "",
-                "===== User research request =====",
-                question or "请根据数据说明和工作目录自主开展科学分析。",
-            ]
+            if is_en:
+                prompt_parts = [
+                    "You are Scientific Analysis Agent alpha, not a parameter-optimization-only assistant.",
+                    "Your goal is to turn user-provided data notes, project-directory data, local/online literature, RAG evidence, and skills into reproducible scientific analysis, reports, and paper drafts.",
+                    f"Project root: {workspace_root_str}",
+                    "When executing code, the current working directory is the project root; use project-relative paths such as data/xxx, literature/xxx, docs/xxx.",
+                    f"All outputs must be written to: {effective_output_dir}",
+                    "",
+                    "===== Output language =====",
+                    "The selected UI language is English. Write progress summaries, reports, paper drafts, table captions, figure captions, reviewer comments, and final conclusions in English unless the user explicitly asks for another language. Keep file paths, code identifiers, and citation keys unchanged.",
+                    "",
+                    "===== User research request =====",
+                    question or "Please autonomously conduct scientific analysis from the data notes and project directory.",
+                ]
+            else:
+                prompt_parts = [
+                    "你是 Scientific Analysis Agent alpha，不是参数优化专用助手。",
+                    "目标是把用户提供的数据说明、工作目录数据、本地/在线文献和知识库证据，转化为可复现的科学分析、报告和论文草稿。",
+                    f"项目根目录：{workspace_root_str}",
+                    "编程执行时当前工作目录就是项目根目录；请使用项目相对路径（如 data/xxx、literature/xxx、docs/xxx）访问文件。",
+                    f"所有输出必须写入：{effective_output_dir}",
+                    "",
+                    "===== 输出语言 =====",
+                    "用户界面语言为中文。除非用户明确要求其他语言，运行摘要、报告、论文草稿、表格说明、图注、审稿意见和最终结论都应使用中文；文件路径、代码标识和引用 key 保持原样。",
+                    "",
+                    "===== User research request =====",
+                    question or "请根据数据说明和工作目录自主开展科学分析。",
+                ]
             if data_description:
-                prompt_parts += ["", "===== Data description supplied by user =====", data_description]
+                prompt_parts += [
+                    "",
+                    "===== Data description supplied by user =====" if is_en else "===== 用户提供的数据说明 =====",
+                    data_description,
+                ]
             if file_profiles or file_role_summary:
                 prompt_parts += [
                     "",
-                    "===== Initial project file profiles =====",
-                    _science_profiles_to_prompt(file_profiles, file_role_summary),
+                    "===== Initial project file profiles =====" if is_en else "===== 初始项目文件画像 =====",
+                    _science_profiles_to_prompt(file_profiles, file_role_summary, language=language),
                 ]
-            prompt_parts += [
-                "",
-                "===== Required autonomous workflow =====",
+            workflow = [
+                "1. Data reconnaissance: from file profiles, data notes, literature, and necessary web search, first identify which research directions the data can support; follow the user's chosen direction when specified.",
+                "2. Scientific-question planning: based on data availability and literature context, propose testable questions, hypotheses, falsification paths, and missing information.",
+                "3. Multi-skill/RAG orchestration: you may combine or interleave multiple skills (for example deep-research, academic-paper, academic-paper-reviewer, domain plotting/data skills) and knowledge-base RAG; choose the skill mix before analysis.",
+                "4. Multimodal evidence: if multimodal mode is enabled and the model supports image/table understanding, analyze uploaded images, paper figures, and tables and extract quantitative evidence; otherwise warn explicitly and fall back to text/numeric evidence.",
+                "5. Figure and statistics planning: let the LLM plan which paper figures, statistics, tables, and intermediate artifacts are needed before coding; main-text figures default to no more than 3 and main tables to no more than 2, and they must serve mechanism-hypothesis testing.",
+                "6. Coding Agent execution: programmatically parse formats, organize fields, write mini tests, compute statistics, and draw figures; when errors occur, do not stop; diagnose, revise the plan, and retry.",
+                "7. Evidence synthesis: before writing the paper, integrate data statistics, figures, tables, local papers/RAG, and web search into a claim-evidence-warrant matrix; every scientific conclusion must list supporting evidence, falsification paths, and missing information.",
+                "8. Conclusion-driven artifact review: after forming preliminary conclusions, decide which figures/tables should stay in the main text, move to supplement/QC, or be added, then iterate the argument once.",
+                "9. Paper writing: write a Markdown paper draft with generated figures embedded via Markdown image syntax; Results are the core and must focus on new mechanistic scientific conclusions, not data quality or figure descriptions.",
+                "10. Three-reviewer loop: simulate three strict reviewers covering mechanism novelty, data/statistical reproducibility, and literature evidence/writing; revise until all three are minor-revision/accept or the round limit is reached.",
+                "11. Interactive iteration: if the user later proposes modifications, additions, or new hypotheses, continue from the previous results instead of restarting.",
+                "12. Keep all reads/writes, scripts, figures, reports, LaTeX, and temporary files inside the user-specified project directory.",
+                "13. Use the file profiles above: numeric_text_data/structured_data/waveform_data are candidate data; reference_paper_or_report is literature; data_description_or_project_notes is data documentation. Do not ignore files based only on extension.",
+                "14. Parameter-optimization reuse: if the project contains `science_analysis_inputs/parameter_optimization/`, `parameter_optimization_run.md/json`, `best_parameters.json`, `optimization_history.csv`, or `optimization_report.md`, treat them as experimental/method evidence and clearly label dry-run/failure/missing information.",
+                "15. Every conclusion must be grounded in data files, statistical outputs, figures, parameter-optimization records, RAG chunks, web literature, or tool output. State evidence gaps explicitly.",
+                "16. Do not present intermediate guesses as facts; keep verified/to-be-verified/missing-information status in the report.",
+                "17. This is not a data-quality analysis page. Quality labels, field lists, parameter histograms, and basic counts are supplement/QC material only. The main line must be a scientific question such as fault geometry, weak/low-velocity zones, stress transfer, segmented rupture, fluids, or strain-release mechanisms.",
+            ] if is_en else [
                 "1. 数据研究：根据文件画像、数据说明、文献和必要的 web search，先判断这些数据可以支持哪些研究方向；用户指定方向时优先服从用户方向。",
                 "2. 科学问题规划：基于数据可用性和文献背景，提出可验证的科学问题、假设、反证路径和缺失信息。",
                 "3. 多技能/RAG 编排：可同时调用或交叉调用多个 SKILL（如 deep-research、academic-paper、academic-paper-reviewer、领域绘图/数据处理技能）和知识库 RAG；先选择技能组合，再开展分析。",
@@ -1343,14 +1436,15 @@ def science_analysis_agent():
                 "16. 不要把中间猜测写成事实；报告中保留“已验证/待验证/缺失信息”状态。",
                 "17. 这不是数据质量分析页面：不要把质量分级、字段清单、参数直方图、基础计数作为主线；这些只能进入补充 QC 文件。主线必须围绕科学问题，例如断层几何、弱层/低速体、应力转移、分段破裂、流体或应变释放机制。",
             ]
+            prompt_parts += ["", "===== Required autonomous workflow =====" if is_en else "===== 必需自主工作流 =====", *workflow]
             if project_context:
                 prompt_parts += ["", "===== Project shared context =====", project_context[:16000]]
             if profile:
                 prompt_parts += ["", "===== Long-term user profile (soft context; do not mention unless useful) =====", profile]
 
             study_area = (data.get("study_area") or "scientific analysis").strip()
-            _prog({"phase": "start", "message": f"Scientific analysis workspace: {workspace_root_str}"})
-            _prog({"phase": "backend", "message": f"Using {_agent_backend}"})
+            _prog({"phase": "start", "message": _t(f"科学分析工作目录：{workspace_root_str}", f"Scientific analysis workspace: {workspace_root_str}")})
+            _prog({"phase": "backend", "message": _t(f"使用后端：{_agent_backend}", f"Using backend: {_agent_backend}")})
             from seismo_agent import SeismoAgent
             agent = SeismoAgent(llm_config=get_llm_config(), project_root=workspace_root_str, mode="autonomous")
             fallback = agent.run(
@@ -1377,14 +1471,16 @@ def science_analysis_agent():
                 "tool_log": [],
                 "scientific_questions": fallback.get("scientific_questions", []),
                 "statistical_results": fallback.get("statistical_results") or [
-                    {"title": "Agent summary", "content": fallback.get("summary", "")}
+                    {"title": "Agent summary" if is_en else "Agent 摘要", "content": fallback.get("summary", "")}
                 ],
                 "table_artifacts": fallback.get("table_artifacts", []),
                 "paper_artifact_plan": fallback.get("paper_artifact_plan", ""),
                 "scientific_evidence_synthesis": fallback.get("scientific_evidence_synthesis", ""),
                 "artifact_refinement_plan": fallback.get("artifact_refinement_plan", ""),
                 "peer_review_reports": fallback.get("peer_review_reports", []),
-                "missing_information": [] if fallback.get("success") else ["部分步骤失败，请查看运行日志。"],
+                "missing_information": [] if fallback.get("success") else [
+                    "Some steps failed; inspect the progress log." if is_en else "部分步骤失败，请查看运行日志。"
+                ],
                 "_fallback_backend": "seismo_agent",
                 "_raw_result": fallback,
             }
