@@ -424,6 +424,23 @@ class CodeEngine:
         if wants_output and "[SAGE_TEST]" not in stdout:
             return False, "missing [SAGE_TEST] self-check output"
 
+        phase_pick_req = bool(re.search(
+            r"拾取|震相|到时|phase\s*pick|arrival|pick",
+            original_request,
+            re.I,
+        ))
+        if phase_pick_req and re.search(r"trigger_onset\s*\(", code):
+            first_trigger_patterns = [
+                r"triggers\s*\[\s*0\s*\]\s*\[\s*0\s*\]",
+                r"triggers\s*\[\s*0\s*\]\s*\.\s*0",
+                r"triggers\s*\[\s*0\s*\]",
+            ]
+            if any(re.search(pat, code) for pat in first_trigger_patterns):
+                return (
+                    False,
+                    "phase picker uses the first STA/LTA trigger; ignore edge triggers and choose validated P/S candidates",
+                )
+
         return True, ""
 
     # ── Error context builder ─────────────────────────────────────────────────

@@ -54,6 +54,15 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
 .date-group-caret { transition:transform .15s; }
 .date-group.collapsed .date-group-caret { transform:rotate(-90deg); }
 .kb-info { font-size:.78rem; color:#888; padding:.25rem .5rem; }
+.run-list { display:flex; flex-direction:column; gap:.25rem; }
+.run-item { border:1px solid #edf0f6; background:#fff; border-radius:8px; padding:.38rem .45rem;
+  cursor:pointer; min-width:0; }
+.run-item:hover { border-color:#cfd6ff; background:#f7f8ff; }
+.run-title { display:flex; align-items:center; justify-content:space-between; gap:.4rem; font-size:.78rem; }
+.run-kind { font-weight:600; color:#3949ab; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.run-status { font-size:.68rem; padding:.04rem .34rem; border-radius:999px; background:#eef8f1; color:#26733d; }
+.run-status.failed, .run-status.error { background:#ffebee; color:#c62828; }
+.run-meta { color:#8a8f98; font-size:.7rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:.12rem; }
 
 /* Chat messages */
 .chat-messages { flex:1; overflow-y:auto; padding:1.25rem 1.5rem; }
@@ -312,6 +321,18 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
       </a>
     </div>
     <div class="sb-section">
+      <div class="d-flex align-items-center justify-content-between mb-2">
+        <div class="sb-title mb-0"><i class="bi bi-play-circle me-1"></i><span data-i18n="sb_runs">可复现实验</span></div>
+        <button class="btn btn-sm btn-outline-primary" id="smokeDemoBtn" style="font-size:.72rem;padding:.12rem .45rem" onclick="runSmokeDemo()"
+                data-i18n-title="smoke_run_tip" title="运行内置 smoke workflow">
+          <i class="bi bi-play-fill"></i> <span data-i18n="smoke_run">Smoke</span>
+        </button>
+      </div>
+      <div id="runList" class="run-list">
+        <div class="kb-info text-muted" data-i18n="runs_empty">暂无运行记录</div>
+      </div>
+    </div>
+    <div class="sb-section">
       <div class="sb-title"><i class="bi bi-person-x me-1"></i><span data-i18n="sb_privacy">个性化</span></div>
       <button class="btn btn-sm btn-outline-danger w-100" style="font-size:.76rem" onclick="clearUserProfileMemory()"
               data-i18n-title="clear_profile_tip" title="删除长期用户画像和个性化记忆">
@@ -472,6 +493,9 @@ const I18N = {
     sb_uploads: '本次上传', sb_no_doc: '暂无上传文档<br>点击 📎 上传 PDF',
     doc_promote: '保存到永久知识库', doc_permanent: '已入库', doc_permanent_badge: '库',
     sb_kb: '知识库', loading: '加载中…', sb_manage_kb: '管理知识库',
+    sb_runs: '可复现实验', smoke_run: 'Smoke', smoke_run_tip: '运行内置 smoke workflow',
+    runs_empty: '暂无运行记录', run_failed: '运行失败', run_started: '正在运行 smoke workflow…',
+    run_done: 'Smoke workflow 已完成', run_open: '查看',
     sb_workspace: '本地工作目录', sb_ws_auth: '授权访问', sb_save_path: '保存路径',
     welcome_title: 'SeismicX AI 助手',
     welcome_sub: '您好！我是地震学智能助手，可以回答问题、解读文献、分析数据。',
@@ -531,6 +555,9 @@ const I18N = {
     sb_uploads: 'Uploaded', sb_no_doc: 'No documents uploaded<br>Click 📎 to upload PDF',
     doc_promote: 'Save to permanent KB', doc_permanent: 'Saved to KB', doc_permanent_badge: 'KB',
     sb_kb: 'Knowledge Base', loading: 'Loading…', sb_manage_kb: 'Manage KB',
+    sb_runs: 'Repro Runs', smoke_run: 'Smoke', smoke_run_tip: 'Run the built-in smoke workflow',
+    runs_empty: 'No run records yet', run_failed: 'Run failed', run_started: 'Running smoke workflow…',
+    run_done: 'Smoke workflow completed', run_open: 'Open',
     sb_workspace: 'Local Workspace', sb_ws_auth: 'Authorize', sb_save_path: 'Save Path',
     welcome_title: 'SeismicX AI Assistant',
     welcome_sub: 'Hello! I\'m a seismology AI assistant — ask questions, read papers, or process data.',
@@ -592,6 +619,7 @@ function applyLang() {
   try { renderProjectControls(); } catch(e) {}
   try { refreshSessionSidebar(); } catch(e) {}
   try { loadKbStatus(); } catch(e) {}
+  try { renderRunList(); } catch(e) {}
   try { _applyThinkPill(); } catch(e) {}
   try { _applyChatWebSearchPill(); } catch(e) {}
   try { loadLlmStatus(); } catch(e) {}
@@ -636,6 +664,7 @@ function _newConv(title='') {
     history: [],
     messages: [],
     docs: [],
+    lastRunContext: null,
   };
 }
 
@@ -739,6 +768,7 @@ function saveActiveConversation(opts={}) {
   c.history = chatHistory.slice(-20);
   c.messages = _msgStore.slice(-50);
   c.docs = sessionDocs;
+  c.lastRunContext = lastRunContext || null;
   if (touch) {
     c.updatedAt = Date.now();
     const p = activeProject();
@@ -803,6 +833,7 @@ window.addEventListener('beforeunload', () => {
 let kbHasDocs      = false;
 let lastCodeStdout = '';    // 上一次 sendCode 的 stdout，供下一轮绘图注入路径
 let lastDataPath   = '';    // 用户消息中提取到的最近一次数据目录/文件路径
+let lastRunContext = activeConversation().lastRunContext || null; // 最近一次可复现实验输出，供后续代码技能继承
 let lastIntentWasCode  = false; // 上一轮是否执行了代码，用于识别"改进/调整"等后续指令
 let lastIntentWasPaper = false; // 上一轮是否在解读论文，用于识别"复现/实现"等后续指令
 
@@ -1040,6 +1071,8 @@ function loadConversationState(convId) {
   chatHistory = c.history || [];
   _msgStore = c.messages || [];
   sessionDocs = c.docs || [];
+  lastRunContext = c.lastRunContext || null;
+  if (lastRunContext && lastRunContext.output_dir) lastDataPath = lastRunContext.output_dir;
   updateSendButtonState(SESSION_ID);
   saveConversations();
 }
@@ -1159,6 +1192,231 @@ async function loadKbStatus() {
           : `<span style="color:#3949ab;font-weight:600">${_nDocs}</span> docs · ${_nChunk} chunks`)
       : (_isZh ? '知识库为空' : 'Knowledge base is empty');
   } catch { document.getElementById('kbInfo').textContent = currentLang === 'zh' ? '无法连接' : 'Disconnected'; }
+}
+
+// ── Reproducible run records ────────────────────────────────────────────────
+let recentRuns = [];
+
+function _shortRunId(id) {
+  const s = String(id || '');
+  return s.length > 18 ? s.slice(0, 18) + '…' : s;
+}
+
+function _runTimeLabel(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return String(ts).slice(0, 16);
+  return d.toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US', {
+    month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit'
+  });
+}
+
+function renderRunList() {
+  const list = document.getElementById('runList');
+  if (!list) return;
+  if (!recentRuns.length) {
+    list.innerHTML = `<div class="kb-info text-muted">${_esc(T('runs_empty'))}</div>`;
+    return;
+  }
+  list.innerHTML = recentRuns.slice(0, 5).map(r => {
+    const status = String(r.status || '');
+    return `<div class="run-item" onclick="openRunRecord('${_esc(r.run_id)}')">
+      <div class="run-title">
+        <span class="run-kind">${_esc(r.kind || 'run')}</span>
+        <span class="run-status ${_esc(status)}">${_esc(status || 'unknown')}</span>
+      </div>
+      <div class="run-meta">${_esc(_shortRunId(r.run_id))} · ${_esc(_runTimeLabel(r.started_at))}</div>
+    </div>`;
+  }).join('');
+}
+
+async function loadRunRecords() {
+  try {
+    const r = await fetch('/api/runs?limit=5');
+    const d = await r.json();
+    if (d.ok) {
+      recentRuns = d.runs || [];
+      renderRunList();
+    }
+  } catch(e) {}
+}
+
+function _artifactLine(runId, artifact, i) {
+  const name = String(artifact || '').split(/[\\/]/).pop();
+  return `- [${name}](/api/runs/${encodeURIComponent(runId)}/artifact/${i})`;
+}
+
+function _artifactByName(artifacts, name) {
+  return (artifacts || []).find(a => String(a || '').split(/[\\/]/).pop() === name) || '';
+}
+
+function _runContextFromPayload(d) {
+  const artifacts = d.artifacts || [];
+  return {
+    run_id: d.run_id || '',
+    output_dir: d.output_dir || '',
+    catalog: d.catalog || {},
+    generation: d.generation || {},
+    artifacts,
+    files: {
+      synthetic_waveforms: _artifactByName(artifacts, 'synthetic_waveforms.csv'),
+      station_truth: _artifactByName(artifacts, 'station_truth.csv'),
+      phase_picks: _artifactByName(artifacts, 'phase_picks.csv'),
+      event_catalog: _artifactByName(artifacts, 'event_catalog.csv'),
+      figure: _artifactByName(artifacts, 'smoke_waveform_picks.png'),
+      report: _artifactByName(artifacts, 'smoke_report.md'),
+    },
+  };
+}
+
+function _stationTruthLines(generation) {
+  const rows = generation?.stations || [];
+  if (!rows.length) return [];
+  return rows.map(row =>
+    `- ${row.station}: distance=${row.distance_km} km, true P=${row.true_p_s} s, true S=${row.true_s_s} s`
+  );
+}
+
+function _buildRunContextPrompt(ctx) {
+  if (!ctx || !ctx.run_id) return '';
+  const files = ctx.files || {};
+  const cat = ctx.catalog || {};
+  const gen = ctx.generation || {};
+  const stationLines = _stationTruthLines(gen).join('\n') || '- station truth unavailable in record';
+  return [
+    '===== Latest SAGE reproducible run context =====',
+    `run_id: ${ctx.run_id}`,
+    `output_dir: ${ctx.output_dir || ''}`,
+    `synthetic waveform CSV: ${files.synthetic_waveforms || ''}`,
+    `station truth CSV: ${files.station_truth || ''}`,
+    `phase picks CSV: ${files.phase_picks || ''}`,
+    `event catalog CSV: ${files.event_catalog || ''}`,
+    `figure PNG: ${files.figure || ''}`,
+    `report Markdown: ${files.report || ''}`,
+    '',
+    `event_id: ${cat.event_id || ''}`,
+    `n_picks: ${cat.n_picks ?? ''}`,
+    `mean_s_minus_p_s: ${cat.mean_s_minus_p_s ?? ''}`,
+    `magnitude_proxy: ${cat.magnitude_proxy ?? ''}`,
+    '',
+    'Synthetic generation:',
+    `- random_seed: ${gen.random_seed ?? ''}`,
+    `- sample_interval_s: ${gen.sample_interval_s ?? ''}`,
+    `- duration_s: ${gen.duration_s ?? ''}`,
+    `- noise: ${gen.noise || ''}`,
+    `- background: ${gen.background || ''}`,
+    `- P pulse: ${JSON.stringify(gen.p_pulse || {})}`,
+    `- S pulse: ${JSON.stringify(gen.s_pulse || {})}`,
+    `- picking method used by smoke demo: ${gen.picking_method || ''}`,
+    '',
+    'Ground-truth station arrivals:',
+    stationLines,
+    '',
+    'Important instruction for code generation:',
+    'When the user says "this synthetic waveform", "这个生成的 synthetic waveform", "刚才的 smoke run", or asks to phase-pick it, use the CSV files above directly. Do not generate a new synthetic waveform unless the user explicitly asks for a new one.',
+    '===== End latest SAGE reproducible run context =====',
+  ].join('\n');
+}
+
+function rememberRunContext(d, pushHistory=false) {
+  const ctx = _runContextFromPayload(d || {});
+  if (!ctx.run_id) return;
+  lastRunContext = ctx;
+  if (ctx.output_dir) lastDataPath = ctx.output_dir;
+  if (pushHistory) {
+    chatHistory.push({role:'assistant', content: _buildRunContextPrompt(ctx)});
+  }
+  _persistHistory();
+}
+
+function _renderRunMarkdown(d) {
+  const cat = d.catalog || {};
+  const gen = d.generation || {};
+  const stationLines = _stationTruthLines(gen);
+  const lines = [
+    `**${T('run_done')}**`,
+    '',
+    `- run_id: \`${d.run_id}\``,
+    `- output_dir: \`${d.output_dir || ''}\``,
+    `- event: \`${cat.event_id || 'SMOKE001'}\``,
+    `- picks: \`${cat.n_picks ?? ''}\``,
+    `- mean S-P: \`${cat.mean_s_minus_p_s ?? ''} s\``,
+    `- magnitude proxy: \`${cat.magnitude_proxy ?? ''}\``,
+    '',
+    'Synthetic generation:',
+    `- seed: \`${gen.random_seed ?? ''}\`, dt: \`${gen.sample_interval_s ?? ''} s\`, duration: \`${gen.duration_s ?? ''} s\``,
+    `- waveform: noise \`${gen.noise || ''}\` + background \`${gen.background || ''}\` + Gaussian P/S pulses`,
+    `- picker: ${gen.picking_method || ''}`,
+    ...(stationLines.length ? ['', 'Ground truth arrivals:', ...stationLines] : []),
+    '',
+    'Artifacts:',
+    ...(d.artifacts || []).map((a, i) => _artifactLine(d.run_id, a, i)),
+  ];
+  return lines.join('\n');
+}
+
+async function runSmokeDemo() {
+  const btn = document.getElementById('smokeDemoBtn');
+  if (btn) btn.disabled = true;
+  addMsg('assistant', T('run_started'));
+  try {
+    const r = await fetch('/api/smoke_demo/run', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({}),
+    });
+    const d = await r.json();
+    if (!d.ok) {
+      addMsg('assistant', `✗ ${T('run_failed')}: ${d.error || 'unknown error'}`);
+      return;
+    }
+    rememberRunContext(d, true);
+    addMsg('assistant', _renderRunMarkdown(d));
+    await loadRunRecords();
+  } catch(e) {
+    addMsg('assistant', `✗ ${T('run_failed')}: ${e.message}`);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function openRunRecord(runId) {
+  try {
+    const r = await fetch(`/api/runs/${encodeURIComponent(runId)}`);
+    const d = await r.json();
+    if (!d.ok) {
+      addMsg('assistant', `✗ ${T('run_failed')}: ${d.error || 'run not found'}`);
+      return;
+    }
+    const rec = d.run || {};
+    rememberRunContext({
+      run_id: rec.run_id,
+      output_dir: rec.metadata?.output_dir || '',
+      catalog: rec.result || {},
+      generation: rec.metadata?.generation || {},
+      artifacts: rec.artifacts || [],
+    }, true);
+    const events = (rec.events || []).slice(-8).map(e =>
+      `- ${e.phase || ''}: ${e.message || ''}`
+    );
+    const lines = [
+      `**${rec.kind || 'run'}**`,
+      '',
+      `- run_id: \`${rec.run_id}\``,
+      `- status: \`${rec.status}\``,
+      `- started_at: \`${rec.started_at || ''}\``,
+      `- duration_s: \`${rec.duration_s ?? ''}\``,
+      '',
+      'Events:',
+      ...(events.length ? events : ['- none']),
+      '',
+      'Artifacts:',
+      ...((rec.artifacts || []).map((a, i) => _artifactLine(rec.run_id, a, i))),
+    ];
+    addMsg('assistant', lines.join('\n'));
+  } catch(e) {
+    addMsg('assistant', `✗ ${T('run_failed')}: ${e.message}`);
+  }
 }
 
 // ── Session doc sidebar ────────────────────────────────────────────────────
@@ -1351,7 +1609,7 @@ function hasPendingJob(sessionId=SESSION_ID) {
 }
 
 function isSessionRunning(sessionId=SESSION_ID) {
-  return !!runningSessions[sessionId] || hasPendingJob(sessionId);
+  return !!runningSessions[sessionId];
 }
 
 function updateSendButtonState(sessionId=SESSION_ID) {
@@ -1383,6 +1641,11 @@ function sendOrStop() {
 }
 
 async function stopCurrentResponse() {
+  if (!isSessionRunning(SESSION_ID) && !activeAbortController && !activeChatJobId && !activeCodeJobId) {
+    clearPendingJob(SESSION_ID);
+    updateSendButtonState(SESSION_ID);
+    return;
+  }
   stopRequested = true;
   try { activeAbortController && activeAbortController.abort(); } catch(e) {}
   let chatJob = activeChatJobId;
@@ -2024,12 +2287,21 @@ async function sendCode(text, phase2Badge = false) {
   // ── 对绘图请求注入数据目录上下文 ───────────────────────────────────────
   let enrichedText = text;
   const contextRefReq = /(上述|上面|上文|前面|刚才|这个|该|此|this|above|previous)/i.test(text);
-  const implementationReq = /(用\s*Python|python|代码|编程|实现|复现|写出来|写个程序|完整实现|run it|code it|implement)/i.test(text);
+  const implementationReq = /(用\s*Python|python|代码|编程|实现|复现|写出来|写个程序|完整实现|run it|code it|implement|pick|phase\s*pick|拾取|震相|检测|处理|分析|绘制|画图|plot)/i.test(text);
   if (contextRefReq && implementationReq && chatHistory.length) {
     const recentContext = chatHistory.slice(-8)
       .map(h => `${h.role === 'user' ? '用户' : '助手'}：${String(h.content || '').slice(0, 1800)}`)
       .join('\n\n');
     enrichedText += `\n\n===== 连续对话上下文（用于理解“上述/这个方法”）=====\n${recentContext}\n===== 上下文结束 =====`;
+  }
+
+  const runRefReq = lastRunContext && (
+    contextRefReq ||
+    /(smoke|synthetic|waveform|phase\s*pick|pick|pnsn|波形|生成的|可复现|拾取|震相|事件|catalog|目录)/i.test(text)
+  );
+  if (runRefReq) {
+    enrichedText += `\n\n${_buildRunContextPrompt(lastRunContext)}`;
+    if (lastRunContext.output_dir) lastDataPath = lastRunContext.output_dir;
   }
 
   const isPlotReq = /(绘制|画图|画波形|绘图|可视化|plot)/i.test(text);
@@ -2325,7 +2597,7 @@ function createStreamingBubble() {
 
   let lastThinkLen = 0;
   let lastContentLen = 0;
-  let prevContentMd = '';
+  let prevContentMd = null;
 
   return {
     msgDiv,
@@ -2349,7 +2621,7 @@ function createStreamingBubble() {
         // Nothing outside <think> yet — show faint hint so user sees progress
         contentDiv.innerHTML =
           '<span style="color:#bbb;font-style:italic;font-size:.85rem">' +
-          (currentLang === 'zh' ? '正在推理，结果即将显示…' : 'Reasoning, answer coming…') +
+          (currentLang === 'zh' ? '正在等待模型响应…' : 'Waiting for model response…') +
           '</span>';
       } else {
         contentDiv.innerHTML = formatText(text);
@@ -2587,6 +2859,7 @@ async function startRecoverableChatJob(body) {
 async function pollChatJobToBubble(jobId, meta={}) {
   const ownerSessionId = meta.session_id || SESSION_ID;
   const streamer = createStreamingBubble();
+  streamer.updateContent('');
   let sources = [];
   let lastRaw = '';
   let errored = false;
@@ -3443,6 +3716,7 @@ document.addEventListener('DOMContentLoaded', _resumePendingJob);
 
 // Init
 loadKbStatus();
+loadRunRecords();
 loadWorkspace();
 loadLlmStatus();
 document.getElementById('userInput').focus();
