@@ -162,9 +162,9 @@ class LLMConfigManager:
         paths = project_cfg.setdefault('app_paths', {})
         paths.setdefault('chat_workspace_enabled', False)
         paths.setdefault('chat_workspace_paths', [])
-        paths.setdefault('geo_workspace_root', './examples/evidence_geo_agent')
+        paths.setdefault('geo_workspace_root', './examples/science_analysis_agent')
         paths.setdefault('geo_literature_root', './papers')
-        paths.setdefault('geo_output_dir', 'outputs/evidence_geo_agent')
+        paths.setdefault('geo_output_dir', 'outputs/science_analysis_agent')
         return paths
 
     def get_coding_agent_config(self) -> Dict:

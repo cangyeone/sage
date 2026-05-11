@@ -756,15 +756,21 @@ curl -X POST http://localhost:5010/api/skills/install-academic-research \
 
 安装后，Chat、科学分析和 CodeEngine 都可以自动检索这些技能。一般不需要显式写技能名；例如“帮我做文献调研”“审稿式修改这篇论文”“写成 JGR 风格论文草稿”等请求，会自动把学术研究技能、本地地震学技能和 RAG 证据联合注入。
 
-### 参数优化 Agent
+### 科学分析与参数优化
 
-旧的解译页面已替换为参数优化 Agent：
+旧的地学解译页面和 `/api/evidence_geo_agent*` API 已移除。旧地址 `/evidence-geo-agent` 现在会自动跳转到科学分析页面：
+
+```text
+http://localhost:5010/science-analysis-agent
+```
+
+模块化优化流程请使用参数优化 Agent：
 
 ```text
 http://localhost:5010/parameter-optimization-agent
 ```
 
-旧地址 `/evidence-geo-agent` 会自动跳转到新页面。参数优化 Agent 用于定义流程模块、每个模块的输入/输出、待优化参数和最终目标。Agent 会调用 CodeEngine 遍历项目目录、生成和调试脚本、运行 mini test、执行有边界的优化或 dry-run，并保存：
+参数优化 Agent 用于定义流程模块、每个模块的输入/输出、待优化参数和最终目标。Agent 会调用 CodeEngine 遍历项目目录、生成和调试脚本、运行 mini test、执行有边界的优化或 dry-run，并保存：
 
 - `optimization_plan.md`
 - `best_parameters.json`

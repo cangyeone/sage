@@ -38,7 +38,7 @@ def config_page():
 
 @bp.route('/evidence-geo-agent')
 def evidence_geo_agent_page():
-    return redirect(url_for('pages.parameter_optimization_page'))
+    return redirect(url_for('pages.science_analysis_agent_page'))
 
 
 @bp.route('/science-analysis-agent')

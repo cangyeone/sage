@@ -800,15 +800,21 @@ curl -X POST http://localhost:5010/api/skills/install-academic-research \
 
 After installation, Chat, Science Analysis, and CodeEngine can retrieve these skills automatically. You usually do not need to name a skill explicitly; research-oriented prompts such as "review this paper", "design a literature-backed study", or "write a JGR-style draft" should retrieve the relevant academic skills and combine them with local seismology skills and RAG.
 
-### Parameter Optimization Agent
+### Science Analysis and Parameter Optimization
 
-The old interpretation page has been replaced by the Parameter Optimization Agent at:
+The old geologic-interpretation page and `/api/evidence_geo_agent*` APIs have been removed. The legacy `/evidence-geo-agent` URL now redirects to the Science Analysis page:
+
+```text
+http://localhost:5010/science-analysis-agent
+```
+
+For modular optimization workflows, use the Parameter Optimization Agent at:
 
 ```text
 http://localhost:5010/parameter-optimization-agent
 ```
 
-The legacy `/evidence-geo-agent` URL redirects to this page. The optimizer is meant for workflows where the user defines modules, module inputs/outputs, tunable parameters, and the final objective. The agent then asks CodeEngine to inspect the project folder, generate and debug scripts, run smoke tests, perform a bounded optimization or dry run, and save:
+The optimizer is meant for workflows where the user defines modules, module inputs/outputs, tunable parameters, and the final objective. The agent then asks CodeEngine to inspect the project folder, generate and debug scripts, run smoke tests, perform a bounded optimization or dry run, and save:
 
 - `optimization_plan.md`
 - `best_parameters.json`

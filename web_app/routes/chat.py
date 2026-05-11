@@ -13,8 +13,8 @@ from datetime import datetime
 from pathlib import Path
 from werkzeug.utils import secure_filename
 from state import (
-    tasks, _session_docs, _geo_agent_jobs, _science_agent_jobs, _lit_jobs, _chat_jobs,
-    UPLOAD_FOLDER_CHAT, GEO_WORKSPACE_ROOT, SCIENCE_WORKSPACE_ROOT, _PROJECT_ROOT,
+    tasks, _session_docs, _science_agent_jobs, _lit_jobs, _chat_jobs,
+    UPLOAD_FOLDER_CHAT, SCIENCE_WORKSPACE_ROOT, _PROJECT_ROOT,
 )
 from helpers import (
     USER_PROFILE_MD,
@@ -1178,242 +1178,6 @@ def literature_loop_poll(job_id):
     })
 
 
-# ── Evidence-driven scientific analysis helpers ───────────────────────────────
-
-def _geo_agent_gc():
-    """Discard jobs older than 45 minutes."""
-    cutoff = _time.time() - 2700
-    for k in [k for k, v in _geo_agent_jobs.items() if v.get("ts", 0) < cutoff]:
-        _geo_agent_jobs.pop(k, None)
-
-
-@bp.route('/api/evidence_geo_agent', methods=['POST'])
-def evidence_geo_agent():
-    """Start an async evidence-driven geoscience interpretation job."""
-    data         = request.json or {}
-    question     = (data.get("question") or "").strip()
-    study_area   = (data.get("study_area") or "").strip()
-
-    if not question:
-        return jsonify({"ok": False, "error": "question is required"}), 400
-
-    _geo_agent_gc()
-    job_id = "geo_" + _uuid.uuid4().hex[:10]
-    session_id = _clean_conversation_id(data.get("session_id") or "default_geo")
-    run_output_base = Path(data.get("output_dir") or "outputs/evidence_driven_geo_agent").expanduser()
-    effective_output_dir = run_output_base / session_id / job_id
-    _geo_agent_jobs[job_id] = {
-        "status":   "running",
-        "progress": [],
-        "result":   None,
-        "error":    None,
-        "ts":       _time.time(),
-        "session_id": session_id,
-        "output_dir": str(effective_output_dir),
-    }
-
-    def _model_likely_supports_vision(llm_cfg: dict) -> bool:
-        provider = str(llm_cfg.get("provider", "")).lower()
-        model = str(llm_cfg.get("model", "")).lower()
-        vision_markers = (
-            "vision", "vl", "qwen-vl", "qwen2-vl", "qwen2.5-vl", "llava",
-            "bakllava", "minicpm-v", "gemma3", "gpt-4o", "gpt-4.1", "o4",
-            "claude-3", "glm-4v", "internvl", "pixtral", "molmo",
-        )
-        if any(m in model for m in vision_markers):
-            return True
-        if provider == "openai" and any(m in model for m in ("gpt-4o", "gpt-4.1", "o4")):
-            return True
-        return False
-
-    def _prefetch_web_literature(data, cfg, progress_cb):
-        """Search scholarly web sources and write a seed literature note into the workspace."""
-        if not cfg.allow_web_search:
-            return ""
-        try:
-            from sage_agents.evidence_driven_geo_agent import WebSearchTool
-            query_bits = [question]
-            if study_area:
-                query_bits.append(study_area)
-            query_bits.append("geology geophysics seismicity")
-            query = " ".join(query_bits)
-            progress_cb({"phase": "web_search", "message": f"Searching online literature: {query[:120]}"})
-            tool = WebSearchTool(cfg)
-            result = tool.literature_search(
-                query=query,
-                max_results=int(data.get("web_max_results", 8)),
-                sources=data.get("web_search_sources") or _default_search_sources(),
-            )
-            if result.get("warning"):
-                progress_cb({"phase": "web_search", "message": result["warning"]})
-            papers = result.get("papers", [])
-            if not papers:
-                msg = result.get("warning") or result.get("error") or "No online literature found."
-                progress_cb({"phase": "warning", "message": msg})
-                return ""
-
-            seed_dir = Path(cfg.output_dir).expanduser() / "literature"
-            seed_dir.mkdir(parents=True, exist_ok=True)
-            seed = seed_dir / "web_literature_seed.md"
-            lines = [
-                "# Online Literature Seed",
-                "",
-                f"Query: {query}",
-                "",
-                "These records were fetched before the interpretation loop so the agent can treat online literature as traceable evidence.",
-                "",
-            ]
-            for i, p in enumerate(papers, 1):
-                authors = ", ".join(p.get("authors", []) or [])
-                lines.extend([
-                    f"## [{i}] {p.get('title', 'Untitled')}",
-                    f"- Year: {p.get('year') or ''}",
-                    f"- Authors: {authors}",
-                    f"- DOI: {p.get('doi') or ''}",
-                    f"- URL: {p.get('url') or ''}",
-                    "",
-                    p.get("abstract") or "(No abstract returned.)",
-                    "",
-                ])
-            seed.write_text("\n".join(lines), encoding="utf-8")
-            progress_cb({"phase": "web_search", "message": f"Saved {len(papers)} online literature records to {seed}"})
-            return str(seed)
-        except Exception as exc:
-            progress_cb({"phase": "warning", "message": f"Online literature prefetch failed: {str(exc)[:160]}"})
-            return ""
-
-    def _run():
-        try:
-            import sys as _sys
-            import os as _os
-            _root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-            if _root not in _sys.path:
-                _sys.path.insert(0, _root)
-            from sage_agents import EvidenceDrivenGeoAgent, AgentConfig
-            ws_cfg = get_workspace_config()
-            try:
-                from config_manager import LLMConfigManager
-                app_paths = LLMConfigManager().get_app_paths()
-            except Exception:
-                app_paths = {}
-            authorized_roots = []
-            if ws_cfg.get("enabled"):
-                authorized_roots.extend(ws_cfg.get("paths") or [])
-            authorized_roots.extend(data.get("authorized_roots") or [])
-            authorized_roots = [str(p).strip() for p in authorized_roots if str(p).strip()]
-
-            # Build config from request
-            cfg = AgentConfig(
-                workspace_root=data.get("workspace_root") or app_paths.get("geo_workspace_root") or ".",
-                literature_root=data.get("literature_root") or app_paths.get("geo_literature_root") or "",
-                output_dir=str(effective_output_dir),
-                authorized_roots=authorized_roots,
-                allow_python=bool(data.get("allow_python", True)),
-                allow_shell=bool(data.get("allow_shell", False)),
-                allow_web_search=bool(data.get("allow_web_search", False)),
-                use_multimodal=bool(data.get("use_multimodal", False)),
-                use_rag=bool(data.get("use_rag", True)),
-                use_local_files=bool(data.get("use_local_files", True)),
-                produce_latex=bool(data.get("produce_latex", True)),
-                use_code_engine=bool(data.get("use_code_engine", True)),
-                web_search_sources=data.get("web_search_sources") or _default_search_sources(),
-                max_iterations=int(data.get("max_iterations", 3)),
-                max_tool_calls_per_iter=int(data.get("max_tool_calls_per_iter", 8)),
-                rag_top_k=int(data.get("rag_top_k", 8)),
-                score_threshold=float(data.get("score_threshold", 0.35)),
-                code_timeout_s=int(data.get("code_timeout_s", 60)),
-            )
-
-            def _prog(d):
-                phase = d.get("phase", "")
-                msg   = d.get("message") or d.get("msg", "")
-                _geo_agent_jobs[job_id]["progress"].append(
-                    {"phase": phase, "message": msg, "ts": _time.time()}
-                )
-
-            seed_path = _prefetch_web_literature(data, cfg, _prog)
-            if seed_path and not cfg.literature_root:
-                cfg.literature_root = str(Path(seed_path).parent)
-
-            llm_cfg = get_llm_config()
-            if cfg.use_multimodal and not _model_likely_supports_vision(llm_cfg):
-                _prog({
-                    "phase": "warning",
-                    "message": (
-                        "Multimodal image/table parsing was requested, but the selected model "
-                        f"({llm_cfg.get('provider','')}/{llm_cfg.get('model','')}) does not look vision-capable. "
-                        "The agent will still parse text/CSV tables and will warn if image analysis fails."
-                    ),
-                })
-
-            profile = get_user_profile_context(max_chars=2500)
-            question_for_agent = question
-            project_context = (data.get("project_context") or "").strip()
-            geo_project_context = (data.get("geo_project_context") or "").strip()
-            project_ids = data.get("project_ids") or []
-            geo_project_ids = data.get("geo_project_ids") or []
-            if isinstance(project_ids, list) and project_ids:
-                question_for_agent += "\n\n===== Referenced Chat Project IDs =====\n" + ", ".join(str(x) for x in project_ids[:12])
-            if project_context and project_context not in question_for_agent:
-                question_for_agent += "\n\n===== Project shared context =====\n" + project_context[:12000]
-            if isinstance(geo_project_ids, list) and geo_project_ids:
-                question_for_agent += "\n\n===== Referenced upstream Geo Project IDs =====\n" + ", ".join(str(x) for x in geo_project_ids[:12])
-            if geo_project_context and geo_project_context not in question_for_agent:
-                question_for_agent += (
-                    "\n\n===== Upstream interpretation projects: evidence chains to inherit and re-audit =====\n"
-                    "Use these as prior research assets, not as unquestioned truth. For each inherited claim, "
-                    "seek evidence-of-evidence, check reliability/relevance, preserve upstream_evidence links, "
-                    "and list missing verification data.\n"
-                    + geo_project_context[:18000]
-                )
-            question_for_agent += (
-                "\n\n===== Required reasoning protocol =====\n"
-                "During the investigation, iteratively test hypotheses by collecting evidence and evidence-of-evidence. "
-                "For figures and tables from papers or uploaded images, extract quantitative values when possible. "
-                "For every important evidence record, estimate relevance and reliability, identify upstream evidence, "
-                "state verification_status, and describe verification_needed. Explicitly report missing information and "
-                "rank which evidence is most relevant and most reliable only when the ranking is grounded in the "
-                "collected evidence table. Every evidence record must include a source_excerpt that can be traced "
-                "to a tool output, file, RAG chunk, web result, figure/table extraction, or upstream project record. "
-                "Do not invent evidence IDs, citations, star ratings, scores, locations, numbers, methods, or source names; "
-                "if support is missing, say evidence is insufficient and list the missing source.\n"
-            )
-            if profile:
-                question_for_agent += (
-                    "\n\n===== Long-term user profile (soft context; do not mention unless useful) =====\n"
-                    + profile
-                )
-
-            agent  = EvidenceDrivenGeoAgent(config=cfg, llm_cfg=llm_cfg)
-            result = agent.run(question_for_agent, study_area, on_progress=_prog)
-            _geo_agent_jobs[job_id]["status"] = "done"
-            _geo_agent_jobs[job_id]["result"] = result
-            if isinstance(result, dict):
-                result.setdefault("_run_output_dir", str(effective_output_dir))
-                result.setdefault("_session_id", session_id)
-        except Exception as exc:
-            _geo_agent_jobs[job_id]["status"] = "error"
-            _geo_agent_jobs[job_id]["error"]  = str(exc)
-
-    threading.Thread(target=_run, daemon=True).start()
-    return jsonify({"ok": True, "job_id": job_id})
-
-
-@bp.route('/api/evidence_geo_agent/poll/<job_id>', methods=['GET'])
-def evidence_geo_agent_poll(job_id):
-    """Poll for evidence-geo-agent job status and result."""
-    job = _geo_agent_jobs.get(job_id)
-    if not job:
-        return jsonify({"ok": False, "error": "Job not found"}), 404
-    return jsonify({
-        "ok":       True,
-        "status":   job["status"],       # "running" | "done" | "error"
-        "progress": job["progress"],     # list of {phase, message, ts}
-        "result":   job["result"],       # None while running, full dict when done
-        "error":    job["error"],
-    })
-
-
 # ── Scientific Analysis Agent alpha ─────────────────────────────────────────
 
 def _science_agent_gc():
@@ -1464,13 +1228,7 @@ def science_analysis_agent():
             _root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
             if _root not in _sys.path:
                 _sys.path.insert(0, _root)
-            try:
-                from sage_agents import EvidenceDrivenGeoAgent, AgentConfig
-                _agent_backend = "evidence_geo_agent"
-            except Exception:
-                EvidenceDrivenGeoAgent = None
-                AgentConfig = None
-                _agent_backend = "seismo_agent"
+            _agent_backend = "seismo_agent"
 
             ws_cfg = get_workspace_config()
             authorized_roots = []
@@ -1582,67 +1340,43 @@ def science_analysis_agent():
             study_area = (data.get("study_area") or "scientific analysis").strip()
             _prog({"phase": "start", "message": f"Scientific analysis workspace: {workspace_root_str}"})
             _prog({"phase": "backend", "message": f"Using {_agent_backend}"})
-            if _agent_backend == "evidence_geo_agent" and EvidenceDrivenGeoAgent is not None and AgentConfig is not None:
-                cfg = AgentConfig(
-                    workspace_root=workspace_root_str,
-                    literature_root=literature_root,
-                    output_dir=str(effective_output_dir),
-                    authorized_roots=authorized_roots,
-                    allow_python=bool(data.get("allow_python", True)),
-                    allow_shell=bool(data.get("allow_shell", False)),
-                    allow_web_search=bool(data.get("allow_web_search", True)),
-                    use_multimodal=bool(data.get("use_multimodal", True)),
-                    use_rag=bool(data.get("use_rag", True)),
-                    use_local_files=bool(data.get("use_local_files", True)),
-                    produce_latex=bool(data.get("produce_latex", True)),
-                    use_code_engine=bool(data.get("use_code_engine", True)),
-                    web_search_sources=data.get("web_search_sources") or _default_search_sources(),
-                    max_iterations=int(data.get("max_iterations", 4)),
-                    max_tool_calls_per_iter=int(data.get("max_tool_calls_per_iter", 10)),
-                    rag_top_k=int(data.get("rag_top_k", 10)),
-                    score_threshold=float(data.get("score_threshold", 0.3)),
-                    code_timeout_s=int(data.get("code_timeout_s", 90)),
-                )
-                agent = EvidenceDrivenGeoAgent(config=cfg, llm_cfg=get_llm_config())
-                result = agent.run("\n".join(prompt_parts), study_area, on_progress=_prog)
-            else:
-                from seismo_agent import SeismoAgent
-                agent = SeismoAgent(llm_config=get_llm_config(), project_root=workspace_root_str, mode="autonomous")
-                fallback = agent.run(
-                    "\n".join(prompt_parts),
-                    paper_source=literature_sources,
-                    output_dir=str(effective_output_dir),
-                    progress_cb=_prog,
-                    guidance_provider=_runtime_guidance,
-                    max_steps=int(data.get("max_iterations", 4)),
-                    max_followup_rounds=int(data.get("max_followup_rounds", 3)),
-                    max_review_rounds=int(data.get("max_review_rounds", 3)),
-                    produce_latex=bool(data.get("produce_latex", True)),
-                    use_web_search=bool(data.get("allow_web_search", True)),
-                )
-                result = {
-                    "final_report": fallback.get("summary", ""),
-                    "generated_figures": fallback.get("figures", []),
-                    "markdown_paper": fallback.get("markdown_paper", ""),
-                    "markdown_paper_path": fallback.get("markdown_paper_path", ""),
-                    "latex_path": fallback.get("latex_path", ""),
-                    "latex_bib_path": fallback.get("latex_bib_path", ""),
-                    "latex_pdf": fallback.get("latex_pdf", ""),
-                    "latex_paper": fallback.get("latex_paper", ""),
-                    "tool_log": [],
-                    "scientific_questions": fallback.get("scientific_questions", []),
-                    "statistical_results": fallback.get("statistical_results") or [
-                        {"title": "Agent summary", "content": fallback.get("summary", "")}
-                    ],
-                    "table_artifacts": fallback.get("table_artifacts", []),
-                    "paper_artifact_plan": fallback.get("paper_artifact_plan", ""),
-                    "scientific_evidence_synthesis": fallback.get("scientific_evidence_synthesis", ""),
-                    "artifact_refinement_plan": fallback.get("artifact_refinement_plan", ""),
-                    "peer_review_reports": fallback.get("peer_review_reports", []),
-                    "missing_information": [] if fallback.get("success") else ["部分步骤失败或底层 evidence agent 不可用，请查看运行日志。"],
-                    "_fallback_backend": "seismo_agent",
-                    "_raw_result": fallback,
-                }
+            from seismo_agent import SeismoAgent
+            agent = SeismoAgent(llm_config=get_llm_config(), project_root=workspace_root_str, mode="autonomous")
+            fallback = agent.run(
+                "\n".join(prompt_parts),
+                paper_source=literature_sources,
+                output_dir=str(effective_output_dir),
+                progress_cb=_prog,
+                guidance_provider=_runtime_guidance,
+                max_steps=int(data.get("max_iterations", 4)),
+                max_followup_rounds=int(data.get("max_followup_rounds", 3)),
+                max_review_rounds=int(data.get("max_review_rounds", 3)),
+                produce_latex=bool(data.get("produce_latex", True)),
+                use_web_search=bool(data.get("allow_web_search", True)),
+            )
+            result = {
+                "final_report": fallback.get("summary", ""),
+                "generated_figures": fallback.get("figures", []),
+                "markdown_paper": fallback.get("markdown_paper", ""),
+                "markdown_paper_path": fallback.get("markdown_paper_path", ""),
+                "latex_path": fallback.get("latex_path", ""),
+                "latex_bib_path": fallback.get("latex_bib_path", ""),
+                "latex_pdf": fallback.get("latex_pdf", ""),
+                "latex_paper": fallback.get("latex_paper", ""),
+                "tool_log": [],
+                "scientific_questions": fallback.get("scientific_questions", []),
+                "statistical_results": fallback.get("statistical_results") or [
+                    {"title": "Agent summary", "content": fallback.get("summary", "")}
+                ],
+                "table_artifacts": fallback.get("table_artifacts", []),
+                "paper_artifact_plan": fallback.get("paper_artifact_plan", ""),
+                "scientific_evidence_synthesis": fallback.get("scientific_evidence_synthesis", ""),
+                "artifact_refinement_plan": fallback.get("artifact_refinement_plan", ""),
+                "peer_review_reports": fallback.get("peer_review_reports", []),
+                "missing_information": [] if fallback.get("success") else ["部分步骤失败，请查看运行日志。"],
+                "_fallback_backend": "seismo_agent",
+                "_raw_result": fallback,
+            }
             if isinstance(result, dict):
                 result.setdefault("_run_output_dir", str(effective_output_dir))
                 result.setdefault("_session_id", session_id)
@@ -1834,135 +1568,6 @@ def science_analysis_agent_export_pdf():
         "output_dir": str(out),
     }
     return jsonify({"ok": True, "result": result, "logs": logs, "output_dir": str(out)})
-
-
-# ── EvidenceGeoAgent — file upload for workspace ───────────────────────────
-
-_GEO_ALLOWED_EXTS = {
-    ".pdf", ".png", ".jpg", ".jpeg",
-    ".csv", ".txt", ".md", ".json",
-    ".yaml", ".yml", ".bib", ".dat",
-    ".sac", ".mseed", ".xml",
-}
-
-
-@bp.route('/api/evidence_geo_agent/upload', methods=['POST'])
-def evidence_geo_agent_upload():
-    """Upload a research file into the agent's workspace."""
-    if 'file' not in request.files:
-        return jsonify({"ok": False, "error": "No file provided"}), 400
-
-    f          = request.files['file']
-    session_id = (request.form.get('session_id') or 'default').replace('/', '_').replace('..', '_')
-    orig_name  = Path(f.filename).name if f.filename else 'upload'
-    ext        = Path(orig_name).suffix.lower()
-
-    if ext not in _GEO_ALLOWED_EXTS:
-        return jsonify({"ok": False, "error": f"File type '{ext}' not allowed"}), 400
-
-    # Create session workspace
-    ws_dir = GEO_WORKSPACE_ROOT / session_id
-    ws_dir.mkdir(parents=True, exist_ok=True)
-
-    # Determine sub-folder by type
-    if ext == '.pdf':
-        sub = 'literature';  ftype = 'pdf'
-    elif ext in {'.png', '.jpg', '.jpeg'}:
-        sub = 'figures';     ftype = 'image'
-    elif ext == '.csv':
-        sub = 'data';        ftype = 'data'
-    else:
-        sub = 'misc';        ftype = 'text'
-
-    sub_dir = ws_dir / sub
-    sub_dir.mkdir(exist_ok=True)
-
-    dest = sub_dir / orig_name
-    f.save(str(dest))
-
-    return jsonify({
-        "ok":        True,
-        "path":      str(dest),
-        "file_type": ftype,
-        "session_workspace": str(ws_dir),
-    })
-
-
-# ── EvidenceGeoAgent — inline web / scholar search ────────────────────────
-
-@bp.route('/api/evidence_geo_agent/web_search', methods=['POST'])
-def evidence_geo_agent_web_search():
-    """Lightweight inline web search used by the frontend search panel."""
-    data         = request.json or {}
-    query        = (data.get('query') or '').strip()
-    search_type  = data.get('search_type', 'scholar')
-    max_results  = int(data.get('max_results', 10))
-
-    if not query:
-        return jsonify({"ok": False, "error": "query is required"}), 400
-
-    import sys as _sys
-    import os as _os
-    _root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-    if _root not in _sys.path:
-        _sys.path.insert(0, _root)
-
-    try:
-        from sage_agents.evidence_driven_geo_agent import AgentConfig, WebSearchTool
-        cfg  = AgentConfig(allow_web_search=True)
-        tool = WebSearchTool(cfg)
-
-        if search_type in ('literature', 'multi'):
-            result = tool.literature_search(query, max_results=max_results, sources=data.get('sources') or _default_search_sources())
-        elif search_type == 'openalex':
-            result = tool.openalex_search(query, max_results=max_results)
-        elif search_type == 'arxiv':
-            result = tool.arxiv_search(query, max_results=max_results)
-        elif search_type in ('scholar', 'semantic_scholar'):
-            result = tool.scholar_search(query, max_results=max_results)
-        else:
-            result = tool.web_search(query, max_results=max_results)
-
-        if 'error' in result:
-            return jsonify({"ok": False, "error": result['error']})
-
-        # Normalise to a flat list
-        items = result.get('results', result.get('papers', []))
-        return jsonify({"ok": True, "results": items[:max_results]})
-
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)})
-
-
-# ── EvidenceGeoAgent — serve a generated figure by path ───────────────────
-
-@bp.route('/api/evidence_geo_agent/figure', methods=['GET'])
-def evidence_geo_agent_figure():
-    """Serve a generated figure PNG from the agent's output directory."""
-    import os as _os
-    fig_path = request.args.get('path', '').strip()
-    if not fig_path:
-        return jsonify({"error": "path required"}), 400
-
-    p = Path(fig_path)
-    # Security: only serve files that exist and have image extensions
-    if p.suffix.lower() not in {'.png', '.jpg', '.jpeg', '.svg'}:
-        return jsonify({"error": "Unsupported file type"}), 400
-    if not p.exists():
-        return jsonify({"error": "File not found"}), 404
-
-    # Resolve and check it stays within the project root or GEO_WORKSPACE_ROOT
-    proj_root = Path(__file__).parent.parent.resolve()
-    try:
-        p.resolve().relative_to(proj_root)
-    except ValueError:
-        try:
-            p.resolve().relative_to(GEO_WORKSPACE_ROOT.resolve())
-        except ValueError:
-            return jsonify({"error": "Access denied"}), 403
-
-    mime = 'image/svg+xml' if p.suffix.lower() == '.svg' else 'image/png'
-    return send_file(str(p.resolve()), mimetype=mime)
 
 
 # ── 聊天界面临时文档上传 ────────────────────────────────────────────────────
@@ -2326,16 +1931,156 @@ def chat_rag():
 
 # ── 流式 RAG 对话 ─────────────────────────────────────────────────────────────
 
+def _openalex_abstract(item: dict) -> str:
+    inv = item.get("abstract_inverted_index") or {}
+    if not isinstance(inv, dict):
+        return ""
+    pairs = []
+    for word, positions in inv.items():
+        if isinstance(positions, list):
+            for pos in positions:
+                if isinstance(pos, int):
+                    pairs.append((pos, word))
+    return " ".join(w for _, w in sorted(pairs))
+
+
+def _literature_web_search(query: str, *, sources=None, max_results: int = 6) -> list:
+    """Small project-local scholarly search helper independent of legacy geo agent."""
+    import urllib.parse
+    import urllib.request
+    import xml.etree.ElementTree as ET
+
+    q = " ".join(str(query or "").split())[:500]
+    if not q:
+        return []
+    sources = sources or _default_search_sources()
+    max_results = max(1, min(int(max_results or 6), 12))
+    items = []
+
+    try:
+        from config_manager import LLMConfigManager
+        search_cfg = LLMConfigManager().get_search_config()
+        providers = search_cfg.get("providers") or {}
+    except Exception:
+        providers = {}
+
+    def _enabled(name: str) -> bool:
+        meta = providers.get(name) or {}
+        return bool(meta.get("enabled", True))
+
+    def _json_get(url: str, headers=None, timeout=12):
+        req = urllib.request.Request(url, headers=headers or {"User-Agent": "SeismicX/0.1"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8", errors="ignore"))
+
+    if "openalex" in sources and _enabled("openalex"):
+        try:
+            url = (
+                "https://api.openalex.org/works?search="
+                + urllib.parse.quote(q)
+                + f"&per-page={max_results}"
+            )
+            for item in (_json_get(url).get("results") or [])[:max_results]:
+                authors = [
+                    ((a.get("author") or {}).get("display_name") or "").strip()
+                    for a in (item.get("authorships") or [])[:6]
+                ]
+                authors = [a for a in authors if a]
+                loc = item.get("primary_location") or {}
+                source = (loc.get("source") or {}).get("display_name") or "OpenAlex"
+                doi = item.get("doi") or ""
+                items.append({
+                    "source": "openalex",
+                    "title": item.get("title") or "Untitled",
+                    "year": item.get("publication_year") or "",
+                    "authors": authors,
+                    "doi": doi,
+                    "url": doi or item.get("id") or "",
+                    "venue": source,
+                    "abstract": _openalex_abstract(item),
+                })
+        except Exception:
+            pass
+
+    if len(items) < max_results and "semantic_scholar" in sources and _enabled("semantic_scholar"):
+        try:
+            api_key = (providers.get("semantic_scholar") or {}).get("api_key") or ""
+            fields = "title,year,authors,abstract,url,venue,externalIds"
+            url = (
+                "https://api.semanticscholar.org/graph/v1/paper/search?query="
+                + urllib.parse.quote(q)
+                + f"&limit={max_results}&fields={urllib.parse.quote(fields)}"
+            )
+            headers = {"User-Agent": "SeismicX/0.1"}
+            if api_key:
+                headers["x-api-key"] = api_key
+            for item in (_json_get(url, headers=headers).get("data") or [])[:max_results]:
+                ext = item.get("externalIds") or {}
+                items.append({
+                    "source": "semantic_scholar",
+                    "title": item.get("title") or "Untitled",
+                    "year": item.get("year") or "",
+                    "authors": [a.get("name", "") for a in (item.get("authors") or [])[:6] if a.get("name")],
+                    "doi": ext.get("DOI") or "",
+                    "url": item.get("url") or "",
+                    "venue": item.get("venue") or "",
+                    "abstract": item.get("abstract") or "",
+                })
+        except Exception:
+            pass
+
+    if len(items) < max_results and "arxiv" in sources and _enabled("arxiv"):
+        try:
+            url = (
+                "https://export.arxiv.org/api/query?search_query=all:"
+                + urllib.parse.quote(q)
+                + f"&start=0&max_results={max_results}"
+            )
+            req = urllib.request.Request(url, headers={"User-Agent": "SeismicX/0.1"})
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                root = ET.fromstring(resp.read())
+            ns = {"a": "http://www.w3.org/2005/Atom"}
+            for entry in root.findall("a:entry", ns)[:max_results]:
+                title = " ".join((entry.findtext("a:title", default="", namespaces=ns) or "").split())
+                summary = " ".join((entry.findtext("a:summary", default="", namespaces=ns) or "").split())
+                url_text = entry.findtext("a:id", default="", namespaces=ns) or ""
+                authors = [
+                    (a.findtext("a:name", default="", namespaces=ns) or "").strip()
+                    for a in entry.findall("a:author", ns)[:6]
+                ]
+                items.append({
+                    "source": "arxiv",
+                    "title": title or "Untitled",
+                    "year": (entry.findtext("a:published", default="", namespaces=ns) or "")[:4],
+                    "authors": [a for a in authors if a],
+                    "doi": "",
+                    "url": url_text,
+                    "venue": "arXiv",
+                    "abstract": summary,
+                })
+        except Exception:
+            pass
+
+    seen = set()
+    deduped = []
+    for item in items:
+        key = (str(item.get("doi") or "").lower(), str(item.get("title") or "").lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+        if len(deduped) >= max_results:
+            break
+    return deduped
+
+
 def _chat_web_search_context(data: dict, query: str):
     """Optional chat-side web/literature search context."""
     if not data.get("enable_web_search"):
         return "", []
     try:
-        from sage_agents.evidence_driven_geo_agent import AgentConfig, WebSearchTool
         sources = data.get("web_search_sources") or _default_search_sources()
-        tool = WebSearchTool(AgentConfig(allow_web_search=True, web_search_sources=sources))
-        result = tool.literature_search(query=query, max_results=int(data.get("web_max_results", 6)), sources=sources)
-        papers = result.get("papers", []) or []
+        papers = _literature_web_search(query, sources=sources, max_results=int(data.get("web_max_results", 6)))
         if not papers:
             return "", []
         lines = [
