@@ -24,9 +24,11 @@ import os
 import re
 import shutil
 import csv
+import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -84,16 +86,460 @@ _TABLE_EXTS = {".csv", ".tsv", ".xlsx", ".xls", ".json", ".md", ".txt"}
 _SCIENCE_FIGURE_POLICY = """\
 Scientific artifact policy:
 - Start from a mechanism-oriented research question and an explicit testable hypothesis.
-- Main-paper figures should be few and evidence-rich: normally 2-3 figures plus 1-2 tables.
-- Avoid generic data-quality or descriptive plots as main figures: raw count charts,
+- Use a two-stage artifact strategy:
+  1) exploratory stage: generate a broad, evidence-rich candidate figure/table set
+     (normally 6-10 candidate figures and 3-5 candidate tables/notes when data support it);
+  2) convergence stage: select a smaller main-text set and demote the rest to supplement/QC.
+- Main-paper figures should be few and evidence-rich after convergence: normally 3-5
+  main figures plus 1-3 main tables, with additional useful artifacts kept as supplement.
+- Avoid generic data-quality or descriptive plots as final main figures: raw count charts,
   quality-class bar charts, parameter-only histograms, and column/schema inventories
   belong in supplementary/QC notes unless they directly test the hypothesis.
 - Each main figure must answer: what mechanism is being tested, what data support it,
   what alternative explanation it compares against, and what uncertainty remains.
 - Prefer composite, hypothesis-driven figures over many standalone diagnostic plots.
+- Every executable analysis step must state and verify its input/output contract:
+  input files and fields, output artifacts, smoke-test checks, and evidence status.
 - If evidence is insufficient, write missing_information.md instead of producing
   decorative or weakly motivated plots.
+- Every CodeEngine script must print at least one line beginning with [SAGE_TEST]
+  summarizing non-empty data checks and created artifact paths.
 """
+
+_RECON_SKIP_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".venv",
+    "venv",
+    "node_modules",
+    "outputs",
+}
+
+_RECON_TEXT_EXTS = {
+    ".txt",
+    ".dat",
+    ".csv",
+    ".tsv",
+    ".md",
+    ".rst",
+    ".py",
+    ".sh",
+    ".tex",
+    ".bib",
+    ".json",
+    ".html",
+    ".xml",
+    ".yaml",
+    ".yml",
+}
+
+_RECON_DOC_EXTS = {".doc", ".docx", ".pdf"}
+_RECON_DATA_EXTS = {".txt", ".dat", ".csv", ".tsv", ".xlsx", ".xls", ".json", ".h5", ".hdf5", ".nc", ".sac", ".mseed"}
+
+
+def _safe_rel(path: Path, root: Path) -> str:
+    try:
+        return path.relative_to(root).as_posix()
+    except Exception:
+        return path.as_posix()
+
+
+def _read_text_preview(path: Path, max_chars: int = 12000) -> str:
+    suffix = path.suffix.lower()
+    if suffix in _RECON_TEXT_EXTS:
+        try:
+            return path.read_text(encoding="utf-8", errors="ignore")[:max_chars]
+        except Exception:
+            try:
+                return path.read_text(encoding="gb18030", errors="ignore")[:max_chars]
+            except Exception:
+                return ""
+    if suffix == ".doc":
+        try:
+            proc = subprocess.run(
+                ["textutil", "-convert", "txt", "-stdout", str(path)],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            return (proc.stdout or proc.stderr or "")[:max_chars]
+        except Exception:
+            return ""
+    if suffix == ".docx":
+        try:
+            import docx  # type: ignore
+
+            document = docx.Document(str(path))
+            return "\n".join(p.text for p in document.paragraphs if p.text.strip())[:max_chars]
+        except Exception:
+            return ""
+    if suffix == ".pdf":
+        try:
+            from pdfminer.high_level import extract_text  # type: ignore
+
+            return (extract_text(str(path), maxpages=2) or "")[:max_chars]
+        except Exception:
+            try:
+                import fitz  # type: ignore
+
+                doc = fitz.open(str(path))
+                text = "\n".join(page.get_text("text") for page in doc[:2])
+                doc.close()
+                return text[:max_chars]
+            except Exception:
+                return ""
+    return ""
+
+
+def _looks_numeric(token: str) -> bool:
+    try:
+        float(token)
+        return True
+    except Exception:
+        return False
+
+
+def _to_float(token: str) -> Optional[float]:
+    try:
+        return float(token)
+    except Exception:
+        return None
+
+
+def _split_data_line(line: str, delimiter: str = "") -> List[str]:
+    stripped = line.strip()
+    if not stripped:
+        return []
+    if delimiter == "comma":
+        return [p.strip() for p in stripped.split(",")]
+    if delimiter == "tab":
+        return [p.strip() for p in stripped.split("\t")]
+    if "," in stripped and stripped.count(",") >= stripped.count(" "):
+        return [p.strip() for p in stripped.split(",")]
+    if "\t" in stripped:
+        return [p.strip() for p in stripped.split("\t")]
+    return stripped.split()
+
+
+def _detect_delimiter(lines: List[str]) -> str:
+    comma = sum(1 for line in lines if line.count(",") >= 2)
+    tab = sum(1 for line in lines if line.count("\t") >= 2)
+    if comma and comma >= tab:
+        return "comma"
+    if tab:
+        return "tab"
+    return "whitespace"
+
+
+def _infer_column_name(index: int, values: List[str], known_layout: bool) -> tuple[str, float, str]:
+    numeric_values = [_to_float(v) for v in values]
+    numeric_values = [v for v in numeric_values if v is not None]
+    unique = {v for v in values if v not in {"", "nan", "NaN", "NA"}}
+
+    if known_layout:
+        mapping = {
+            0: ("event_id", 0.75, "first integer-like token in focal-mechanism rows"),
+            1: ("year", 0.9, "year-like column in data notes/sample rows"),
+            2: ("month", 0.85, "calendar month column"),
+            3: ("day", 0.85, "calendar day column"),
+            4: ("hour", 0.85, "hour column"),
+            5: ("minute", 0.85, "minute column"),
+            6: ("second", 0.85, "second column"),
+            8: ("magnitude_or_size", 0.55, "numeric event-size column near time fields"),
+            10: ("latitude", 0.9, "values fall in geographic latitude range and match sample notes"),
+            11: ("longitude", 0.9, "values fall in geographic longitude range and match sample notes"),
+            12: ("depth_km", 0.85, "positive depth-like column after coordinates"),
+            21: ("strike1_deg", 0.65, "focal-mechanism angle column"),
+            22: ("dip1_deg", 0.65, "focal-mechanism angle column"),
+            23: ("rake1_deg", 0.65, "focal-mechanism angle column"),
+            24: ("strike2_or_aux_deg", 0.45, "auxiliary mechanism-angle column"),
+            25: ("dip2_or_aux_deg", 0.45, "auxiliary mechanism-angle column"),
+            26: ("rake2_or_aux_deg", 0.45, "auxiliary mechanism-angle column"),
+            28: ("quality_class", 0.9, "A/B/C quality label column"),
+            29: ("fit_or_score", 0.45, "post-quality numeric score column"),
+            30: ("station_or_count", 0.35, "post-quality count-like column"),
+        }
+        if index in mapping:
+            return mapping[index]
+
+    if unique and unique <= {"A", "B", "C"}:
+        return ("quality_class", 0.8, "low-cardinality A/B/C text values")
+    if numeric_values:
+        vmin, vmax = min(numeric_values), max(numeric_values)
+        if 1900 <= vmin <= 2100 and 1900 <= vmax <= 2100:
+            return ("year", 0.75, "year-like numeric range")
+        if 1 <= vmin and vmax <= 12 and index <= 6:
+            return ("month_or_small_time_field", 0.45, "small calendar/time-like range")
+        if -90 <= vmin <= 90 and -90 <= vmax <= 90 and len(numeric_values) >= max(3, len(values) // 2):
+            if 20 <= sum(numeric_values) / len(numeric_values) <= 50:
+                return ("latitude_candidate", 0.55, "geographic latitude range")
+        if -180 <= vmin <= 180 and -180 <= vmax <= 180 and len(numeric_values) >= max(3, len(values) // 2):
+            if 70 <= sum(numeric_values) / len(numeric_values) <= 140:
+                return ("longitude_candidate", 0.55, "geographic longitude range")
+        if 0 <= vmin and vmax <= 700:
+            return ("positive_quantity_or_depth_candidate", 0.3, "non-negative geophysical range")
+    return (f"col_{index:02d}", 0.0, "not enough evidence to infer semantic meaning")
+
+
+def _profile_text_data(path: Path, root: Path, preview: str) -> Dict[str, Any]:
+    lines = [line for line in preview.splitlines() if line.strip() and not line.lstrip().startswith(("#", "%"))]
+    sample_lines = lines[:200]
+    delimiter = _detect_delimiter(sample_lines)
+    rows = [_split_data_line(line, delimiter) for line in sample_lines]
+    rows = [row for row in rows if row]
+    ncols_counter = Counter(len(row) for row in rows)
+    ncols = ncols_counter.most_common(1)[0][0] if ncols_counter else 0
+    consistent_rows = [row for row in rows if len(row) == ncols][:100]
+    known_maduo_mechanism = False
+    if ncols >= 29 and consistent_rows:
+        row = consistent_rows[0]
+        known_maduo_mechanism = (
+            len(row) > 28
+            and _looks_numeric(row[1])
+            and 1900 <= float(row[1]) <= 2100
+            and row[28] in {"A", "B", "C"}
+        )
+
+    schema: List[Dict[str, Any]] = []
+    for index in range(ncols):
+        values = [row[index] for row in consistent_rows if index < len(row)]
+        numeric_values = [_to_float(v) for v in values]
+        numeric_values = [v for v in numeric_values if v is not None]
+        inferred, confidence, evidence = _infer_column_name(index, values, known_maduo_mechanism)
+        stats: Dict[str, Any] = {
+            "sample_values": list(dict.fromkeys(values[:8])),
+            "numeric_ratio": round(len(numeric_values) / max(1, len(values)), 3),
+        }
+        if numeric_values:
+            stats.update({
+                "min": min(numeric_values),
+                "max": max(numeric_values),
+                "mean": sum(numeric_values) / len(numeric_values),
+            })
+        schema.append({
+            "name": f"col_{index:02d}",
+            "inferred_name": inferred,
+            "confidence": confidence,
+            "evidence": evidence,
+            "stats": stats,
+        })
+
+    role = "numeric_text_data" if ncols >= 3 and any(col["stats"]["numeric_ratio"] > 0.5 for col in schema) else "text_or_notes"
+    if known_maduo_mechanism:
+        role = "focal_mechanism_catalog"
+    supported = []
+    inferred_names = {col["inferred_name"] for col in schema}
+    if {"latitude", "longitude"} & inferred_names or {"latitude_candidate", "longitude_candidate"} <= inferred_names:
+        supported.append("spatial_mapping")
+    if "depth_km" in inferred_names or "positive_quantity_or_depth_candidate" in inferred_names:
+        supported.append("depth_distribution")
+    if "quality_class" in inferred_names:
+        supported.append("quality_filtering")
+    if {"strike1_deg", "dip1_deg", "rake1_deg"} <= inferred_names:
+        supported.extend(["focal_mechanism_classification", "mechanism_orientation_statistics"])
+    if {"year", "month", "day"} & inferred_names:
+        supported.append("time_series")
+
+    return {
+        "path": _safe_rel(path, root),
+        "suffix": path.suffix.lower(),
+        "size_bytes": path.stat().st_size,
+        "role": role,
+        "delimiter": delimiter,
+        "sample_line_count": len(rows),
+        "dominant_column_count": ncols,
+        "column_count_distribution": dict(ncols_counter.most_common(8)),
+        "schema": schema,
+        "supported_analyses": sorted(set(supported)),
+        "sample_rows": [" ".join(row[: min(len(row), 16)]) for row in consistent_rows[:5]],
+        "uncertainties": [] if supported else ["File may need domain-specific parsing before use."],
+    }
+
+
+def _classify_non_data_file(path: Path, root: Path, preview: str) -> Dict[str, Any]:
+    suffix = path.suffix.lower()
+    lowered = f"{path.name}\n{preview[:1000]}".lower()
+    if suffix in {".pdf"} or any(k in lowered for k in ["abstract", "doi", "journal", "references", "关键词", "摘要"]):
+        role = "reference_paper_or_report"
+    elif suffix in {".doc", ".docx", ".md", ".rst", ".txt"} and any(k in lowered for k in ["数据说明", "field", "字段", "format", "文件", "notes"]):
+        role = "data_description_or_project_notes"
+    elif suffix in {".py", ".sh"}:
+        role = "script_or_code"
+    elif suffix in {".tex", ".bib"}:
+        role = "paper_template_or_bibliography"
+    else:
+        role = "project_file"
+    return {
+        "path": _safe_rel(path, root),
+        "suffix": suffix,
+        "size_bytes": path.stat().st_size,
+        "role": role,
+        "preview": preview[:1500],
+    }
+
+
+def _iter_recon_files(project_root: Path, max_files: int = 2000) -> List[Path]:
+    files: List[Path] = []
+    for path in sorted(project_root.rglob("*")):
+        if len(files) >= max_files:
+            break
+        if path.is_dir():
+            continue
+        rel_parts = set(path.relative_to(project_root).parts[:-1])
+        if rel_parts & _RECON_SKIP_DIRS:
+            continue
+        if any(part.startswith(".") and part not in {".gmt"} for part in path.relative_to(project_root).parts[:-1]):
+            continue
+        suffix = path.suffix.lower()
+        if suffix in _RECON_TEXT_EXTS or suffix in _RECON_DOC_EXTS or suffix in _RECON_DATA_EXTS:
+            files.append(path)
+    return files
+
+
+def _write_builtin_reconnaissance(project_root: str, output_dir: str, goal: str) -> Dict[str, Any]:
+    root = Path(project_root).resolve()
+    out = Path(output_dir).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+
+    files = _iter_recon_files(root)
+    entries: List[Dict[str, Any]] = []
+    candidate_data = 0
+    data_notes = 0
+    literature = 0
+
+    for path in files:
+        preview = _read_text_preview(path)
+        suffix = path.suffix.lower()
+        if suffix in _RECON_DATA_EXTS and suffix in {".txt", ".dat", ".csv", ".tsv"}:
+            entry = _profile_text_data(path, root, preview)
+        else:
+            entry = _classify_non_data_file(path, root, preview)
+        if entry.get("role") in {"numeric_text_data", "focal_mechanism_catalog"}:
+            candidate_data += 1
+        if entry.get("role") == "data_description_or_project_notes":
+            data_notes += 1
+        if entry.get("role") == "reference_paper_or_report":
+            literature += 1
+        entries.append(entry)
+
+    manifest = {
+        "project_root": str(root),
+        "goal": goal,
+        "scanned_files": len(files),
+        "candidate_data_files": candidate_data,
+        "data_note_files": data_notes,
+        "reference_files": literature,
+        "entries": entries,
+    }
+
+    manifest_path = out / "data_schema_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    md_lines = [
+        "# Data Reconnaissance Report",
+        "",
+        f"- Project root: `{root}`",
+        f"- Research goal: {goal}",
+        f"- Scanned files: {len(files)}",
+        f"- Candidate data files: {candidate_data}",
+        f"- Data-note files: {data_notes}",
+        f"- Reference papers/reports: {literature}",
+        "",
+        "## Recommended Analysis Order",
+        "",
+        "1. Read data-note/project-note files first and use them to verify inferred schemas.",
+        "2. Parse candidate data files with explicit column checks and non-empty smoke tests.",
+        "3. Generate a broad exploratory figure/table pool, then keep only mechanism-oriented evidence in the main paper.",
+        "4. Treat generic field lists, quality counts, and parser diagnostics as supplementary/QC material.",
+        "",
+        "## Candidate Data Files",
+        "",
+    ]
+    for entry in entries:
+        if entry.get("role") not in {"numeric_text_data", "focal_mechanism_catalog"}:
+            continue
+        md_lines.extend([
+            f"### `{entry['path']}`",
+            "",
+            f"- Role: `{entry.get('role')}`",
+            f"- Delimiter: `{entry.get('delimiter')}`",
+            f"- Dominant columns: `{entry.get('dominant_column_count')}`",
+            f"- Supported analyses: {', '.join(entry.get('supported_analyses') or ['to be determined'])}",
+            "",
+            "| Column | Inferred meaning | Confidence | Evidence |",
+            "|---|---:|---:|---|",
+        ])
+        for col in entry.get("schema", [])[:40]:
+            md_lines.append(
+                f"| `{col['name']}` | `{col['inferred_name']}` | {col['confidence']:.2f} | {col['evidence']} |"
+            )
+        md_lines.extend(["", "**Sample rows**", ""])
+        for row in entry.get("sample_rows", [])[:5]:
+            md_lines.append(f"- `{row}`")
+        md_lines.append("")
+
+    md_lines.extend([
+        "## Data Notes And Literature Files",
+        "",
+        "| File | Role | Preview evidence |",
+        "|---|---|---|",
+    ])
+    for entry in entries:
+        if entry.get("role") in {"numeric_text_data", "focal_mechanism_catalog"}:
+            continue
+        preview = (entry.get("preview") or "").replace("\n", " ")[:180]
+        md_lines.append(f"| `{entry['path']}` | `{entry.get('role')}` | {preview} |")
+
+    recon_path = out / "data_reconnaissance.md"
+    recon_path.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+
+    contract_lines = [
+        "# IO Contracts For Scientific Analysis",
+        "",
+        "These contracts are generated before planning so every later coding step has explicit inputs, outputs, and checks.",
+        "",
+        "## 1. Data Parsing",
+        "",
+        "- Inputs: candidate data files listed in `data_schema_manifest.json`.",
+        "- Required checks: row count > 0, dominant column count stable, required inferred fields present or marked uncertain.",
+        "- Outputs: normalized CSV/JSON tables in the run output directory; parser summary Markdown.",
+        "",
+        "## 2. Exploratory Figure/Table Pool",
+        "",
+        "- Inputs: normalized event tables plus literature/data-note context.",
+        "- Required checks: every figure/table prints source rows, selected fields, and output path.",
+        "- Outputs: candidate figures/tables testing spatial, depth, time, segmentation, mechanism, and robustness hypotheses.",
+        "",
+        "## 3. Scientific Convergence",
+        "",
+        "- Inputs: candidate artifacts and claim-evidence-warrant matrix.",
+        "- Required checks: each main conclusion cites at least one data/statistical artifact and one literature/RAG/web evidence item when available.",
+        "- Outputs: Markdown paper draft with embedded figures, supplement/QC notes, and missing-information list.",
+        "",
+    ]
+    contracts_path = out / "io_contracts.md"
+    contracts_path.write_text("\n".join(contract_lines), encoding="utf-8")
+
+    stdout = (
+        f"[SAGE_TEST] scanned_files={len(files)} candidate_data_files={candidate_data} "
+        f"data_notes={data_notes} references={literature} manifest={manifest_path}\n"
+        f"Created {recon_path}\nCreated {contracts_path}"
+    )
+    return {
+        "manifest": manifest,
+        "stdout": stdout,
+        "output_files": [str(manifest_path), str(recon_path), str(contracts_path)],
+        "candidate_data_files": candidate_data,
+        "scanned_files": len(files),
+        "data_notes": data_notes,
+        "references": literature,
+    }
 
 
 def _generate_step_code(
@@ -320,17 +766,19 @@ Write a grounded Markdown research paper draft in Chinese. Use this structure:
 
 Rules:
 - The Results section is the scientific core. It must not read like a data-quality report or a list of figure captions.
-- Organize Results by mechanism-oriented claims, then use Figure 1, Figure 2, Table 1, Table 2 as evidence for those claims.
+- Organize Results by mechanism-oriented claims, then use the generated figures/tables as evidence for those claims.
+- Embed all scientifically relevant candidate figures with Markdown image syntax. Mark them as Main Figure or Supplementary Figure according to the artifact refinement plan.
 - Each Results subsection must follow: claim -> data/statistical evidence -> literature/web evidence -> mechanism interpretation -> uncertainty/counter-evidence.
 - Every main claim must cite at least one generated data/table/figure artifact; if local literature or web evidence is available, connect it explicitly by title/DOI/URL/source name.
 - Prefer strong scientific headings such as "Shallow weak zones modulate reverse faulting" over descriptive headings such as "data quality and feature statistics".
-- Use only the figures that directly support the core scientific question as main figures; do not center the paper on QC/diagnostic plots. Extra diagnostic plots may be mentioned as supplementary artifacts without embedding them all.
+- Use only the figures that directly support the core scientific question as main figures; do not center the paper on QC/diagnostic plots. Extra diagnostic plots may be embedded in a Supplementary evidence section when they explain uncertainty, filtering, or robustness.
 - Include Markdown tables for the most important statistical artifacts. If a table file is listed, summarize its key columns/values and cite the file path.
 - If no figure or table was generated, explicitly state that the analysis is incomplete and do not pretend a result is supported.
 - Distinguish observations, interpretations, hypotheses, and missing evidence. Use labels such as 已验证 / 部分支持 / 待验证.
 - Do not invent citations, numbers, or conclusions. If evidence is missing, say so.
 - Mention which output files support each main claim.
 - Do not merely write "Figure X shows"; explain what scientific question the figure tests and what alternative explanation remains possible.
+- The paper should be substantial. Unless evidence is truly insufficient, write detailed Introduction, Results, Discussion, and Limitations sections rather than a brief status report.
 {_SCIENCE_FIGURE_POLICY}
 """
 
@@ -346,10 +794,10 @@ Rules:
     if provider == "ollama":
         url = api_base.rstrip("/") + "/api/chat"
         payload = {"model": model, "messages": messages, "stream": False,
-                   "options": {"temperature": 0.3, "num_predict": 3500}}
+                   "options": {"temperature": 0.3, "num_predict": 8000}}
     else:
         url = api_base.rstrip("/") + "/chat/completions"
-        payload = {"model": model, "messages": messages, "temperature": 0.3, "max_tokens": 3500}
+        payload = {"model": model, "messages": messages, "temperature": 0.3, "max_tokens": 8000}
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode(), method="POST",
         headers={"Content-Type": "application/json",
@@ -383,13 +831,15 @@ def _plan_paper_artifacts(goal: str, method_summary: str, memory_context: str, l
 {_SCIENCE_FIGURE_POLICY}
 
 要求：
-1. 先提出核心科学问题和可检验假设。
-2. 再列出论文图件方案：Figure 1, Figure 2... 每张图说明目的、输入数据、统计/绘图方法、预期检验什么。
-3. 再列出表格方案：Table 1, Table 2... 每张表说明字段、统计量、来源文件、用途。
-4. 每个图表必须说明证据来源；如果数据不足，标记“待验证/缺失信息”。
-5. 不要编造不存在的数据列或结论；把不确定性写清楚。
-6. 主文图件默认不超过 3 张、主表默认不超过 2 张；其余只能作为 supplementary/QC 产物。
-7. 输出中文 raw text，便于后续 CodeEngine 编程执行。
+1. 先识别研究区、数据类型、空间/时间范围、可能的构造背景和可检验假设。
+2. 设计“数据区域研究 -> 统计绘图 -> 图后提出新科学问题 -> 再验证”的迭代闭环。
+3. 再列出探索型候选图件方案：Candidate Figure 1, Candidate Figure 2... 每张图说明目的、输入数据、统计/绘图方法、预期检验什么，以及看图后可能触发的下一轮追问。
+4. 再列出候选表格方案：Candidate Table 1, Candidate Table 2... 每张表说明字段、统计量、来源文件、用途。
+5. 每个图表必须说明证据来源；如果数据不足，标记“待验证/缺失信息”。
+6. 不要编造不存在的数据列或结论；把不确定性写清楚。
+7. 探索阶段应尽可能充分：如果数据支持，先规划 6-10 张候选图件和 3-5 个候选表格/统计笔记，覆盖研究区背景、空间、深度、时间、分段、机制分类、文献假设对比和稳健性。
+8. 收敛阶段再从候选图表中选择 3-5 张主文图和 1-3 张主表；其余保留为 supplementary/QC 产物，不要删除。
+9. 输出中文 raw text，便于后续 CodeEngine 编程执行。
 
 研究目标：
 {goal}
@@ -543,9 +993,10 @@ NO_FOLLOWUP_NEEDED: 原因
 追问必须满足：
 1. 面向机制问题，例如断层几何、弱层/低速体、应力转移、分段破裂、震源机制随空间/深度变化、构造控制等。
 2. 能被当前数据、已有图表/统计、RAG/文献证据和一次 CodeEngine 计算部分验证或证伪。
-3. 必须列出：QUESTION、HYPOTHESIS、WHY_NOW、DATA_TO_USE、COMPUTATION、FIGURES_TABLES、EVIDENCE_REQUIRED、STOP_CRITERIA。
+3. 必须列出：QUESTION、HYPOTHESIS、WHY_NOW、DATA_REGION_OR_SUBSET、DATA_TO_USE、COMPUTATION、FIGURES_TABLES、EVIDENCE_REQUIRED、STOP_CRITERIA。
 4. 不要把猜想写成事实；证据不足就写“待验证/缺失信息”。
-5. 避免重复上一轮已经做过的统计；优先提出更高层科学问题。
+5. 必须基于上一轮图形/表格/统计中显露出的模式提出问题，例如空间分段、深度层化、沿走向变化、异常区、机制类型转变或与文献假设不一致处。
+6. 避免重复上一轮已经做过的统计；优先提出更高层科学问题。
 
 这是第 {round_no} 轮追问。
 
@@ -1127,9 +1578,50 @@ class SeismoAgent:
             except Exception as e:
                 cb(f"   ⚠  方法提取失败（{e}），继续规划...")
 
-        # Step 3: Plan
-        cb("\n📋 规划执行步骤...")
+        all_figures: List[str] = []
+        all_output_files: List[str] = []
+        followup_questions: List[str] = []
+        latex_path = ""
+        latex_bib_path = ""
+        latex_pdf_path = ""
+
+        # Step 3: Data reconnaissance before scientific planning.
+        # This restores the "inspect first, then plan/code" behavior: the agent
+        # must read data notes and infer schemas before it asks for figures.
         effective_context = method_summary or paper_context[:3000]
+        cb("\n🔎 数据结构侦察...")
+        try:
+            recon = _write_builtin_reconnaissance(self.project_root, output_dir, goal)
+            recon_files = recon.get("output_files", [])
+            all_output_files.extend([f for f in recon_files if f not in all_output_files])
+            self.memory.record_step(StepResult(
+                step_index=len(self.memory.step_results) + 1,
+                description="数据结构侦察：内置扫描器读取数据说明、推断数据结构并写入步骤输入输出契约",
+                code="# Built-in deterministic data reconnaissance; no LLM-generated code.",
+                stdout=recon.get("stdout", ""),
+                figures=[],
+                output_files=recon_files,
+                success=True,
+                error="",
+            ))
+            cb(
+                "   ✓ 数据结构侦察完成："
+                f"扫描 {recon.get('scanned_files', 0)} 个文件，"
+                f"候选数据 {recon.get('candidate_data_files', 0)} 个，"
+                f"说明文档 {recon.get('data_notes', 0)} 个，"
+                f"文献 {recon.get('references', 0)} 个"
+            )
+        except Exception as exc:
+            cb(f"   ⚠ 数据结构侦察失败：{exc}。将退回文件画像和文献上下文继续规划。")
+
+        effective_context = "\n\n".join([
+            effective_context,
+            "===== Data reconnaissance / IO contracts =====",
+            self.memory.accumulated_context(max_chars=7000),
+        ]).strip()
+
+        # Step 4: Plan
+        cb("\n📋 规划执行步骤...")
         steps = self.planner.plan(goal=goal, paper_context=effective_context)
         steps = steps[:max_steps]
         self.memory.plan = [s.description for s in steps]
@@ -1142,22 +1634,96 @@ class SeismoAgent:
         artifact_plan = _plan_paper_artifacts(
             goal=goal,
             method_summary=effective_context,
-            memory_context=self.memory.accumulated_context(max_chars=4000),
+            memory_context=self.memory.accumulated_context(max_chars=9000),
             llm_config=self.llm_config,
         )
         if artifact_plan:
             self.memory.notes.append("论文图表规划：\n" + artifact_plan)
             cb(f"   图表规划：\n{artifact_plan[:800]}{'...' if len(artifact_plan) > 800 else ''}")
 
-        # Step 4: Execute steps
+        # Step 5: Execute steps
         cb("\n⚙️  开始执行...\n")
-        all_figures: List[str] = []
-        all_output_files: List[str] = []
-        followup_questions: List[str] = []
-        latex_path = ""
-        latex_bib_path = ""
-        latex_pdf_path = ""
         completed_steps: List[PlanStep] = []
+
+        if artifact_plan:
+            cb("── 图表规划执行: 先按 LLM 图表/统计计划编程生成候选证据池")
+            try:
+                from seismo_code.code_engine import CodeEngine
+
+                engine = CodeEngine(
+                    llm_config=self.llm_config,
+                    project_root=self.project_root,
+                    python_executable=self.llm_config.get("python_executable"),
+                )
+                pre_artifact_request = "\n".join([
+                    "You are the first coding stage of Scientific Analysis Agent.",
+                    "Before ordinary analysis steps, execute the LLM-planned figure/table/statistics plan.",
+                    "The purpose is to create a broad candidate evidence pool first; later stages will inspect the figures and converge on new scientific questions.",
+                    "",
+                    "Research goal:",
+                    goal,
+                    "",
+                    "LLM figure/table/statistics plan to execute:",
+                    artifact_plan,
+                    "",
+                    "Paper/literature method context:",
+                    effective_context[:7000] or "(not available)",
+                    "",
+                    "Data reconnaissance and IO-contract context:",
+                    self.memory.accumulated_context(max_chars=9000) or "(none)",
+                    "",
+                    f"Project root: {self.project_root}",
+                    f"Output directory: {output_dir}",
+                    "",
+                    "Task:",
+                    _SCIENCE_FIGURE_POLICY,
+                    "- Traverse the project directory and inspect real data, notes, schema manifests, and prior artifacts before assuming schemas.",
+                    "- If data_reconnaissance.md, data_schema_manifest.json, or io_contracts.md exist, read them first and use them as the source of truth unless raw data contradicts them.",
+                    "- For this coding stage, write or update step_io_contracts.md with: input files, inferred fields used, output files, smoke-test checks, and evidence status.",
+                    "- Implement the planned candidate figures/tables as far as current data support them.",
+                    "- Generate a broad candidate pool first: target 6-10 figures and 3-5 tables/Markdown notes when the data support it.",
+                    "- Each artifact must be tied to a research-region/data pattern and a testable scientific question.",
+                    "- Create figure_table_plan_execution.md mapping planned artifact -> code/data used -> output path -> evidence status.",
+                    "- If an artifact cannot be generated, record why in missing_information.md instead of inventing data.",
+                    "- Print all created artifact paths and at least one `[SAGE_TEST]` line confirming non-empty parsed data plus figure/table counts.",
+                ])
+
+                def _pre_artifact_progress(d):
+                    msg = d.get("message", "") if isinstance(d, dict) else str(d)
+                    phase = d.get("phase", "code") if isinstance(d, dict) else "code"
+                    attempt = d.get("attempt", 0) if isinstance(d, dict) else 0
+                    if msg:
+                        cb(f"   [Artifact Plan CodeEngine:{phase}/{attempt}] {msg}")
+
+                pre_artifact_run = engine.run(
+                    pre_artifact_request,
+                    max_debug_rounds=max_retries + 3,
+                    timeout=300,
+                    run_verify=False,
+                    on_progress=_pre_artifact_progress,
+                    output_dir=output_dir,
+                )
+                if pre_artifact_run.exec_result:
+                    pre_figs = pre_artifact_run.exec_result.figures or []
+                    pre_files = pre_artifact_run.exec_result.output_files or []
+                    all_figures.extend([f for f in pre_figs if f not in all_figures])
+                    all_output_files.extend([f for f in pre_files if f not in all_output_files])
+                    self.memory.record_step(StepResult(
+                        step_index=len(self.memory.step_results) + 1,
+                        description="图表规划执行：按 LLM 规划先生成候选图表/统计证据池",
+                        code=pre_artifact_run.code,
+                        stdout=pre_artifact_run.stdout,
+                        figures=pre_figs,
+                        output_files=pre_files,
+                        success=pre_artifact_run.success,
+                        error=(pre_artifact_run.exec_result.error if not pre_artifact_run.success else ""),
+                    ))
+                    cb(f"   ✓ 图表规划执行完成：候选图件 {len(pre_figs)}，文件 {len(pre_files)}")
+                else:
+                    cb(f"   ⚠ 图表规划执行未产生执行结果：{pre_artifact_run.response[:240]}")
+            except Exception as exc:
+                cb(f"   ⚠ 图表规划执行失败：{exc}")
+            cb("")
 
         for step in steps:
             cb(f"── 步骤 {step.index}/{len(steps)}: {step.description}")
@@ -1219,10 +1785,16 @@ class SeismoAgent:
                     "",
                     "Coding requirements:",
                     _SCIENCE_FIGURE_POLICY,
-                    "- Inspect real files, delimiters, columns, and row examples before assuming schemas.",
+                    "- Read data_reconnaissance.md, data_schema_manifest.json, and io_contracts.md from the output directory if they exist.",
+                    "- Inspect real files, delimiters, columns, and row examples before assuming schemas; if the manifest disagrees with raw samples, update the manifest or write a correction note.",
+                    "- At the start of the script, print a concise input contract: input files, required columns/fields, and expected outputs.",
+                    "- At the end of the script, print a concise output contract: created files, non-empty checks, figure/table counts, and any missing evidence.",
+                    "- Write or update step_io_contracts.md for this step with the verified input/output contract.",
                     "- Include a small smoke test: print shapes, columns, non-empty checks, and output paths.",
+                    "- Print at least one `[SAGE_TEST]` line that confirms non-empty parsed data and lists created artifacts.",
                     "- Reuse validated CSV/JSON/artifacts from prior steps when available.",
                     "- If data format is unclear, write an inspection artifact and continue with the safest verified interpretation.",
+                    "- In early/exploratory steps, prefer a broad candidate artifact set over a single minimal plot; later steps may converge and select main figures.",
                     "- Do not invent data, citations, or results; label missing evidence explicitly.",
                 ])
 
@@ -1295,9 +1867,98 @@ class SeismoAgent:
                 cb(f"   ✗ 步骤失败: {step_result.error[:100]}")
             cb("")
 
+        # Broad exploration safety net. The planner may under-specify code steps or
+        # an early CodeEngine failure may leave the paper with too little evidence.
+        # Before synthesis, force one publication-oriented exploration pass that
+        # inspects real files and creates a candidate figure/table pool. Later
+        # refinement/reviewer stages decide which artifacts belong in the main text.
+        table_paths = _table_artifacts(all_output_files)
+        if len(all_figures) < 5 or len(table_paths) < 2:
+            cb("── 科学探索补全: 候选图表不足，进入广泛数据探索与论文证据生成")
+            try:
+                from seismo_code.code_engine import CodeEngine
+
+                engine = CodeEngine(
+                    llm_config=self.llm_config,
+                    project_root=self.project_root,
+                    python_executable=self.llm_config.get("python_executable"),
+                )
+                exploration_request = "\n".join([
+                    "You are the exploratory coding scientist for Scientific Analysis Agent.",
+                    "The current run has too few figures/tables to support a real scientific paper.",
+                    "Do a broad but grounded exploration first; later stages will converge and select main-text artifacts.",
+                    "",
+                    "Research goal:",
+                    goal,
+                    "",
+                    "Paper/literature method context:",
+                    effective_context[:7000] or "(not available)",
+                    "",
+                    "LLM-planned paper figures and tables:",
+                    artifact_plan or "(not available)",
+                    "",
+                    "Prior memory and artifacts:",
+                    self.memory.accumulated_context(max_chars=14000) or "(none)",
+                    "",
+                    "Existing table/statistical previews:",
+                    _summarize_table_artifacts(all_output_files) or "(none)",
+                    "",
+                    f"Project root: {self.project_root}",
+                    f"Output directory: {output_dir}",
+                    "",
+                    "Task:",
+                    _SCIENCE_FIGURE_POLICY,
+                    "- Read data_reconnaissance.md, data_schema_manifest.json, io_contracts.md, and step_io_contracts.md from the output directory if they exist.",
+                    "- Traverse the project directory and inspect data, notes, literature-derived clues, prior CSV/JSON artifacts, and parameter-optimization records if present.",
+                    "- Create or update data_inventory.md describing real input files, inferred roles, schemas, row counts, and limitations.",
+                    "- For every generated figure/table, record input files, fields used, output path, and validation checks in step_io_contracts.md.",
+                    "- Generate a broad candidate artifact pool when data support it: target at least 6 figures and 3 tables/Markdown notes. If fewer are possible, explain why in missing_information.md.",
+                    "- Candidate figures should test different mechanism hypotheses, not repeat the same QC distribution: spatial segmentation, depth dependence, along-strike variation, mechanism-class maps, literature-hypothesis comparisons, robustness/sensitivity, and composite summary figures are preferred when supported.",
+                    "- Candidate tables should summarize statistics used by the paper, not just file schemas.",
+                    "- Create exploration_journal.md mapping each artifact to the scientific question, input files, computation, evidence status, and uncertainty.",
+                    "- Print all created artifact paths and at least one `[SAGE_TEST]` line confirming non-empty parsed data plus figure/table counts.",
+                    "- Do not invent data, citations, or unsupported claims.",
+                ])
+
+                def _explore_progress(d):
+                    msg = d.get("message", "") if isinstance(d, dict) else str(d)
+                    phase = d.get("phase", "code") if isinstance(d, dict) else "code"
+                    attempt = d.get("attempt", 0) if isinstance(d, dict) else 0
+                    if msg:
+                        cb(f"   [Exploration CodeEngine:{phase}/{attempt}] {msg}")
+
+                exploration_run = engine.run(
+                    exploration_request,
+                    max_debug_rounds=max_retries + 3,
+                    timeout=300,
+                    run_verify=False,
+                    on_progress=_explore_progress,
+                    output_dir=output_dir,
+                )
+                if exploration_run.exec_result:
+                    extra_figs = exploration_run.exec_result.figures or []
+                    extra_files = exploration_run.exec_result.output_files or []
+                    all_figures.extend([f for f in extra_figs if f not in all_figures])
+                    all_output_files.extend([f for f in extra_files if f not in all_output_files])
+                    self.memory.record_step(StepResult(
+                        step_index=len(self.memory.step_results) + 1,
+                        description="科学探索补全：广泛遍历数据并生成候选论文图表池",
+                        code=exploration_run.code,
+                        stdout=exploration_run.stdout,
+                        figures=extra_figs,
+                        output_files=extra_files,
+                        success=exploration_run.success,
+                        error=(exploration_run.exec_result.error if not exploration_run.success else ""),
+                    ))
+                    cb(f"   ✓ 科学探索补全完成：候选图件 {len(extra_figs)}，文件 {len(extra_files)}")
+                else:
+                    cb(f"   ⚠ 科学探索补全未产生执行结果：{exploration_run.response[:240]}")
+            except Exception as exc:
+                cb(f"   ⚠ 科学探索补全失败：{exc}")
+
         # Ensure the final paper has LLM-planned figures/tables as primary evidence.
         table_paths = _table_artifacts(all_output_files)
-        if artifact_plan and (not all_figures or not table_paths):
+        if artifact_plan and (len(all_figures) < 3 or len(table_paths) < 1):
             cb("── 论文图表补全: 根据 LLM 图表规划生成缺失图件/表格")
             try:
                 from seismo_code.code_engine import CodeEngine
@@ -1325,10 +1986,13 @@ class SeismoAgent:
                     "",
                     "Task:",
                     _SCIENCE_FIGURE_POLICY,
+                    "- Read data_reconnaissance.md, data_schema_manifest.json, io_contracts.md, and step_io_contracts.md before choosing inputs.",
                     "- Inspect available data and existing artifacts.",
+                    "- For each missing planned artifact, state its input contract before coding and append the verified output contract after execution.",
                     "- Generate only missing planned publication figures that directly test the core hypothesis.",
                     "- Generate missing planned statistical tables as CSV and, when useful, Markdown table files.",
                     "- Print a concise mapping: Figure/Table -> source file(s) -> output artifact.",
+                    "- Print at least one `[SAGE_TEST]` line confirming generated figure/table counts and non-empty source data.",
                     "- If a planned artifact is unsupported by the data, create a missing_information.md note explaining why.",
                 ])
 
@@ -1439,6 +2103,7 @@ class SeismoAgent:
                     "- The note must include: question, tested hypothesis, data used, computation, result, evidence status, remaining uncertainty.",
                     "- If the test is impossible with current files, create a missing_information note instead of inventing results.",
                     "- Reuse existing parsed CSV/JSON artifacts when valid; otherwise inspect raw files and create robust parsers.",
+                    "- Print at least one `[SAGE_TEST]` line confirming what was tested and which artifacts were created.",
                 ])
 
                 def _follow_progress(d):
@@ -1574,6 +2239,7 @@ class SeismoAgent:
                             "- If a requested artifact is unsupported, write why in main_artifact_selection.md or missing_information.md.",
                             "- At most two new figures and one new table. Prefer composite evidence figures over many diagnostic plots.",
                             "- Print created file paths and the final main-figure/table set.",
+                            "- Print at least one `[SAGE_TEST]` line confirming the refinement artifact and any new figure/table counts.",
                         ])
 
                         def _refine_progress(d):
@@ -1725,6 +2391,7 @@ class SeismoAgent:
                                 "- Create reviewer_response_analysis.md summarizing what was computed, what changed, and what remains unsupported.",
                                 "- If the requested evidence cannot be produced from current data, explain that clearly instead of inventing results.",
                                 "- Print all created file paths.",
+                                "- Print at least one `[SAGE_TEST]` line confirming reviewer-response artifacts.",
                             ])
 
                             def _review_code_progress(d):

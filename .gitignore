@@ -15,6 +15,7 @@ seismo_rag/*
 !seismo_rag/.gitkeep
 /deliverables
 .sage_runtime/
+/web_app/examples/science_analysis_agent
 
 # User test / runtime artifacts
 /web_app/results/
@@ -48,3 +49,4 @@ seismo_skill/skills/gmt6/references/manifest.md
 /seismo_skill/skills/gmt6
 /seismo_skill/skills/gmt6_chinese_manual
 /web_app/examples/science_analysis_agent
+/examples

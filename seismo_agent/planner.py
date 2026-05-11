@@ -71,19 +71,21 @@ Planning principles:
 4. Figure/statistics planning should happen before plotting so the code has a target.
 5. Each code step should leave reproducible artifacts in the output directory:
    scripts, tables, figures, logs, or markdown notes.
-6. Final step is result verification and Markdown paper/report drafting.
-7. Aim for 5-8 total steps — avoid over-splitting.
-8. Scientific questions must be mechanism-oriented, not data-description-oriented.
+6. Every executable step must declare its input files/fields and output files,
+   and must include a smoke-test or validation condition for those outputs.
+7. Final step is result verification and Markdown paper/report drafting.
+8. Aim for 5-8 total steps — avoid over-splitting.
+9. Scientific questions must be mechanism-oriented, not data-description-oriented.
    Avoid plans/titles that merely analyze "data quality", "catalog characteristics",
    or "basic statistics" unless the user explicitly asks for QC. Prefer hypotheses
    about physical process, fault geometry, stress transfer, weak zones, fluids,
    rupture segmentation, strain release, or competing mechanisms that can be tested
    with the available data and literature.
-9. Keep the main-paper artifact plan focused: normally 2-3 main figures and 1-2
+10. Keep the main-paper artifact plan focused: normally 2-3 main figures and 1-2
    tables are enough. Put data quality checks, parameter histograms, column
    inventories, and generic distribution plots into supplementary notes/tables,
    not into the main scientific story.
-10. The plan should read like a research design, not a data audit. Each executable
+11. The plan should read like a research design, not a data audit. Each executable
     analysis step must name the hypothesis it tests.
 """
 
