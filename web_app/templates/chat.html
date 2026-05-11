@@ -76,6 +76,18 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
 .bubble code { background:#f0f0f0; padding:1px 6px; border-radius:4px; font-size:.86em; font-family:'Menlo','Courier New',monospace; color:#c7254e; }
 .bubble pre { background:#f6f8fa; border:1px solid #e0e0e0; border-radius:8px; padding:.75rem 1rem; overflow-x:auto; margin:.5rem 0; }
 .bubble pre code { background:none; padding:0; color:inherit; font-size:.86em; }
+.exec-log-details { background:#f8fafc; border:1px solid #dfe5ef; border-radius:8px; margin:.3rem 0 .55rem; overflow:hidden; }
+.exec-log-details summary { cursor:pointer; list-style:none; user-select:none; display:flex; align-items:center; gap:.45rem;
+  padding:.42rem .7rem; color:#334155; font-size:.8rem; font-weight:650; background:#f3f6fb; }
+.exec-log-details summary::-webkit-details-marker { display:none; }
+.exec-log-details[open] summary { border-bottom:1px solid #dfe5ef; }
+.exec-log-meta { margin-left:auto; color:#7b8794; font-size:.72rem; font-weight:500; white-space:nowrap; }
+.bubble .exec-log-pre { border:0; border-radius:0; margin:0; max-height:min(52vh, 520px); overflow:auto;
+  background:#f8fafc; font-size:.8rem; white-space:pre-wrap; word-break:break-all; }
+.plan-details { background:#f0f4ff; border:1px solid #c5cae9; border-radius:8px; margin-bottom:.6rem; overflow:hidden; font-size:.8rem; }
+.plan-details summary { cursor:pointer; list-style:none; padding:.45rem .8rem; color:#3949ab; font-weight:700; background:#eef3ff; }
+.plan-details summary::-webkit-details-marker { display:none; }
+.plan-body { padding:.35rem .8rem .5rem; border-top:1px solid #d7ddfb; }
 .bubble strong { color:#5a5aed; font-weight:700; }
 .bubble em { color:#555; }
 .bubble ul, .bubble ol { margin:.4rem 0; padding-left:1.4rem; }
@@ -521,6 +533,8 @@ const I18N = {
     skill_label: '技能', exec_ok: '✅ 代码执行成功', exec_fail: '❌ 执行失败',
     gen_code_label: '生成的代码：', dl_image: '⬇ 图像', dl_script: '⬇ GMT脚本',
     ctx_ref: '引用上下文：',
+    exec_log_label: '执行日志', exec_log_expand: '点击展开', exec_log_collapse: '点击折叠',
+    exec_log_lines: '行', exec_log_chars: '字符', plan_steps: '步',
     // Typing indicators
     typing_thinking: '正在思考中...', typing_routing: '正在分析意图...',
     typing_code: '正在生成代码...', typing_rag: '正在检索知识...', typing_chat: '正在对话中...',
@@ -583,6 +597,8 @@ const I18N = {
     skill_label: 'Skill', exec_ok: '✅ Executed successfully', exec_fail: '❌ Execution failed',
     gen_code_label: 'Generated code:', dl_image: '⬇ Image', dl_script: '⬇ GMT Script',
     ctx_ref: 'Context:',
+    exec_log_label: 'Execution log', exec_log_expand: 'click to expand', exec_log_collapse: 'click to collapse',
+    exec_log_lines: 'lines', exec_log_chars: 'chars', plan_steps: 'steps',
     // Typing indicators
     typing_thinking: 'Thinking...', typing_routing: 'Analyzing intent...',
     typing_code: 'Generating code...', typing_rag: 'Searching knowledge...', typing_chat: 'Chatting...',
@@ -1965,6 +1981,36 @@ function copyTextToClipboard(text, btn=null) {
   done();
 }
 
+function appendExecutionLog(parent, text, opts={}) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+  const lines = raw.split(/\r?\n/);
+  const lineCount = lines.length;
+  const charCount = raw.length;
+  const shouldCollapse = opts.collapsed ?? (lineCount > 22 || charCount > 1400);
+
+  const details = document.createElement('details');
+  details.className = 'exec-log-details';
+  if (!shouldCollapse) details.open = true;
+
+  const summary = document.createElement('summary');
+  const meta = document.createElement('span');
+  meta.className = 'exec-log-meta';
+  meta.textContent = `${lineCount} ${T('exec_log_lines')} · ${charCount} ${T('exec_log_chars')} · ${shouldCollapse ? T('exec_log_expand') : T('exec_log_collapse')}`;
+  summary.append(document.createTextNode(`▸ ${opts.title || T('exec_log_label')}`), meta);
+
+  details.addEventListener('toggle', () => {
+    meta.textContent = `${lineCount} ${T('exec_log_lines')} · ${charCount} ${T('exec_log_chars')} · ${details.open ? T('exec_log_collapse') : T('exec_log_expand')}`;
+  });
+
+  const pre = document.createElement('pre');
+  pre.className = 'exec-log-pre';
+  pre.textContent = raw;
+  details.append(summary, pre);
+  parent.appendChild(details);
+  return details;
+}
+
 function attachMessageCopyButton(bubble, text) {
   if (!bubble) return;
   const btn = document.createElement('button');
@@ -3200,18 +3246,22 @@ function renderCodeResult(d, opts={}) {
 
   // 0. Plan banner (shown above everything else)
   if (d.plan && d.plan.length > 0) {
-    const planWrap = document.createElement('div');
-    planWrap.style.cssText = 'background:#f0f4ff;border:1px solid #c5cae9;border-radius:8px;padding:.45rem .8rem;margin-bottom:.6rem;font-size:.8rem;';
-    const planTitle = document.createElement('div');
-    planTitle.style.cssText = 'color:#3949ab;font-weight:700;margin-bottom:.3rem;';
-    planTitle.textContent = '📋 Plan';
+    const planTextLen = d.plan.join('\n').length;
+    const planWrap = document.createElement('details');
+    planWrap.className = 'plan-details';
+    if (d.plan.length <= 5 && planTextLen <= 420) planWrap.open = true;
+    const planTitle = document.createElement('summary');
+    planTitle.textContent = `📋 Plan · ${d.plan.length} ${T('plan_steps')}`;
     planWrap.appendChild(planTitle);
+    const planBody = document.createElement('div');
+    planBody.className = 'plan-body';
     d.plan.forEach((step, i) => {
       const s = document.createElement('div');
       s.style.cssText = 'color:#555;margin:.1rem 0;';
       s.textContent = `${i + 1}. ${step}`;
-      planWrap.appendChild(s);
+      planBody.appendChild(s);
     });
+    planWrap.appendChild(planBody);
     bubble.appendChild(planWrap);
   }
 
@@ -3295,10 +3345,7 @@ function renderCodeResult(d, opts={}) {
     .filter(l => !l.startsWith('[FIGURE]') && !l.startsWith('[GMT_SCRIPT]'))
     .join('\n').trim();
   if (cleanOut) {
-    const pre = document.createElement('pre');
-    pre.style.cssText = 'background:#f6f8fa;border:1px solid #e0e0e0;border-radius:8px;padding:.6rem .8rem;overflow-x:auto;font-size:.82em;margin:.3rem 0;white-space:pre-wrap;word-break:break-all;';
-    pre.textContent = cleanOut;
-    bubble.appendChild(pre);
+    appendExecutionLog(bubble, cleanOut);
   } else if (d.success && lastDataPath && !(d.figures || []).length) {
     const pathNote = document.createElement('div');
     pathNote.style.cssText = 'font-size:.8rem;color:#666;margin-top:.25rem;word-break:break-all;';
