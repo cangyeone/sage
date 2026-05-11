@@ -125,21 +125,42 @@ cd sage
 # 如果已经普通 clone 过，补拉子模块：
 # git submodule update --init --recursive
 
-# 2. 安装 SAGE 依赖
-pip install -r requirements.txt
-
-# 3. 启动 Ollama 并拉取模型（选一个）
-ollama serve &
-ollama pull qwen3:8b          # 轻量，约 6 GB
-
-# 4. 启动 Web 服务
-python web_app/app.py --port 5010
-
-# 5. 浏览器访问
-open http://localhost:5010
+# 2. 一键安装依赖、执行基础设置、后台启动 Web 服务
+chmod +x sagectl.sh
+./sagectl.sh
 ```
 
-首次访问时，在 **LLM 设置页** 选择已拉取的模型并保存，即可开始使用所有功能。
+默认访问地址为 `http://127.0.0.1:5010`。首次访问时，在 **Config 页面** 选择或填写模型并保存，即可开始使用所有功能。
+
+常用控制命令：
+
+```bash
+./sagectl.sh status    # 查看网站、端口、日志位置
+./sagectl.sh logs      # 实时查看后台日志
+./sagectl.sh stop      # 停止后台网站
+./sagectl.sh start     # 再次后台启动
+./sagectl.sh restart   # 重启
+```
+
+如需换端口：
+
+```bash
+SAGE_PORT=5011 ./sagectl.sh start
+```
+
+如果使用本地 Ollama，可先启动并拉取模型：
+
+```bash
+./sagectl.sh ollama-start
+ollama pull qwen3:8b
+```
+
+备用手动方式：
+
+```bash
+pip install -r requirements.txt
+python web_app/app.py --port 5010
+```
 
 ---
 

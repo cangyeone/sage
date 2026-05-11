@@ -169,21 +169,42 @@ cd sage
 # If you already cloned without submodules, run:
 # git submodule update --init --recursive
 
-# 2. Install SAGE dependencies
-pip install -r requirements.txt
-
-# 3. Start Ollama and pull model (choose one)
-ollama serve &
-ollama pull qwen3:8b          # Lightweight, ~6 GB
-
-# 4. Start Web service
-python web_app/app.py --port 5010
-
-# 5. Access via browser
-open http://localhost:5010
+# 2. One-command setup: install dependencies, configure, start the web app in background
+chmod +x sagectl.sh
+./sagectl.sh
 ```
 
-On first access, select and save the pulled model on the **LLM Settings page** to start using all features.
+The default URL is `http://127.0.0.1:5010`. On first access, select or enter a model on the **Config page**, then save it to start using the full system.
+
+Common controls:
+
+```bash
+./sagectl.sh status    # Show web, port and log status
+./sagectl.sh logs      # Tail background logs
+./sagectl.sh stop      # Stop the background web app
+./sagectl.sh start     # Start it again
+./sagectl.sh restart   # Restart
+```
+
+Use another port:
+
+```bash
+SAGE_PORT=5011 ./sagectl.sh start
+```
+
+If you use local Ollama:
+
+```bash
+./sagectl.sh ollama-start
+ollama pull qwen3:8b
+```
+
+Manual fallback:
+
+```bash
+pip install -r requirements.txt
+python web_app/app.py --port 5010
+```
 
 ---
 
