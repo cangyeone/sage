@@ -28,6 +28,34 @@ Use this skill whenever the user explicitly asks for GMT, `gmt`, `Generic Mappin
 - For tasks that need Python to prepare data first, call the pre-injected `run_gmt(script_str, outname)` from within Python code
 - Requires GMT >= 6.0 installed on the system
 
+## Point Symbol Input Rule
+
+For single-point symbols such as a red five-point star, epicenter, station marker,
+or label anchor, do **not** generate `echo "lon lat" | gmt plot ...`.
+That syntax is valid GMT/Bash, but users often read it as printing text instead of
+plotting data. Prefer an explicit coordinate file or heredoc so the script clearly
+looks like drawing.
+
+Preferred coordinate-file form:
+
+```bash
+cat > star_point.txt << 'EOF'
+104 36
+EOF
+gmt plot star_point.txt -R${R} -J${J} -Sa1.5c -Gred -W0.5p,red
+```
+
+Preferred heredoc form:
+
+```bash
+gmt plot -R${R} -J${J} -Sa1.5c -Gred -W0.5p,red << 'EOF'
+104 36
+EOF
+```
+
+`-Sa` is GMT's star symbol. The input row is still plotting data:
+longitude latitude.
+
 ## ⚠️ TOPOGRAPHY RULES — READ FIRST
 
 **ALWAYS add terrain background when plotting geographic maps.**
