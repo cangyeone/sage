@@ -18,7 +18,9 @@
 
 ---
 
-SAGE 是集**自然语言交互**、**智能震相拾取**、**统计分析**、**代码生成执行**、**GMT 地图绘制**和**文献解读**于一体的地震学 AI 平台。用户通过中英文对话即可驱动完整分析流程，无需记忆命令行参数或编写样板代码。
+SAGE 是一个 **Web 优先** 的地震学与地球物理 AI 工作台。它把对话式问答、科学分析、参数优化、知识库检索、OpenAI-style SKILL、代码执行、GMT/Python 绘图和论文写作组织到同一个界面中。用户可以上传数据、论文和说明文档，让系统自动判断文件作用、规划科学问题、编程生成图表、整合证据，并输出可复现的报告、Markdown 论文和 LaTeX 草稿。
+
+命令行工具 `seismic_cli.py` 仍然保留，但现在主要作为脚本化、批处理和调试入口；日常使用推荐通过 Web 端完成。
 
 ---
 
@@ -34,7 +36,7 @@ SAGE 是集**自然语言交互**、**智能震相拾取**、**统计分析**、
   - [RAG 功能依赖](#rag-功能依赖)
 - [配置 LLM 后端](#配置-llm-后端)
 - [Web 界面](#web-界面)
-- [命令行工具](#命令行工具)
+- [命令行工具（高级/备用）](#命令行工具高级备用)
 - [对话路由机制](#对话路由机制)
 - [seismo_skill 技能系统](#seismo_skill-技能系统)
 - [seismo_script 工作流系统](#seismo_script-工作流系统)
@@ -48,69 +50,52 @@ SAGE 是集**自然语言交互**、**智能震相拾取**、**统计分析**、
 
 ## 功能概览
 
-| 模块 | 功能描述 |
-|------|---------|
-| 💬 **智能对话路由** | LLM 自动判断意图（知识问答 / 代码执行 / 闲聊），无需手动切换模式 |
-| 🔍 **震相拾取** | 单台在线拾取 / 目录批量拾取，支持 JIT 与 ONNX 多种深度学习模型 |
-| 🔗 **震相关联** | FastLink / REAL / Gamma 多方法，将台站拾取结果自动关联为地震事件 |
-| 🧭 **极性分析** | P 波初动极性自动判断 |
-| 📊 **地震统计** | b 值估算（MLE/LSQ）、F-M 分布图、时序与空间分布分析 |
-| 🧑‍💻 **代码生成执行** | 内置 CodeEngine 负责沙箱 Python/GMT 科学脚本；Aider 作为仓库级代码后端用于修 bug、重构和多文件协同修改；OpenHands 可作为实验后端 |
-| 🗺️ **GMT 地图绘制** | 调用 GMT6 绘制震中图、台站图、地形图、震源机制球，图像与脚本均可下载 |
-| 🤖 **科学分析 Agent** | 读入数据、本地论文、Web 证据、RAG 和多个 SKILL → 规划科学问题 → 编程生成图表 → 迭代撰写 Markdown/LaTeX 论文 |
-| 📚 **知识库 RAG** | BGE-M3 向量化 + FAISS 检索，持久化存储，批量 PDF 入库与文献问答 |
-| 📖 **文献解读** | 临时上传 PDF → 深度解读方法/公式/结论，多轮追问 |
-| 🗂 **本地文件访问** | 授权指定目录后，LLM 可直接读取文件列表辅助分析 |
-| ⚡ **技能系统** | OpenAI-style 文件夹技能、内置领域技能、文档生成技能和内置学术研究技能；Chat、科学分析和 CodeEngine 可联合调用多个技能与 RAG |
-| 🔄 **工作流系统** | 声明式多步分析流水线（`.md` + YAML frontmatter）；Agent 按步 DAG 调度 Code Engine 逐步执行，共享工作目录，每步独立 debug 循环 |
-| 🎛 **参数优化 Agent** | Alpha 界面用于定义流程模块、输入输出、待优化参数和优化目标；CodeEngine 自动实现、调试、监控并保存优化过程，供科学分析写作使用 |
-| 📈 **波形可视化** | 对话窗口内嵌波形图（震相标注叠加），图像可点击放大或下载 |
+| 模块 | 当前定位 | 核心能力 |
+|------|---------|---------|
+| **Chat** | 日常入口 | 流式对话、PDF 临时解读、RAG 问答、Web search、图片/表格理解、代码执行、GMT/Python 绘图、多个 SKILL 联合调用 |
+| **科学分析 Agent** | 科研主入口 | 遍历项目目录，识别数据/文献/说明，检索本地与在线文献，提出科学问题，规划图表，调用 CodeEngine 统计绘图，迭代写 Markdown/LaTeX 论文 |
+| **参数优化 Agent** | 流程与模型优化入口 | 用户定义模块、输入输出、参数和目标；LLM 理解流程，CodeEngine 实现脚本，监控优化过程，结果可被科学分析引用写作 |
+| **知识库** | 持久知识入口 | PDF/Markdown/项目/对话入库，BGE-M3 或 TF-IDF fallback，向量检索 + 关键词检索，支持删除和增量更新 |
+| **技能系统** | 能力扩展入口 | 支持 OpenAI-style 文件夹 SKILL、内置 SKILL、文档生成 SKILL、学术研究 SKILL；Chat、科学分析、参数优化和 CodeEngine 均可调用 |
+| **CodeEngine** | 执行与调试核心 | 生成 Python/GMT/Bash 脚本，运行 mini test，自我 debug，保存图件、表格、日志和中间产物；可借鉴 Aider 式多文件协同调试 |
+| **LLM/Config** | 全局配置入口 | 配置 Ollama、本地模型、在线 API、OpenAI-compatible API、Web search 源、工作目录、代码后端和多模态能力 |
+| **地震学工具链** | 领域能力 | 震相拾取、震相关联、极性分析、b 值统计、波形处理、GMT 地图、三维地形/速度结构绘图 |
 
 ---
 
 ## 系统架构
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Web UI (Flask + JS)                          │
-│   /chat · /science-analysis-agent · /parameter-optimization-agent│
-│   /knowledge · /skills · /config                                 │
-└──────────────┬──────────────────────────────────────────────────┘
-               │ HTTP REST API
-┌──────────────▼───────────────────────────────────────────────────┐
-│   /api/chat/route（LLM 意图路由）  │  /api/chat/workflow          │
-│      code ──────┬── qa ── chat    │   （工作流专用端点）           │
-└────────┬────────┼────────┬────────┴────────────┬─────────────────┘
-         │        │        │                      │
-  ┌──────▼──────┐ ┌▼──────┐ ┌▼───────┐   ┌───────▼──────────┐
-  │ CodeEngine  │ │RAG问答│ │通用对话│   │ CodeEngine       │
-  │ + Toolkit   │ │BGE-M3 │ │        │   │ .run_workflow()  │
-  │ + GMT       │ │+FAISS │ │        │   └───────┬──────────┘
-  └──────┬──────┘ └───────┘ └────────┘           │
-         │                               ┌────────▼───────────────────────┐
-         │                               │  seismo_script 工作流调度器    │
-         │                               │  步骤 DAG 拓扑排序 + 执行引擎  │
-         │                               │  内置工作流 + ~/.seismicx/     │
-         │                               │  workflows/                    │
-         │                               └────────┬───────────────────────┘
-         └──────────────────┬──────────────────────┘
-                            │
-  ┌─────────────────────────▼──────────────────────────────────────┐
-  │            seismo_skill 技能检索                                │
-  │    内置 7 个技能  +  用户自定义技能                              │
-  │    (~/.seismicx/skills/)                                        │
-  └─────────────────────────┬──────────────────────────────────────┘
-                            │ 自动注入函数说明 + 代码示例
-  ┌─────────────────────────▼──────────────────────────────────────┐
-  │            LLM Backend                                          │
-  │   Ollama（本地）  ·  vLLM  ·  OpenAI 兼容                      │
-  └────────────────────────────────────────────────────────────────┘
-
-  ┌─────────────────────────────────────────────┐
-  │           pnsn/ 震相拾取引擎                 │
-  │    PhaseNet / EQTransformer / JIT / ONNX    │
-  │    FastLink / Gamma 震相关联                 │
-  └─────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                          Web UI                                      │
+│ /chat  /science-analysis-agent  /parameter-optimization-agent         │
+│ /knowledge  /skills  /config                                         │
+└───────────────┬──────────────────────────────────────────────────────┘
+                │ REST + SSE streaming
+┌───────────────▼──────────────────────────────────────────────────────┐
+│                         Agent Orchestration                          │
+│ intent routing · project isolation · background jobs · stop/resume    │
+│ evidence tracking · reviewer-style iteration · multilingual prompts   │
+└───────┬───────────────┬──────────────────┬──────────────────────────┘
+        │               │                  │
+┌───────▼──────┐ ┌──────▼──────┐  ┌────────▼────────┐
+│ CodeEngine   │ │ RAG/Search  │  │ Skill Loader    │
+│ Python/GMT   │ │ BGE-M3/FAISS│  │ OpenAI-style    │
+│ Bash/LaTeX   │ │ keywords    │  │ built-in/user   │
+│ mini tests   │ │ OpenAlex... │  │ nested subskills│
+└───────┬──────┘ └──────┬──────┘  └────────┬────────┘
+        │               │                  │
+┌───────▼───────────────▼──────────────────▼──────────────────────────┐
+│                         LLM Backends                                  │
+│ Ollama · OpenAI compatible APIs · DeepSeek · SiliconFlow · DashScope  │
+│ optional multimodal models for figure/table/image analysis            │
+└───────┬──────────────────────────────────────────────────────────────┘
+        │
+┌───────▼──────────────────────────────────────────────────────────────┐
+│                         Domain Toolkits                               │
+│ pnsn phase picking · GMT · ObsPy · statistics · document extraction   │
+│ science paper templates · parameter optimization workflows            │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -283,7 +268,7 @@ snapshot_download('AI-ModelScope/bge-m3', local_dir='open_models/bge-m3')
 
 ## 配置 LLM 后端
 
-所有 AI 功能均需要 LLM 后端。配置通过 **Web 界面 → LLM 设置页**，或命令行完成，统一存储在 `~/.seismicx/config.json`，修改后**立即生效，无需重启**。
+所有 AI 功能均需要 LLM 后端。推荐通过 **Web 界面 → Config 页面** 配置本地模型、在线 API、Web search 源、代码后端和工作目录。项目相关配置优先写入项目目录，便于清理和迁移；少量用户级默认项由系统自动维护。
 
 ### 方式一：Ollama（推荐，本地，无需联网）
 
@@ -303,11 +288,11 @@ ollama pull deepseek-r1:8b   # ~9 GB，推理能力强
 ollama pull llama3.3:latest  # ~40 GB，英文能力强
 ```
 
-在 LLM 设置页选择模型并点击「保存配置」即完成配置。
+在 Config 页面选择模型并点击「保存配置」即完成配置。
 
 ### 方式二：在线 API（OpenAI 兼容格式）
 
-在 LLM 设置页 → 选择「自定义 API」并填写：
+在 Config 页面 → 选择「自定义 API」并填写：
 
 | 字段 | 示例（DeepSeek） | 示例（SiliconFlow） |
 |------|----------------|-------------------|
@@ -340,199 +325,96 @@ python seismic_cli.py backend auto
 
 ## Web 界面
 
-启动后访问 `http://localhost:5010`，包含四个主要页面。
+启动后访问 `http://127.0.0.1:5010`。当前推荐把 Web 端作为主入口；它支持后台任务、实时流式输出、对话/项目隔离、文件持久化、图表渲染和多语言界面。
 
-### 🗨 对话页（/chat）
+### Chat（/chat）
 
-主交互界面。**无需切换模式** —— 系统通过 LLM 自动判断每条消息的意图，路由到最合适的处理器：
+用于日常问答、论文解读、快速绘图和小规模数据处理。Chat 会根据上下文决定走 QA、RAG、Web search、SKILL 或 CodeEngine，执行过程中可以切换页面，回来后继续看到累积输出。
 
-| 发送的内容 | 自动路由到 |
-|-----------|----------|
-| "什么是 Q-filter 算法？" | 知识问答（RAG 检索） |
-| "帮我对 /data/wave.mseed 做 1-10 Hz 带通滤波并画图" | 代码生成执行 |
-| "帮我用 GMT 绘制中国地形图" | GMT 技能执行 |
-| "你好" | 通用对话 |
+| 任务 | 示例 |
+|------|------|
+| 论文问答 | 上传 PDF 后问“这篇文章的核心方法和公式是什么？” |
+| 数据处理 | “对这个 mseed 做 1-10 Hz 带通滤波并标出震相” |
+| GMT/Python 绘图 | “用 GMT 绘制中国地形图，在中心加红色五角星” |
+| Web research | “检索当前地震学大模型有哪些，并列出来源” |
+| SKILL 联合调用 | “参考 GMT 文档技能和地形三维技能，绘制四川三维地形图” |
 
-**侧边栏：**
-- 📎 上传 PDF（当前会话临时使用）
-- 🗂 授权本地工作目录（LLM 可读取指定路径的文件列表）
-- 知识库文献数 / 片段数状态显示
+Chat 支持临时上传文件，也可以把对话、项目或文献显式加入知识库；未加入知识库的聊天文件默认只服务当前会话/项目。
 
-**图像展示与下载：**
-- 代码执行生成的图像直接嵌入对话气泡
-- 每张图下方显示工具栏：**⬇ 图像** 下载 PNG，**⬇ GMT脚本** 下载可重现的 `.sh` 脚本（仅 GMT 图有）
-- 点击图像可在新窗口全屏查看
+### 科学分析（/science-analysis-agent）
 
-**典型对话示例：**
+面向“给定数据和文献，自动形成科研分析”的主页面。推荐把一个研究任务的所有数据、论文、说明、脚本和模板放在同一个项目目录中，Agent 会递归遍历并自动判断文件角色。
 
-```
-# 知识问答（自动检索知识库）
-> 什么是 Q-filter 算法？
-> 解释一下 HVSR 谱比法的原理
+核心流程：
 
-# 数据处理（自动执行代码）
-> 看下目录 /data/seismic/waveform 中的文件
-> 绘制一下波形
-> 对波形做 1-10 Hz 带通滤波后画图
-> 计算垂向分量的功率谱密度
+1. 识别数据、字段说明、论文、已有图表和 LaTeX/Markdown 模板。
+2. 结合本地文献、知识库、Web search 和 SKILL，提出可验证科学问题。
+3. 由 LLM 规划论文需要的图件、表格、统计量和反证路径。
+4. 调用 CodeEngine 编程统计、绘图、生成中间产物，并在失败时自动 debug。
+5. 依据图表和证据撰写 Markdown 论文，必要时同步生成 LaTeX/PDF。
+6. 模拟严格审稿人进行多轮自评，补图、删图、改结论，直到问题收敛。
 
-# GMT 地图
-> 帮我用 GMT 绘制中国地形图
-> 绘制 90-120°E、20-45°N 范围的震中分布图
+科学分析不是简单的数据质量汇总，而是尽量围绕“科学问题—证据—图表—论文结论”迭代。
 
-# 文献解读
-> 这篇论文的核心方法是什么？（上传 PDF 后提问）
-```
+### 参数优化（/parameter-optimization-agent）
 
-### 📚 知识库页（/knowledge）
+用于定义可优化流程，例如震相检测模型训练、信号处理参数搜索、反演流程参数调优或自定义科学计算流水线。用户定义输入、输出、参数和目标函数；LLM 负责理解流程，CodeEngine 负责实现、运行、调试和监控。优化记录、图件和结果可以作为科学分析项目的材料。
 
-- 拖拽上传多个 PDF，自动使用 **BGE-M3** 向量化入库
-- 实时显示索引进度（文本提取 → 分块 → 嵌入 → FAISS 写入）
-- 文献管理：查看页数/片段数/文件大小，支持单篇删除或全量清空
-- **持久化存储**：重启服务后知识库自动加载，无需重新上传
+### 知识库（/knowledge）
 
-> 存储路径：`~/.seismicx/knowledge/`
+知识库用于长期可检索材料：论文 PDF、Markdown 文档、Chat/Project 导出内容、科学分析项目，以及由文档生成的 SKILL/RAG 辅助索引。检索采用向量检索与关键词检索结合；中文场景可使用 jieba 分词，向量模型优先使用 BGE-M3，缺失时降级到轻量 fallback。
 
-### ⚡ 技能管理页（/skills）
+知识库支持增量更新和删除。删除时会同步清理对应 RAG 内容、项目条目和生成的 SKILL 关联信息。
 
-无需重启即可扩展 AI 能力。页面包含**技能**和**工作流**两个标签页。
+### 技能管理（/skills）
 
-**技能标签页：**
-- 左侧：内置技能（只读）与用户自定义技能（可编辑/删除）分组展示
-- 右侧：Markdown 编辑器 + 实时预览，含语法高亮
-- 支持新建、编辑、删除自定义技能
-- 保存后下一次对话或代码生成立即生效
+技能系统采用 OpenAI-style 文件夹结构，支持内置技能和 `seismo_skill/user_skills/` 下的用户技能。文档目录 `seismo_skill/docs/` 中的单个文件或文件夹可以通过 Web 端转换成技能；对于大规模文档，可先用 RAG/向量聚类辅助，把相似内容合并成同一个技能包下的 `subskills/`，再由 LLM 标准化成可复用说明、示例和约束。
 
-> 自定义技能存储路径：`~/.seismicx/skills/`
+技能可以被 Chat、科学分析、参数优化和 CodeEngine 联合调用。生成失败或不再需要的技能可以在界面删除。
 
-**工作流标签页：**
-- 列出内置和用户自定义工作流，显示标题、版本和技能依赖徽章
-- 步骤 DAG 预览面板：以节点 + 箭头图形可视化步骤依赖关系
-- Markdown 编辑器，用于编辑 `.md` 工作流文件（YAML frontmatter + 流程说明体）
-- 支持新建、编辑、删除自定义工作流
+### Config（/config）
 
-> 自定义工作流存储路径：`~/.seismicx/workflows/`
+Config 页面统一管理模型和系统能力：
 
-### ⚙️ LLM 设置页（/llm-settings）
-
-- 在线检测 Ollama 已安装模型，一键选择
-- 支持配置任意 OpenAI 兼容 API
-- 保存后立即对所有功能生效
-- 顶部徽章实时显示当前使用的模型
+- Ollama、本地模型、在线 OpenAI-compatible API。
+- DeepSeek、SiliconFlow、DashScope、Moonshot/Kimi、Zhipu、自定义 API。
+- Web search 源，例如 OpenAlex、Semantic Scholar、arXiv 和自定义搜索服务。
+- Chat/Agent 工作目录、额外授权目录、代码后端和多模态能力。
+- 是否显示/折叠 thinking、是否启用 RAG、Web search、图像表格解析等能力。
 
 ---
 
-## 命令行工具
+## 命令行工具（高级/备用）
 
-`seismic_cli.py` 提供完整的命令行接口，适合脚本化和批量处理场景。
+`seismic_cli.py` 仍然可用，但现在定位为脚本化、批处理和调试入口。日常交互、科学分析、参数优化、知识库和技能管理建议优先使用 Web 端。
 
-### 对话模式
+常用命令保留如下：
 
 ```bash
+# 查看或自动选择模型后端
+python seismic_cli.py backend status
+python seismic_cli.py backend auto
+
+# 对话/代码执行的轻量入口
 python seismic_cli.py chat
-```
+python seismic_cli.py run "对 /data/wave.mseed 做 1-10 Hz 带通滤波并画图"
 
-### 震相拾取
+# 震相拾取和关联批处理
+python seismic_cli.py pick -i /data/seismic/2024/ --batch -o results/picks.csv
+python seismic_cli.py associate -i results/picks.csv -s station_list.csv --method fastlink -o results/events.txt
 
-```bash
-# 单台拾取
-python seismic_cli.py pick \
-    -i /data/station/ \
-    -m seismo_skill/skills/pnsn_phase_detection/pnsn/pickers/pnsn.v3.jit
-
-# 批量拾取（目录下所有波形文件）
-python seismic_cli.py pick \
-    -i /data/seismic/2024/ \
-    --batch \
-    -o results/picks.csv
-
-# 指定计算设备
-python seismic_cli.py pick -i /data/ --device cuda
-```
-
-### 震相关联
-
-```bash
-python seismic_cli.py associate \
-    -i results/picks.csv \
-    -s station_list.csv \
-    --method fastlink \
-    -o results/events.txt
-```
-
-### 地震统计
-
-```bash
-# 计算 b 值
+# 地震统计脚本
 python seismic_cli.py stats bvalue -i catalog.csv --mc auto
-
-# 绘制 F-M 分布图
-python seismic_cli.py stats plot-gr -i catalog.csv -o fmd.png
-
-# 生成完整统计报告（b 值 + 时序 + 空间分布）
 python seismic_cli.py stats report -i catalog.csv
 ```
 
-### LLM 代码生成执行
+网站服务本身推荐使用根目录脚本控制：
 
 ```bash
-python seismic_cli.py run "对 /data/wave.mseed 做 1-10Hz 带通滤波并画图"
-python seismic_cli.py run "计算震源参数，震中距 50km" -d /data/waves/
-python seismic_cli.py run "画走时曲线，距离 0-30°，深度 10km" --show-code
-```
-
-SAGE 的编程能力分为两个互补后端：
-
-- **内置 CodeEngine**：默认后端，适合科学数据脚本、GMT/Python 绘图、mini test 和可复现中间产物。
-- **Aider 后端**：作为 SAGE 内部仓库级 Coding Backend，用于修复 bug、重构、多文件编辑和 Git 工作流。SAGE 会优先加载项目内置源码 `third_party/aider`，通过 Aider Python scripting API 调用，必要时退回已安装包或 CLI。安装项目依赖 `pip install -r requirements.txt` 后，在 `Config -> Coding Agent` 中选择 **Aider API / CLI**。
-- **OpenHands 后端**：实验性 CLI 后端，适合更重的 agentic development 工作流。
-
-`third_party/aider` 使用 Git submodule 管理。clone 时建议使用 `git clone --recurse-submodules ...`；如果已经普通 clone 过，则运行 `git submodule update --init --recursive`，这样本地才会真正拉下 Aider 源码。
-
-代码后端配置写入项目目录下的 `seismo_rag/project_config.json`，便于检查、选择性纳入版本控制或清理。
-
-### 自主 Agent
-
-```bash
-# 从本地 PDF 实现算法
-python seismic_cli.py agent \
-    "实现论文中的走时残差校正方法" \
-    --paper /papers/velest_method.pdf \
-    --data /data/picks.csv \
-    --output results/agent_run/
-
-# 从 arXiv 论文 ID 实现
-python seismic_cli.py agent \
-    "复现论文的 b 值时序分析方法" \
-    --arxiv 2309.12345
-
-# 从 DOI 实现
-python seismic_cli.py agent \
-    "实现 HVSR 谱比法" \
-    --doi 10.1785/0220230045 \
-    --max-steps 6
-```
-
-### 技能管理
-
-```bash
-python seismic_cli.py skill list                     # 列出所有技能
-python seismic_cli.py skill search "带通滤波"        # 关键词搜索
-python seismic_cli.py skill show waveform_processing # 查看完整文档
-python seismic_cli.py skill new my_tool              # 新建自定义技能
-python seismic_cli.py skill edit my_tool             # 编辑已有技能
-python seismic_cli.py skill delete my_tool           # 删除技能
-python seismic_cli.py skill dir                      # 查看技能目录路径
-```
-
-### LLM 后端管理
-
-```bash
-python seismic_cli.py backend status          # 查看当前状态
-python seismic_cli.py backend setup           # 交互式配置向导
-python seismic_cli.py backend auto            # 自动检测并选择
-python seismic_cli.py backend models          # 列出本地已下载模型
-python seismic_cli.py backend pull qwen3:8b   # 拉取 Ollama 模型
+./sagectl.sh          # 安装依赖、基础设置、后台启动
+./sagectl.sh status   # 查看状态
+./sagectl.sh logs     # 查看日志
+./sagectl.sh stop     # 停止后台网站
 ```
 
 ---
@@ -596,17 +478,24 @@ SAGE 通过专用的 LLM 路由调用自动判断每条消息的意图，避免�
 - `seismo_code/code_engine.py`（代码生成引擎）
 - `seismo_agent/agent_loop.py`（自主 Agent 每步代码生成）
 
-### 内置技能（7 个）
+### 内置技能
 
-| 技能文件 | 类别 | 主要函数 |
-|----------|------|---------|
-| `waveform_io.md` | waveform | `read_stream`, `read_stream_from_dir`, `stream_info`, `picks_to_dict` |
-| `waveform_processing.md` | waveform | `detrend_stream`, `taper_stream`, `filter_stream`, `resample_stream`, `trim_stream`, `remove_response` |
-| `waveform_visualization.md` | visualization | `plot_stream`, `plot_spectrogram`, `plot_psd`, `plot_particle_motion` |
-| `spectral_analysis.md` | analysis | `compute_spectrum`, `compute_hvsr` |
-| `b_value_analysis.md` | statistics | `load_catalog_file`, `calc_mc_*`, `calc_bvalue_mle`, `plot_gr` |
-| `source_parameters.md` | analysis | `estimate_magnitude_ml`, `estimate_corner_freq`, `estimate_seismic_moment`, `moment_to_mw`, `estimate_stress_drop` |
-| `gmt_plotting.md` | visualization | `run_gmt`（震中图、台站图、地形图、震源机制球、剖面图） |
+内置技能已统一为 OpenAI-style 文件夹结构：每个技能目录包含 `SKILL.md`，可选包含 `agents/`、`references/`、`assets/`、`workflows/` 和 `subskills/`。
+
+| 技能目录 | 主要用途 |
+|----------|---------|
+| `waveform_io/` | 波形文件读取、目录扫描、元数据整理 |
+| `waveform_processing/` | 去均值、去趋势、滤波、重采样、去仪器响应 |
+| `waveform_visualization/` | 波形图、频谱图、PSD、粒子运动图 |
+| `spectral_analysis/` | 频谱、HVSR、谱比和相关频域分析 |
+| `b_value_analysis/` | b 值、完备震级、G-R 关系和地震活动性统计 |
+| `source_parameters/` | 震级、角频率、地震矩、矩震级、应力降估计 |
+| `gmt_plotting/` | GMT 地图、地形图、震中图、剖面和机制球绘制 |
+| `terrain_3d_plotting/` | Python/Plotly/Three.js 风格的三维地形可视化 |
+| `pnsn_phase_detection/` | PhaseNet/EQTransformer 震相拾取与监测流程 |
+| `tabular_io/` | CSV/Excel/文本表格读取和字段推断 |
+| `cartopy_plotting/` | Cartopy 地图绘制备用技能 |
+| `nature-figure/`, `nature-data/`, `nature-polishing/` | 学术图件、数据整理和论文润色辅助 |
 
 ### 创建自定义技能
 
@@ -623,50 +512,33 @@ python seismic_cli.py skill new my_hypodd_tool \
     --desc "封装 HypoDD 输入文件生成和结果解析"
 ```
 
-**方式三：直接编写 Markdown 文件**
+**方式三：直接编写 OpenAI-style 技能文件夹**
 
-在 `~/.seismicx/skills/` 下创建 `.md` 文件：
+在 `seismo_skill/user_skills/<skill_name>/` 下创建 `SKILL.md`：
 
-```markdown
----
-name: my_skill_name
-category: custom
-keywords: 关键词1, 关键词2, english_keyword
-related_skills:            # 可选 — 双向技能展开
-  - waveform_io
-  - tabular_io
-workflow: seismicity_analysis   # 可选 — 关联的工作流名称
----
-
-# 技能标题
-
-## 描述
-
-工具功能说明（一两句话）。
-
----
-
-## 主要函数
-
-### `function_name(param1, param2=default)`
-
-**参数：**
-- `param1` : type — 说明
-- `param2` : type — 说明，默认 default
-
-**返回：** type — 说明
-
-```python
-# 最小可运行示例
-result = function_name("input", param2=42)
-print(result)
+```text
+seismo_skill/user_skills/my_skill/
+├── SKILL.md
+├── subskills/
+│   └── station_metadata.md
+├── references/
+│   └── example_catalog.md
+└── agents/
+    └── debug_notes.md
 ```
 
----
+`SKILL.md` 推荐写明：
 
-## 注意事项
+```markdown
+# 技能标题 / Skill Title
 
-- 注意事项 1
+## 何时使用 / When to use
+
+## 输入与输出 / Inputs and outputs
+
+## 工作步骤 / Workflow
+
+## 代码示例 / Examples
 ```
 
 > **覆盖规则：** 自定义技能与内置技能同名时，自定义版本自动优先生效。
@@ -875,7 +747,8 @@ Markdown 正文是**工作流指南**，在每个步骤的代码生成时注入�
 | 位置 | 内容 |
 |------|------|
 | `seismo_script/workflows/` | 内置工作流（随 SAGE 发布） |
-| `~/.seismicx/workflows/` | 用户自定义工作流（优先级更高，覆盖同名内置） |
+| 项目目录中的 `workflows/` | Web 项目工作流，推荐用于可复现研究和参数优化 |
+| `~/.seismicx/workflows/` | 兼容旧版用户工作流；新项目建议优先保存在项目目录 |
 
 ### 内置工作流
 
@@ -988,7 +861,7 @@ GET /api/chat/code/poll/<job_id>
 
 **方式二：直接编写 `.md` 文件**
 
-将文件保存到 `~/.seismicx/workflows/<name>.md`，使用上面展示的 frontmatter 格式。无需重启，文件立即被加载。
+将文件保存到当前项目的 `workflows/<name>.md`，使用上面展示的 frontmatter 格式。兼容模式仍可读取 `~/.seismicx/workflows/<name>.md`，但新项目建议保持项目内自包含。
 
 ---
 
@@ -1070,7 +943,7 @@ seismo_script/
 | `list_workflows()` | 返回所有工作流元数据（不含指南正文） |
 | `search_workflows(query, top_k)` | 按关键词相关性对工作流排序 |
 | `load_workflow(name)` | 返回完整工作流条目（含指南文本） |
-| `save_user_workflow(name, text)` | 将 `.md` 文件保存到 `~/.seismicx/workflows/` |
+| `save_user_workflow(name, text)` | 将 `.md` 工作流保存到项目目录；兼容旧版用户目录 |
 | `delete_user_workflow(name)` | 删除用户自定义工作流 |
 | `build_workflow_context(query)` | 返回 `(context_str, skill_names)` 供 LLM 注入 |
 
@@ -1218,15 +1091,15 @@ sage/
 │   └── tool_registry.py          # HypoDD / VELEST / HASH 等
 │
 ├── seismo_skill/
-│   └── skills/
-│       └── pnsn_phase_detection/ # OpenAI-style PNSN 震相拾取技能
-│           ├── SKILL.md
-│           └── pnsn/             # 技能内置 pnsn 代码和模型
-│               ├── picker.py
-│               ├── fastlinker.py
-│               ├── gammalink.py
-│               ├── pickers/      # JIT / ONNX 模型文件
-│               └── config/       # 拾取器参数配置
+│   ├── skills/                   # 内置 OpenAI-style 技能
+│   │   └── pnsn_phase_detection/
+│   │       ├── SKILL.md
+│   │       └── pnsn/             # 技能内置 pnsn 代码和模型
+│   ├── user_skills/              # Web 端生成/导入的用户技能
+│   │   └── _gen_gmt_docs_zh/
+│   │       ├── SKILL.md
+│   │       └── subskills/
+│   └── docs/                     # 可转换为 RAG / OpenAI-style SKILL 的文档源
 │
 ├── conversational_agent.py       # 对话 Agent 核心（意图分类 + 技能执行）
 ├── config_manager.py             # LLM 配置管理
@@ -1235,23 +1108,15 @@ sage/
 ├── requirements.txt              # Python 依赖
 └── logo.png
 
-~/.seismicx/                      # 用户数据目录（首次运行自动创建）
-├── config.json                   # LLM 和工作区配置
-├── knowledge/                    # 知识库向量索引（FAISS + 元数据）
-│   ├── faiss_index.bin
-│   ├── metadata.json
-│   └── pdfs/                     # PDF 副本
-├── skills/                       # 用户自定义技能文档
-│   └── my_custom_skill.md
-└── workflows/                    # 用户自定义工作流 .md 文件（覆盖同名内置工作流）
-    └── my_custom_workflow.md
+.sage_runtime/                    # 本地后台运行 PID、日志和环境信息（git ignored）
+seismo_rag/                       # 项目知识库、索引和 project_config.json
 ```
 
 ---
 
 ## 配置文件
 
-配置统一存储在 `~/.seismicx/config.json`，通过 Web 界面或 CLI 自动维护，无需手动编辑。
+配置分为项目级和用户级两类。Web Config 页面会自动维护这些文件，通常不需要手动编辑。
 
 ```json
 {
@@ -1268,6 +1133,13 @@ sage/
 }
 ```
 
+常见位置：
+
+- `seismo_rag/project_config.json`：项目级设置，例如搜索源、代码后端、技能/知识库辅助配置。
+- `.sage_runtime/`：本地运行 PID、日志和临时环境信息，已加入 `.gitignore`。
+- 科学分析/参数优化项目目录：保存项目输入、输出、图表、日志、Markdown/LaTeX 草稿和优化过程。
+- `~/.seismicx/config.json`：少量用户级默认项，例如默认 LLM 后端。
+
 | 字段 | 说明 | 可选值 |
 |------|------|--------|
 | `llm.provider` | LLM 提供商 | `ollama` / `openai` / `custom` |
@@ -1283,7 +1155,7 @@ sage/
 
 **Q: 对话返回"当前没有配置可用的 LLM 模型"**
 
-前往 `/llm-settings` 选择一个已安装的 Ollama 模型，或配置在线 API 后点击「保存配置」。
+前往 `/config` 选择一个已安装的 Ollama 模型，或配置在线 API 后点击「保存配置」。
 
 **Q: "what is filter algorithm?" 这类英文提问被错误路由到代码执行**
 
@@ -1325,7 +1197,7 @@ Agent 默认每步最多重试 2 次，失败步骤会跳过并继续执行后�
 
 **Q: 如何让 AI 使用我自己的函数库？**
 
-在 `~/.seismicx/skills/` 下创建一个 `.md` 技能文件，按[技能文件格式](#创建自定义技能)写明函数签名、参数说明和最小示例。保存后无需重启，下一次对话立即生效。
+在 `seismo_skill/user_skills/<skill_name>/` 下创建 OpenAI-style `SKILL.md`，按[创建自定义技能](#创建自定义技能)写明适用场景、输入输出、工作步骤和最小示例。保存后可在技能页刷新并管理，也会被 Chat、CodeEngine 和科学分析 Agent 检索使用。
 
 **Q: RAG 功能报错"未找到嵌入模型库"**
 

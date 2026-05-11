@@ -20,7 +20,9 @@
 
 ---
 
-SAGE is an earthquake science AI platform integrating **natural language interaction**, **intelligent phase picking**, **statistical analysis**, **code generation and execution**, **GMT map drawing**, and **literature interpretation**. Users can drive complete analysis workflows through bilingual conversations without memorizing command-line parameters or writing boilerplate code.
+SAGE is a **web-first** AI workbench for seismology and geophysics. It brings chat-based Q&A, scientific analysis, parameter optimization, knowledge-base retrieval, OpenAI-style SKILLs, code execution, GMT/Python plotting, and paper writing into one interface. Users can upload data, papers, and notes, then let the system infer file roles, plan scientific questions, generate figures and tables, integrate evidence, and produce reproducible reports, Markdown papers, and LaTeX drafts.
+
+The command-line tool `seismic_cli.py` is still available, but it is now mainly a scripting, batch-processing, and debugging interface. Daily workflows are best handled through the web UI.
 
 
 ---
@@ -43,19 +45,13 @@ SAGE is an earthquake science AI platform integrating **natural language interac
   - [Method 2: Online API (OpenAI Compatible Format)](#method-2-online-api-openai-compatible-format)
   - [Method 3: Command Line Configuration](#method-3-command-line-configuration)
 - [Web Interface](#web-interface)
-  - [🗨 Conversation Page (/chat)](#-conversation-page-chat)
-  - [📚 Knowledge Base Page (/knowledge)](#-knowledge-base-page-knowledge)
-  - [⚡ Skill Management Page (/skills)](#-skill-management-page-skills)
-  - [⚙️ LLM Settings Page (/llm-settings)](#️-llm-settings-page-llm-settings)
-- [Command Line Tools](#command-line-tools)
-  - [Conversation Mode](#conversation-mode)
-  - [Phase Picking](#phase-picking)
-  - [Event Association](#event-association)
-  - [Seismic Statistics](#seismic-statistics)
-  - [LLM Code Generation and Execution](#llm-code-generation-and-execution)
-  - [Autonomous Agent](#autonomous-agent)
-  - [Skill Management](#skill-management)
-  - [LLM Backend Management](#llm-backend-management)
+  - [Chat (/chat)](#chat-chat)
+  - [Scientific Analysis (/science-analysis-agent)](#scientific-analysis-science-analysis-agent)
+  - [Parameter Optimization (/parameter-optimization-agent)](#parameter-optimization-parameter-optimization-agent)
+  - [Knowledge Base (/knowledge)](#knowledge-base-knowledge)
+  - [Skills (/skills)](#skills-skills)
+  - [Config (/config)](#config-config)
+- [Command Line Tools (Advanced/Fallback)](#command-line-tools-advancedfallback)
 - [Conversation Routing Mechanism](#conversation-routing-mechanism)
   - [Routing Flow](#routing-flow)
   - [Three Types of Routing](#three-types-of-routing)
@@ -93,68 +89,52 @@ SAGE is an earthquake science AI platform integrating **natural language interac
 
 ## Features Overview
 
-| Module | Function Description |
-|------|---------|
-| 💬 **Intelligent Conversation Routing** | LLM automatically identifies intent (knowledge Q&A / code execution / chatting), no manual mode switching required |
-| 🔍 **Phase Picking** | Single station online picking / batch directory picking, supporting various deep learning models in JIT and ONNX formats |
-| 🔗 **Event Association** | Multiple methods including FastLink / REAL / Gamma, automatically associating station picking results into earthquake events |
-| 🧭 **Polarity Analysis** | Automatic determination of P-wave first motion polarity |
-| 📊 **Seismic Statistics** | b-value estimation (MLE/LSQ), F-M distribution plots, temporal and spatial distribution analysis |
-| 🧑‍💻 **Code Generation and Execution** | Built-in CodeEngine handles sandboxed Python/GMT analysis; Aider is integrated as a repository-level coding backend for bug fixes, refactors, and multi-file edits; OpenHands is available as an experimental backend |
-| 🗺️ **GMT Map Drawing** | Calls GMT6 to draw epicenter maps, station maps, topographic maps, focal mechanism diagrams, with downloadable images and scripts |
-| 🤖 **Scientific Analysis Agent** | Reads data, local papers, web evidence, RAG and multiple SKILLs → plans scientific questions → codes figures/tables → drafts Markdown/LaTeX papers with reviewer-style iteration |
-| 📚 **Knowledge Base RAG** | BGE-M3 vectorization + FAISS retrieval, persistent storage, batch PDF ingestion and literature Q&A |
-| 📖 **Literature Interpretation** | Temporary PDF upload → deep interpretation of methods/formulas/conclusions, multi-round questioning |
-| 🗂 **Local File Access** | After authorizing specified directory, LLM can directly read file lists to assist analysis |
-| ⚡ **Skill System** | OpenAI-style folder skills, built-in domain skills, generated documentation skills, and vendored academic research skills; Chat, Science Analysis and CodeEngine can combine multiple skills with RAG |
-| 🔄 **Workflow System** | Declarative multi-step analysis pipelines (`.md` + YAML frontmatter); agent dispatches workflows to Code Engine step-by-step with shared execution directory and per-step debug loop |
-| 🎛 **Parameter Optimization Agent** | Alpha UI for defining workflow modules, inputs/outputs, tunable parameters and objectives; CodeEngine implements, debugs, monitors and saves optimization traces for later scientific writing |
-| 📈 **Waveform Visualization** | Waveform diagrams embedded in conversation window (with phase annotation overlay), images can be clicked to enlarge or download |
+| Module | Current Role | Core Capabilities |
+|------|--------------|-------------------|
+| **Chat** | Everyday entry point | Streaming chat, temporary PDF reading, RAG Q&A, web search, image/table understanding, code execution, GMT/Python plotting, and multi-SKILL use |
+| **Scientific Analysis Agent** | Main research entry point | Traverses project folders, identifies data/papers/notes, searches local and online literature, proposes scientific questions, plans figures/tables, runs CodeEngine, and drafts Markdown/LaTeX papers |
+| **Parameter Optimization Agent** | Workflow/model optimization | Lets users define modules, inputs/outputs, parameters, and objectives; LLM understands the workflow while CodeEngine implements, debugs, monitors, and saves optimization traces |
+| **Knowledge Base** | Persistent knowledge layer | Ingests PDFs, Markdown, projects, and chat exports; combines BGE-M3/FAISS or fallback retrieval with keyword search; supports deletion and incremental updates |
+| **Skill System** | Capability extension | Supports OpenAI-style folder SKILLs, built-in SKILLs, documentation-generated SKILLs, and academic research SKILLs; usable by Chat, Science Analysis, Parameter Optimization, and CodeEngine |
+| **CodeEngine** | Execution and debugging core | Generates Python/GMT/Bash scripts, runs mini tests, self-debug loops, and saves figures, tables, logs, and intermediate products |
+| **LLM/Config** | Global settings | Configures Ollama, local models, online APIs, OpenAI-compatible APIs, web search providers, workspaces, coding backends, and multimodal capabilities |
+| **Seismology Toolkits** | Domain tools | Phase picking, event association, polarity analysis, b-value statistics, waveform processing, GMT maps, and 3D terrain/velocity visualization |
 
 ---
 
 ## System Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Web UI (Flask + JS)                          │
-│   /chat · /science-analysis-agent · /parameter-optimization-agent│
-│   /knowledge · /skills · /config                                 │
-└──────────────┬──────────────────────────────────────────────────┘
-               │ HTTP REST API
-┌──────────────▼──────────────────────────────────────────────────┐
-│   /api/chat/route (LLM Intent Router)  │  /api/chat/workflow     │
-│      code ──────┬──── qa ──── chat     │   (workflow endpoint)   │
-└────────┬────────┼────────┬─────────────┴──────────┬─────────────┘
-         │        │        │                         │
-  ┌──────▼─────┐ ┌▼──────┐ ┌▼──────────┐    ┌───────▼──────────┐
-  │ CodeEngine │ │RAG Q&A│ │General    │    │ CodeEngine       │
-  │ + Toolkit  │ │BGE-M3 │ │Chat       │    │ .run_workflow()  │
-  │ + GMT      │ │+FAISS │ │           │    └───────┬──────────┘
-  └──────┬─────┘ └───────┘ └───────────┘            │
-         │                                  ┌────────▼──────────────────────┐
-         │                                  │   seismo_script Workflow      │
-         │                                  │   Runner + Step DAG Executor  │
-         │                                  │   builtin + ~/.seismicx/      │
-         │                                  │   workflows/                  │
-         │                                  └────────┬──────────────────────┘
-         └─────────────────┬───────────────────────── ┘
-                           │
-  ┌────────────────────────▼──────────────────────────────────────┐
-  │            seismo_skill Skill Retrieval                        │
-  │    Built-in + seismo_skill/user_skills + third_party skills    │
-  └────────────────────────┬──────────────────────────────────────┘
-                           │ Automatic injection of function descriptions + code examples
-  ┌────────────────────────▼──────────────────────────────────────┐
-  │            LLM Backend                                         │
-  │   Ollama (local)  ·  vLLM  ·  OpenAI Compatible               │
-  └───────────────────────────────────────────────────────────────┘
-
-  ┌─────────────────────────────────────────────┐
-  │           pnsn/ Phase Picking Engine        │
-  │    PhaseNet / EQTransformer / JIT / ONNX    │
-  │    FastLink / Gamma Event Association       │
-  └─────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                          Web UI                                      │
+│ /chat  /science-analysis-agent  /parameter-optimization-agent         │
+│ /knowledge  /skills  /config                                         │
+└───────────────┬──────────────────────────────────────────────────────┘
+                │ REST + SSE streaming
+┌───────────────▼──────────────────────────────────────────────────────┐
+│                         Agent Orchestration                          │
+│ intent routing · project isolation · background jobs · stop/resume    │
+│ evidence tracking · reviewer-style iteration · multilingual prompts   │
+└───────┬───────────────┬──────────────────┬──────────────────────────┘
+        │               │                  │
+┌───────▼──────┐ ┌──────▼──────┐  ┌────────▼────────┐
+│ CodeEngine   │ │ RAG/Search  │  │ Skill Loader    │
+│ Python/GMT   │ │ BGE-M3/FAISS│  │ OpenAI-style    │
+│ Bash/LaTeX   │ │ keywords    │  │ built-in/user   │
+│ mini tests   │ │ OpenAlex... │  │ nested subskills│
+└───────┬──────┘ └──────┬──────┘  └────────┬────────┘
+        │               │                  │
+┌───────▼───────────────▼──────────────────▼──────────────────────────┐
+│                         LLM Backends                                  │
+│ Ollama · OpenAI-compatible APIs · DeepSeek · SiliconFlow · DashScope  │
+│ optional multimodal models for figure/table/image analysis            │
+└───────┬──────────────────────────────────────────────────────────────┘
+        │
+┌───────▼──────────────────────────────────────────────────────────────┐
+│                         Domain Toolkits                               │
+│ pnsn phase picking · GMT · ObsPy · statistics · document extraction   │
+│ science paper templates · parameter optimization workflows            │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -327,7 +307,7 @@ Leave `model_path` as an empty string or omit the field entirely to revert to Hu
 
 ## Configuring LLM Backend
 
-All AI functions require an LLM backend. Configuration is done through **Web Interface → LLM Settings Page**, or via command line, uniformly stored in `~/.seismicx/config.json`. Changes **take effect immediately without restart**.
+All AI functions require an LLM backend. The recommended path is **Web Interface → Config**, where you can configure local models, online APIs, web search providers, coding backends, and workspaces. Project-related settings are stored in the project directory when possible, making them easy to move or clean up; only a small set of user defaults is maintained globally.
 
 ### Method 1: Ollama (Recommended, local, no internet required)
 
@@ -347,11 +327,11 @@ ollama pull deepseek-r1:8b   # ~9 GB, strong reasoning capability
 ollama pull llama3.3:latest  # ~40 GB, strong English capability
 ```
 
-Select model on LLM settings page and click "Save Configuration" to complete setup.
+Select the model on the Config page and click "Save Configuration" to complete setup.
 
 ### Method 2: Online API (OpenAI Compatible Format)
 
-On LLM settings page → Select "Custom API" and fill in:
+On the Config page → select "Custom API" and fill in:
 
 | Field | Example (DeepSeek) | Example (SiliconFlow) |
 |------|----------------|-------------------|
@@ -384,199 +364,96 @@ python seismic_cli.py backend auto
 
 ## Web Interface
 
-After startup, visit `http://localhost:5010`, containing four main pages.
+After startup, visit `http://127.0.0.1:5010`. The web UI is the recommended primary entry point because it supports background jobs, real-time streaming, isolated chats/projects, persistent files, rich figure rendering, and bilingual UI.
 
-### 🗨 Conversation Page (/chat)
+### Chat (/chat)
 
-Main interaction interface. **No mode switching required** — system automatically determines intent of each message through LLM and routes to the most appropriate processor:
+Use Chat for daily Q&A, paper reading, quick plotting, and small data-processing tasks. It routes each request to QA, RAG, web search, SKILLs, or CodeEngine as needed. Long-running jobs can continue while you switch pages; returning to the chat shows accumulated output and resumes live streaming.
 
-| Content Sent | Automatically Routes To |
-|-----------|----------|
-| "What is the Q-filter algorithm?" | Knowledge Q&A (RAG retrieval) |
-| "Help me do 1-10 Hz bandpass filtering on /data/wave.mseed and plot" | Code generation and execution |
-| "Help me draw a Chinese topographic map with GMT" | GMT skill execution |
-| "Hello" | General conversation |
+| Task | Example |
+|------|---------|
+| Paper Q&A | Upload a PDF, then ask “What are the core methods and equations?” |
+| Data processing | “Bandpass this mseed file at 1-10 Hz and mark phase picks.” |
+| GMT/Python plotting | “Draw a China topography map with GMT and put a red star at the center.” |
+| Web research | “Search for current seismology foundation models and list the sources.” |
+| Multi-SKILL use | “Use the GMT docs skill and 3D terrain skill to draw Sichuan terrain.” |
 
-**Sidebar:**
-- 📎 Upload PDF (temporary session use)
-- 🗂 Authorize local working directory (LLM can read file lists from specified path)
-- Knowledge base document count / snippet count status display
+Uploaded chat files are temporary unless explicitly added to the knowledge base. Chats and projects can also be saved into the knowledge base for later retrieval.
 
-**Image Display and Download:**
-- Images generated by code execution are directly embedded in conversation bubbles
-- Toolbar displayed below each image: **⬇ Image** downloads PNG, **⬇ GMT Script** downloads reproducible `.sh` script (for GMT images only)
-- Click image to view full screen in new window
+### Scientific Analysis (/science-analysis-agent)
 
-**Typical conversation examples:**
+This is the main page for “given data and papers, produce a scientific analysis.” Put data, papers, notes, scripts, and templates under one project directory; the agent recursively traverses the directory and infers file roles.
 
-```
-# Knowledge Q&A (automatic knowledge base retrieval)
-> What is the Q-filter algorithm?
-> Explain the principle of HVSR spectrum ratio method
+Core workflow:
 
-# Data processing (automatic code execution)
-> Check files in directory /data/seismic/waveform
-> Draw the waveforms
-> Filter the waveforms with 1-10 Hz bandpass and plot
-> Calculate power spectral density of vertical component
+1. Identify data, field notes, papers, existing figures, and LaTeX/Markdown templates.
+2. Use local literature, the knowledge base, web search, and SKILLs to propose testable scientific questions.
+3. Let the LLM plan paper figures, tables, statistics, and falsification paths.
+4. Run CodeEngine to parse data, compute statistics, draw figures, and debug failures.
+5. Draft a Markdown paper from figures and evidence; optionally generate LaTeX/PDF.
+6. Run strict reviewer-style self-critique loops to add/remove figures and refine claims.
 
-# GMT maps
-> Help me draw a Chinese topographic map with GMT
-> Draw epicenter distribution map for 90-120°E, 20-45°N
+Scientific Analysis is intended to move beyond data-quality summaries and organize work around “question → evidence → figures/tables → paper conclusions.”
 
-# Literature interpretation
-> What are the core methods of this paper? (ask after uploading PDF)
-```
+### Parameter Optimization (/parameter-optimization-agent)
 
-### 📚 Knowledge Base Page (/knowledge)
+Use this page to define optimizable workflows such as phase-picking model training, signal-processing parameter search, inversion parameter tuning, or custom scientific pipelines. Users define inputs, outputs, tunable parameters, and objectives; the LLM interprets the workflow while CodeEngine implements, runs, debugs, and monitors it. Optimization traces and results can feed back into Scientific Analysis.
 
-- Drag-and-drop upload multiple PDFs, automatically vectorized with **BGE-M3** and ingested
-- Real-time indexing progress display (text extraction → chunking → embedding → FAISS write)
-- Document management: view page count/snippet count/file size, support single deletion or bulk clearing
-- **Persistent storage**: Knowledge base automatically loads after service restart, no re-upload required
+### Knowledge Base (/knowledge)
 
-> Storage path: `~/.seismicx/knowledge/`
+The knowledge base stores long-term retrievable materials: PDFs, Markdown documents, chat/project exports, scientific-analysis projects, and SKILL/RAG helper indexes generated from documentation. Retrieval combines vector search and keyword search; Chinese text can use jieba tokenization. BGE-M3 is preferred for embeddings, with lightweight fallback when unavailable.
 
-### ⚡ Skill Management Page (/skills)
+Deletion and incremental updates are supported. Removing an item also cleans related RAG entries, project records, and generated SKILL links where applicable.
 
-Expand AI capabilities without restart. The page has two tabs: **Skills** and **Workflows**.
+### Skills (/skills)
 
-**Skills tab:**
-- Left: Group display of built-in skills (read-only) and user custom skills (editable/deletable)
-- Right: Markdown editor + real-time preview, with syntax highlighting
-- Support creating, editing, deleting custom skills
-- Takes effect immediately for next conversation or code generation after saving
+The skill system uses OpenAI-style folder SKILLs and supports built-in skills plus user skills under `seismo_skill/user_skills/`. Files or folders under `seismo_skill/docs/` can be converted into skills through the web UI. For large documentation sets, SAGE can first use RAG/vector clustering to group similar content into `subskills/`, then ask an LLM to standardize the notes, examples, and constraints.
 
-> Custom skill storage path: `~/.seismicx/skills/`
+Skills can be jointly used by Chat, Scientific Analysis, Parameter Optimization, and CodeEngine. Failed or obsolete generated skills can be deleted from the UI.
 
-**Workflows tab:**
-- List of built-in and user-defined workflows with title, version, and skill dependency badges
-- Step DAG preview panel: visualizes dependency graph between workflow steps
-- Markdown editor for `.md` workflow files (YAML frontmatter + guide body)
-- Support creating, editing, deleting custom workflows
+### Config (/config)
 
-> Custom workflow storage path: `~/.seismicx/workflows/`
+The Config page manages models and system capabilities:
 
-### ⚙️ LLM Settings Page (/llm-settings)
-
-- Online detection of installed Ollama models, one-click selection
-- Supports configuring any OpenAI compatible API
-- Takes effect immediately on all functions after saving
-- Top badge displays currently used model in real-time
+- Ollama, local models, online OpenAI-compatible APIs.
+- DeepSeek, SiliconFlow, DashScope, Moonshot/Kimi, Zhipu, and custom APIs.
+- Web search providers such as OpenAlex, Semantic Scholar, arXiv, and custom services.
+- Chat/agent workspaces, extra authorized roots, coding backends, and multimodal capabilities.
+- Thinking visibility, RAG, web search, and figure/table parsing switches.
 
 ---
 
-## Command Line Tools
+## Command Line Tools (Advanced/Fallback)
 
-`seismic_cli.py` provides complete command line interface, suitable for scripted and batch processing scenarios.
+`seismic_cli.py` remains available, but it is now intended for scripting, batch jobs, and debugging. For normal interaction, scientific analysis, parameter optimization, knowledge management, and skill management, use the web UI first.
 
-### Conversation Mode
+Common commands:
 
 ```bash
+# Inspect or auto-select model backend
+python seismic_cli.py backend status
+python seismic_cli.py backend auto
+
+# Lightweight chat/code entry points
 python seismic_cli.py chat
-```
+python seismic_cli.py run "bandpass /data/wave.mseed at 1-10 Hz and plot it"
 
-### Phase Picking
+# Batch phase picking and event association
+python seismic_cli.py pick -i /data/seismic/2024/ --batch -o results/picks.csv
+python seismic_cli.py associate -i results/picks.csv -s station_list.csv --method fastlink -o results/events.txt
 
-```bash
-# Single station picking
-python seismic_cli.py pick \
-    -i /data/station/ \
-    -m seismo_skill/skills/pnsn_phase_detection/pnsn/pickers/pnsn.v3.jit
-
-# Batch picking (all waveform files in directory)
-python seismic_cli.py pick \
-    -i /data/seismic/2024/ \
-    --batch \
-    -o results/picks.csv
-
-# Specify compute device
-python seismic_cli.py pick -i /data/ --device cuda
-```
-
-### Event Association
-
-```bash
-python seismic_cli.py associate \
-    -i results/picks.csv \
-    -s station_list.csv \
-    --method fastlink \
-    -o results/events.txt
-```
-
-### Seismic Statistics
-
-```bash
-# Calculate b-value
+# Seismic statistics scripts
 python seismic_cli.py stats bvalue -i catalog.csv --mc auto
-
-# Draw F-M distribution plot
-python seismic_cli.py stats plot-gr -i catalog.csv -o fmd.png
-
-# Generate complete statistical report (b-value + temporal + spatial distribution)
 python seismic_cli.py stats report -i catalog.csv
 ```
 
-### LLM Code Generation and Execution
+Use the root launcher for the web service:
 
 ```bash
-python seismic_cli.py run "do 1-10Hz bandpass filtering on /data/wave.mseed and plot"
-python seismic_cli.py run "calculate source parameters, epicentral distance 50km" -d /data/waves/
-python seismic_cli.py run "draw travel time curve, distance 0-30°, depth 10km" --show-code
-```
-
-SAGE now separates coding into complementary backends:
-
-- **Built-in CodeEngine**: the default sandboxed runner for scientific scripts, GMT/Python plotting, mini tests, and reproducible artifacts.
-- **Aider backend**: an integrated repository-level coding backend for bug fixes, refactors, and coordinated multi-file edits. SAGE first loads the vendored Aider source at `third_party/aider`, uses Aider's Python scripting API, and falls back to the installed package or CLI if needed. Install project dependencies with `pip install -r requirements.txt`, then select **Aider API / CLI** in `Config -> Coding Agent`.
-- **OpenHands backend**: an experimental CLI-compatible option for heavier agentic development workflows.
-
-`third_party/aider` is tracked as a Git submodule. Clone with `git clone --recurse-submodules ...`, or run `git submodule update --init --recursive` after cloning, so the Aider source is available locally.
-
-Coding backend settings are stored in the project file `seismo_rag/project_config.json`, so they are easy to inspect, version-control selectively, or remove.
-
-### Autonomous Agent
-
-```bash
-# Implement algorithm from local PDF
-python seismic_cli.py agent \
-    "implement the travel time residual correction method in the paper" \
-    --paper /papers/velest_method.pdf \
-    --data /data/picks.csv \
-    --output results/agent_run/
-
-# Implement from arXiv paper ID
-python seismic_cli.py agent \
-    "reproduce the b-value temporal analysis method in the paper" \
-    --arxiv 2309.12345
-
-# Implement from DOI
-python seismic_cli.py agent \
-    "implement HVSR spectrum ratio method" \
-    --doi 10.1785/0220230045 \
-    --max-steps 6
-```
-
-### Skill Management
-
-```bash
-python seismic_cli.py skill list                     # List all skills
-python seismic_cli.py skill search "bandpass filter"        # Keyword search
-python seismic_cli.py skill show waveform_processing # View complete documentation
-python seismic_cli.py skill new my_tool              # Create custom skill
-python seismic_cli.py skill edit my_tool             # Edit existing skill
-python seismic_cli.py skill delete my_tool           # Delete skill
-python seismic_cli.py skill dir                      # View skill directory path
-```
-
-### LLM Backend Management
-
-```bash
-python seismic_cli.py backend status          # View current status
-python seismic_cli.py backend setup           # Interactive configuration wizard
-python seismic_cli.py backend auto            # Auto-detect and select
-python seismic_cli.py backend models          # List locally downloaded models
-python seismic_cli.py backend pull qwen3:8b   # Pull Ollama model
+./sagectl.sh          # install deps, configure, start in background
+./sagectl.sh status   # show status
+./sagectl.sh logs     # tail logs
+./sagectl.sh stop     # stop web service
 ```
 
 ---
@@ -640,17 +517,24 @@ Retrieval points integrated into:
 - `seismo_code/code_engine.py` (code generation engine)
 - `seismo_agent/agent_loop.py` (autonomous agent code generation at each step)
 
-### Built-in Skills (7)
+### Built-in Skills
 
-| Skill File | Category | Main Functions |
-|----------|------|---------|
-| `waveform_io.md` | waveform | `read_stream`, `read_stream_from_dir`, `stream_info`, `picks_to_dict` |
-| `waveform_processing.md` | waveform | `detrend_stream`, `taper_stream`, `filter_stream`, `resample_stream`, `trim_stream`, `remove_response` |
-| `waveform_visualization.md` | visualization | `plot_stream`, `plot_spectrogram`, `plot_psd`, `plot_particle_motion` |
-| `spectral_analysis.md` | analysis | `compute_spectrum`, `compute_hvsr` |
-| `b_value_analysis.md` | statistics | `load_catalog_file`, `calc_mc_*`, `calc_bvalue_mle`, `plot_gr` |
-| `source_parameters.md` | analysis | `estimate_magnitude_ml`, `estimate_corner_freq`, `estimate_seismic_moment`, `moment_to_mw`, `estimate_stress_drop` |
-| `gmt_plotting.md` | visualization | `run_gmt` (epicenter maps, station maps, topographic maps, focal mechanisms, cross-sections) |
+Built-in skills now use the OpenAI-style folder format: each skill directory contains `SKILL.md` and may include `agents/`, `references/`, `assets/`, `workflows/`, and `subskills/`.
+
+| Skill Directory | Main Use |
+|-----------------|----------|
+| `waveform_io/` | Waveform file reading, directory scanning, metadata extraction |
+| `waveform_processing/` | Detrending, tapering, filtering, resampling, response removal |
+| `waveform_visualization/` | Waveform plots, spectrograms, PSD, particle motion |
+| `spectral_analysis/` | Spectrum, HVSR, spectral ratios, and frequency-domain analysis |
+| `b_value_analysis/` | b-value, magnitude completeness, G-R relation, seismicity statistics |
+| `source_parameters/` | Magnitude, corner frequency, seismic moment, moment magnitude, stress drop |
+| `gmt_plotting/` | GMT maps, topography, epicenters, sections, and focal mechanisms |
+| `terrain_3d_plotting/` | Python/Plotly/Three.js-style 3D terrain visualization |
+| `pnsn_phase_detection/` | PhaseNet/EQTransformer phase picking and monitoring workflows |
+| `tabular_io/` | CSV/Excel/text table reading and field inference |
+| `cartopy_plotting/` | Cartopy map plotting fallback |
+| `nature-figure/`, `nature-data/`, `nature-polishing/` | Academic figures, data organization, and paper polishing |
 
 ### Creating Custom Skills
 
@@ -667,50 +551,33 @@ python seismic_cli.py skill new my_hypodd_tool \
     --desc "Package HypoDD input file generation and result parsing"
 ```
 
-**Method 3: Directly Write Markdown File**
+**Method 3: Write an OpenAI-style skill folder directly**
 
-Create `.md` file under `~/.seismicx/skills/`:
+Create `SKILL.md` under `seismo_skill/user_skills/<skill_name>/`:
 
-```markdown
----
-name: my_skill_name
-category: custom
-keywords: keyword1, keyword2, english_keyword
-related_skills:            # optional — bidirectional skill expansion
-  - waveform_io
-  - tabular_io
-workflow: seismicity_analysis   # optional — linked workflow name
----
-
-# Skill Title
-
-## Description
-
-Tool function description (one or two sentences).
-
----
-
-## Main Functions
-
-### `function_name(param1, param2=default)`
-
-**Parameters:**
-- `param1` : type — description
-- `param2` : type — description, default default
-
-**Returns:** type — description
-
-```python
-# Minimal runnable example
-result = function_name("input", param2=42)
-print(result)
+```text
+seismo_skill/user_skills/my_skill/
+├── SKILL.md
+├── subskills/
+│   └── station_metadata.md
+├── references/
+│   └── example_catalog.md
+└── agents/
+    └── debug_notes.md
 ```
 
----
+Recommended `SKILL.md` sections:
 
-## Notes
+```markdown
+# Skill Title / 技能标题
 
-- Note 1
+## When to use / 何时使用
+
+## Inputs and outputs / 输入与输出
+
+## Workflow / 工作步骤
+
+## Examples / 代码示例
 ```
 
 > **Override Rules:** When custom skill has same name as built-in skill, custom version takes priority automatically.
@@ -973,7 +840,8 @@ The Markdown body is the **workflow guide** — injected into the LLM context to
 | Location | Contents |
 |----------|----------|
 | `seismo_script/workflows/` | Built-in workflows (shipped with SAGE) |
-| `~/.seismicx/workflows/` | User-defined workflows (higher priority, override built-ins) |
+| Project-local `workflows/` | Web project workflows, recommended for reproducible studies and parameter optimization |
+| `~/.seismicx/workflows/` | Legacy user workflows; new projects should prefer project-local storage |
 
 ### Built-in Workflows
 
@@ -1086,7 +954,7 @@ Visit `/skills` → **Workflows** tab → Click "New Workflow" → Fill in metad
 
 **Method 2: Write `.md` File Directly**
 
-Save to `~/.seismicx/workflows/<name>.md` using the frontmatter format shown above. The file is picked up immediately (no restart needed).
+Save to the current project's `workflows/<name>.md` using the frontmatter format shown above. Legacy `~/.seismicx/workflows/<name>.md` files are still readable, but new projects should stay self-contained.
 
 ---
 
@@ -1168,7 +1036,7 @@ seismo_script/
 | `list_workflows()` | Return all workflow metadata (no guide body) |
 | `search_workflows(query, top_k)` | Rank workflows by keyword relevance |
 | `load_workflow(name)` | Return full workflow entry including guide text |
-| `save_user_workflow(name, text)` | Save a `.md` file to `~/.seismicx/workflows/` |
+| `save_user_workflow(name, text)` | Save a `.md` workflow into the project directory; legacy user storage remains readable |
 | `delete_user_workflow(name)` | Delete a user-defined workflow |
 | `build_workflow_context(query)` | Return `(context_str, skill_names)` for LLM injection |
 
@@ -1316,15 +1184,15 @@ sage/
 │   └── tool_registry.py          # HypoDD / VELEST / HASH etc.
 │
 ├── seismo_skill/
-│   └── skills/
-│       └── pnsn_phase_detection/ # OpenAI-style PNSN phase picking skill
-│           ├── SKILL.md
-│           └── pnsn/             # Skill-local pnsn code and models
-│               ├── picker.py
-│               ├── fastlinker.py
-│               ├── gammalink.py
-│               ├── pickers/      # JIT / ONNX model files
-│               └── config/       # Picker parameter configuration
+│   ├── skills/                   # Built-in OpenAI-style skills
+│   │   └── pnsn_phase_detection/
+│   │       ├── SKILL.md
+│   │       └── pnsn/             # Skill-local pnsn code and models
+│   ├── user_skills/              # Web-generated/imported user skills
+│   │   └── _gen_gmt_docs_zh/
+│   │       ├── SKILL.md
+│   │       └── subskills/
+│   └── docs/                     # Documentation sources convertible to RAG/SKILL
 │
 ├── conversational_agent.py       # Conversation Agent core (intent classification + skill execution)
 ├── config_manager.py             # LLM configuration management
@@ -1333,23 +1201,15 @@ sage/
 ├── requirements.txt              # Python dependencies
 └── logo.png
 
-~/.seismicx/                      # User data directory (automatically created on first run)
-├── config.json                   # LLM and workspace configuration
-├── knowledge/                    # Knowledge base vector index (FAISS + metadata)
-│   ├── faiss_index.bin
-│   ├── metadata.json
-│   └── pdfs/                     # PDF copies
-├── skills/                       # User custom skill documents
-│   └── my_custom_skill.md
-└── workflows/                    # User custom workflow .md files (override built-ins)
-    └── my_custom_workflow.md
+.sage_runtime/                    # Local background PID, logs, and env info (git ignored)
+seismo_rag/                       # Project knowledge indexes and project_config.json
 ```
 
 ---
 
 ## Configuration Files
 
-Configuration is unified in `~/.seismicx/config.json`, maintained automatically via Web interface or CLI, no manual editing required.
+Configuration is split into project-level and user-level files. The web Config page maintains them automatically, so manual editing is usually unnecessary.
 
 ```json
 {
@@ -1366,6 +1226,13 @@ Configuration is unified in `~/.seismicx/config.json`, maintained automatically 
 }
 ```
 
+Common locations:
+
+- `seismo_rag/project_config.json`: project-level settings such as search providers, coding backend preferences, and SKILL/RAG helper options.
+- `.sage_runtime/`: local PID files, logs, and transient runtime environment data; this directory is ignored by git.
+- Scientific Analysis / Parameter Optimization project folders: project inputs, outputs, figures, logs, Markdown/LaTeX drafts, and optimization traces.
+- `~/.seismicx/config.json`: a small set of user-level defaults, such as the default LLM backend.
+
 | Field | Description | Optional Values |
 |------|------|--------|
 | `llm.provider` | LLM provider | `ollama` / `openai` / `custom` |
@@ -1381,7 +1248,7 @@ Configuration is unified in `~/.seismicx/config.json`, maintained automatically 
 
 **Q: Conversation returns "No available LLM model configured"**
 
-Go to `/llm-settings` to select an installed Ollama model, or configure an online API and click "Save Configuration".
+Go to `/config` to select an installed Ollama model, or configure an online API and click "Save Configuration".
 
 **Q: English questions like "what is filter algorithm?" are incorrectly routed to code execution**
 
@@ -1423,7 +1290,7 @@ Agent by default retries up to 2 times per step, failed steps will be skipped an
 
 **Q: How to make AI use my own function library?**
 
-Create a `.md` skill file under `~/.seismicx/skills/`, according to [skill file format](#creating-custom-skills) write function signatures, parameter explanations and minimal examples. No restart required after saving, takes effect immediately for next conversation.
+Create an OpenAI-style `SKILL.md` under `seismo_skill/user_skills/<skill_name>/`, following [Creating Custom Skills](#creating-custom-skills) to describe when to use it, inputs/outputs, workflow steps, and minimal examples. Refresh the Skills page to manage it; Chat, CodeEngine, and Scientific Analysis Agent can retrieve and use it.
 
 **Q: RAG function reports error "embedding model library not found"**
 
