@@ -11,6 +11,21 @@ from seismo_code.safe_executor import ExecutionResult
 
 
 class TestPhasePickingGuard(unittest.TestCase):
+    def test_rejects_explicit_sage_test_fail_despite_zero_exit(self):
+        engine = CodeEngine(llm_config={"provider": "test", "api_base": "http://test", "model": "test"})
+        result = ExecutionResult(
+            success=True,
+            stdout="[SAGE_TEST] FAIL: china_topography.png was not generated.",
+            stderr="",
+            output_files=[],
+            figures=[],
+        )
+
+        self.assertFalse(engine._execution_success(result))
+        ok, reason = engine._mini_test_ok("使用 GMT 绘制中国地形图并输出 PNG", "", result)
+        self.assertFalse(ok)
+        self.assertIn("failure", reason.lower())
+
     def test_rejects_first_sta_lta_trigger_as_pick(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "phase_picks.csv"

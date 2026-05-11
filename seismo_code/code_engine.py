@@ -308,6 +308,21 @@ class CodeEngine:
 
     # ── Output checkers ───────────────────────────────────────────────────────
 
+    def _has_failure_signal(self, text: str) -> bool:
+        """Detect explicit self-check/tool failure messages in stdout/stderr."""
+        if not text:
+            return False
+        failure_patterns = [
+            r"^\s*(?:\[[^\]]+\]\s*)?(?:FAIL|FAILED|FATAL|ERROR)\b\s*[:：-]?",
+            r"^\s*(?:✗|❌)\s+",
+            r"\bwas not generated\b",
+            r"\bnot generated\b",
+            r"\bmissing (?:expected )?(?:output|file|figure|image)\b",
+            r"\b(?:output|figure|image) (?:file )?(?:missing|not found)\b",
+            r"\bno (?:output|figure|image) (?:was )?(?:generated|produced|created)\b",
+        ]
+        return any(re.search(pat, text, re.I | re.M) for pat in failure_patterns)
+
     def _execution_success(self, exec_res: ExecutionResult) -> bool:
         """True when process exited cleanly with no traceback in output."""
         if not exec_res or not exec_res.success:
@@ -315,6 +330,8 @@ class CodeEngine:
         combined = "\n".join([exec_res.stdout or "", exec_res.stderr or ""]).strip()
         if not combined:
             return True
+        if self._has_failure_signal(combined):
+            return False
         if re.search(r"Traceback \(most recent call last\):", combined, re.I):
             return False
         if re.search(
@@ -374,12 +391,14 @@ class CodeEngine:
         no visible self-checks. It is intentionally conservative; failures are
         fed back into the normal debugger as an output-check error.
         """
+        stdout = (exec_res.stdout or "").strip() if exec_res else ""
+        stderr = (exec_res.stderr or "").strip() if exec_res else ""
+        combined = "\n".join([stdout, stderr])
+        if self._has_failure_signal(combined):
+            return False, "stdout/stderr contains an explicit failure self-check"
         if not exec_res or not self._execution_success(exec_res):
             return False, "execution did not succeed"
 
-        stdout = (exec_res.stdout or "").strip()
-        stderr = (exec_res.stderr or "").strip()
-        combined = "\n".join([stdout, stderr])
         if re.search(
             r"\b(no such file|file not found|empty dataframe|"
             r"(?:failed|error)\s*[:：])",
