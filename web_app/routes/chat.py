@@ -1512,6 +1512,13 @@ def science_analysis_agent_guidance():
     job = _science_agent_jobs.get(job_id)
     if not job:
         return jsonify({"ok": False, "error": "Job not found"}), 404
+    status = job.get("status", "")
+    if status not in {"queued", "running"}:
+        return jsonify({
+            "ok": False,
+            "error": f"Job is {status or 'not running'}; start a continuation run instead",
+            "status": status,
+        }), 409
     item = {"message": message, "ts": _time.time()}
     job.setdefault("guidance", []).append(item)
     job.setdefault("progress", []).append({"phase": "guidance", "message": message, "ts": _time.time()})
