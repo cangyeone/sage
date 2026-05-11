@@ -29,59 +29,22 @@ The command-line tool `seismic_cli.py` is still available, but it is now mainly 
 
 ## Table of Contents
 
-
-- [Table of Contents](#table-of-contents)
 - [Features Overview](#features-overview)
 - [System Architecture](#system-architecture)
 - [Quick Start](#quick-start)
 - [Installation](#installation)
-  - [System Requirements](#system-requirements)
-  - [Basic Installation](#basic-installation)
-  - [pnsn Phase Picking Module Location](#pnsn-phase-picking-module-location)
-  - [RAG Dependencies](#rag-dependencies)
-    - [Alternative: Download BGE-M3 via ModelScope (recommended for users in China)](#alternative-download-bge-m3-via-modelscope-recommended-for-users-in-china)
 - [Configuring LLM Backend](#configuring-llm-backend)
-  - [Method 1: Ollama (Recommended, local, no internet required)](#method-1-ollama-recommended-local-no-internet-required)
-  - [Method 2: Online API (OpenAI Compatible Format)](#method-2-online-api-openai-compatible-format)
-  - [Method 3: Command Line Configuration](#method-3-command-line-configuration)
 - [Web Interface](#web-interface)
-  - [Chat (/chat)](#chat-chat)
-  - [Scientific Analysis (/science-analysis-agent)](#scientific-analysis-science-analysis-agent)
-  - [Parameter Optimization (/parameter-optimization-agent)](#parameter-optimization-parameter-optimization-agent)
-  - [Knowledge Base (/knowledge)](#knowledge-base-knowledge)
-  - [Skills (/skills)](#skills-skills)
-  - [Config (/config)](#config-config)
 - [Command Line Tools (Advanced/Fallback)](#command-line-tools-advancedfallback)
 - [Conversation Routing Mechanism](#conversation-routing-mechanism)
-  - [Routing Flow](#routing-flow)
-  - [Three Types of Routing](#three-types-of-routing)
 - [seismo\_skill Skill System](#seismo_skill-skill-system)
-  - [Working Principle](#working-principle)
-  - [Built-in Skills (7)](#built-in-skills-7)
-  - [Creating Custom Skills](#creating-custom-skills)
-- [Notes](#notes)
-    - [Automatic Skill Generation](#automatic-skill-generation)
-- [Notes](#notes-1)
-  - [Storage](#storage)
-  - [Built-in Workflows](#built-in-workflows)
-  - [`CodeEngine.run_workflow()` API](#codeenginerun_workflow-api)
-  - [Web API](#web-api)
-  - [Creating Custom Workflows](#creating-custom-workflows)
+- [seismo\_script Workflow System](#seismo_script-workflow-system)
 - [GMT Map Drawing](#gmt-map-drawing)
-  - [Installing GMT](#installing-gmt)
-  - [Usage](#usage)
-  - [Automatic Chinese Title Processing](#automatic-chinese-title-processing)
-  - [Image and Script Download](#image-and-script-download)
 - [Core Modules Details](#core-modules-details)
-  - [`seismo_script/` — Workflow System](#seismo_script--workflow-system)
-  - [`seismo_code/` — Code Generation and Execution Engine](#seismo_code--code-generation-and-execution-engine)
-  - [`seismo_agent/` — Autonomous Agent](#seismo_agent--autonomous-agent)
-  - [`web_app/rag_engine.py` — Knowledge Base RAG Engine](#web_apprag_enginepy--knowledge-base-rag-engine)
-  - [`seismo_stats/` — Seismic Statistical Analysis](#seismo_stats--seismic-statistical-analysis)
-  - [`seismo_tools/` — External Tool Registry](#seismo_tools--external-tool-registry)
 - [Directory Structure](#directory-structure)
 - [Configuration Files](#configuration-files)
 - [FAQ](#faq)
+- [Acknowledgements](#acknowledgements)
 - [Contact](#contact)
 - [License](#license)
 
@@ -711,49 +674,6 @@ The optimizer is meant for workflows where the user defines modules, module inpu
 - `optimization_report.md`
 
 All outputs stay inside the selected project directory, so Science Analysis can later reuse the optimization trace, figures, and report when drafting a paper.
-
-#### Automatic Skill Generation
-
-When building documentation, SAGE automatically analyzes the content and generates skill documents that include:
-
-- Function signatures and usage examples
-- Code snippets from documentation
-- Parameter descriptions
-- Best practices and notes
-
-**Example Generated Skill Structure:**
-```markdown
----
-name: gmt_basemap
-category: generated
-keywords: GMT, basemap, map frame, projection
----
-
-# GMT Basemap Drawing
-
-## Description
-
-Create map frames and coordinate systems using GMT's basemap module.
-
-## Main Functions
-
-### `psbasemap -R -J -B`
-
-**Parameters:**
-- `-R`: Region specification (e.g., -R0/10/0/10)
-- `-J`: Projection type (e.g., -JM10c for Mercator)
-- `-B`: Frame and annotation settings
-
-**Example:**
-```bash
-gmt psbasemap -R0/360/-90/90 -JM10c -Bafg -P > map.ps
-```
-
-## Notes
-
-- Use appropriate projection for your data region
-- Frame annotations (-B) control tick marks and labels
-```
 
 #### Building Progress Monitoring
 
