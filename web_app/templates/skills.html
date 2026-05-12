@@ -20,6 +20,23 @@ body { background:#f5f7fa; min-height:100vh; }
 .skills-layout { display:flex; gap:1.25rem; align-items:flex-start; }
 .skill-list-col { width:260px; flex-shrink:0; }
 .skill-editor-col { flex:1; min-width:0; }
+.skill-list-scroll {
+  max-height:calc(100vh - 335px);
+  overflow-y:auto;
+  padding-right:.2rem;
+}
+.skill-list-scroll::-webkit-scrollbar { width:6px; }
+.skill-list-scroll::-webkit-scrollbar-thumb { background:#d9ddef; border-radius:8px; }
+.skill-pager {
+  display:flex; align-items:center; justify-content:space-between; gap:.35rem;
+  margin:.55rem 0 .3rem; padding:.4rem .25rem 0; border-top:1px solid #eceef8;
+}
+.skill-pager-info { font-size:.72rem; color:#888; white-space:nowrap; }
+.skill-pager button {
+  border:1px solid #dfe3f5; background:#fff; color:#667eea;
+  border-radius:8px; padding:.22rem .5rem; font-size:.72rem;
+}
+.skill-pager button:disabled { opacity:.45; color:#aaa; cursor:not-allowed; }
 
 /* Skill card */
 .skill-card {
@@ -207,7 +224,14 @@ body { background:#f5f7fa; min-height:100vh; }
         <div class="new-btn mb-2" onclick="newSkill()" data-i18n="btn_new">
           <i class="bi bi-plus-lg me-1"></i>新建技能
         </div>
-        <div id="skillList"></div>
+        <div class="skill-list-scroll">
+          <div id="skillList"></div>
+        </div>
+        <div class="skill-pager" id="skillPager" style="display:none">
+          <button type="button" onclick="changeSkillPage(-1)" id="skillPrevBtn">上一页</button>
+          <span class="skill-pager-info" id="skillPagerInfo">1 / 1</span>
+          <button type="button" onclick="changeSkillPage(1)" id="skillNextBtn">下一页</button>
+        </div>
         <div class="skill-dir-hint mt-2">
           <i class="bi bi-folder2 me-1"></i><span data-i18n="hint_skill_dir">自定义技能存储于：</span>
           <br><code>seismo_skill/user_skills/</code>
@@ -424,7 +448,8 @@ const I18N = {
     label_user: '自定义', label_builtin: '内置',
     btn_new: '新建技能', btn_save: '保存', btn_delete: '删除',
     tab_edit: '编辑', tab_preview: '预览',
-    empty_state: '选择左侧技能查看详情，或点击「新建技能」创建'
+    empty_state: '选择左侧技能查看详情，或点击「新建技能」创建',
+    count_suffix: '个', prev_page: '上一页', next_page: '下一页'
   },
   en: {
     nav_chat: 'Chat', nav_opt:'Param Optimizer', nav_science: 'Science Agent', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
@@ -433,7 +458,8 @@ const I18N = {
     label_user: 'Custom', label_builtin: 'Built-in',
     btn_new: 'New Skill', btn_save: 'Save', btn_delete: 'Delete',
     tab_edit: 'Edit', tab_preview: 'Preview',
-    empty_state: 'Select a skill on the left, or click "New Skill" to create one'
+    empty_state: 'Select a skill on the left, or click "New Skill" to create one',
+    count_suffix: 'items', prev_page: 'Prev', next_page: 'Next'
   }
 };
 
@@ -462,6 +488,8 @@ function toggleLang() {
   currentLang = currentLang === 'zh' ? 'en' : 'zh';
   localStorage.setItem('sage_lang', currentLang);
   applyLang();
+  renderList();
+  if (workflows.length) renderWorkflowList();
 }
 
 document.addEventListener('DOMContentLoaded', applyLang);
@@ -484,6 +512,8 @@ let skills = [];
 let currentSkill = null;
 let editMode = false;
 let originalText = '';
+let skillPage = 1;
+const skillPageSize = 8;
 
 // ── Init ───────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
@@ -502,39 +532,71 @@ async function loadSkills() {
 
 function renderList() {
   const list = document.getElementById('skillList');
-  document.getElementById('skillCount').textContent = skills.length + ' 个';
+  document.getElementById('skillCount').textContent = `${skills.length} ${T('count_suffix')}`;
 
   const catIcons = {
     waveform: '🌊', visualization: '📊', analysis: '🔬',
     statistics: '📈', custom: '⚡', generated: '🤖', '': '📄'
   };
 
+  const entries = orderedSkillEntries();
+  const totalPages = Math.max(1, Math.ceil(entries.length / skillPageSize));
+  skillPage = Math.min(Math.max(1, skillPage), totalPages);
+  const start = (skillPage - 1) * skillPageSize;
+  const pageEntries = entries.slice(start, start + skillPageSize);
+
   let html = '';
-  const userSkills      = skills.filter(s => s.source === 'user');
-  const generatedSkills = skills.filter(s => s.source === 'generated');
-  const builtinSkills   = skills.filter(s => s.source === 'builtin');
+  let lastSectionKey = '';
+  pageEntries.forEach(({section, skill}) => {
+    if (section.key !== lastSectionKey) {
+      html += sectionHeader(section.icon, T(section.key));
+      lastSectionKey = section.key;
+    }
+    html += skillCardHtml(skill, catIcons);
+  });
 
-  if (userSkills.length) {
-    html += sectionHeader('bi-person-gear', T('section_user'));
-    userSkills.forEach(s => { html += skillCardHtml(s, catIcons); });
-  }
-
-  if (generatedSkills.length) {
-    html += sectionHeader('bi-cpu', T('section_generated'));
-    generatedSkills.forEach(s => { html += skillCardHtml(s, catIcons); });
-  }
-
-  if (builtinSkills.length) {
-    html += sectionHeader('bi-box-seam', T('section_builtin'));
-    builtinSkills.forEach(s => { html += skillCardHtml(s, catIcons); });
+  if (!entries.length) {
+    html = `<div class="text-muted text-center py-3" style="font-size:.82rem">${T('empty_state')}</div>`;
   }
 
   list.innerHTML = html;
+  renderSkillPager(totalPages, entries.length);
 
   if (currentSkill) {
     const el = document.querySelector(`.skill-card[data-name="${currentSkill.name}"]`);
     if (el) el.classList.add('active');
   }
+}
+
+function orderedSkillEntries() {
+  const sections = [
+    { key: 'section_user', icon: 'bi-person-gear', items: skills.filter(s => s.source === 'user') },
+    { key: 'section_generated', icon: 'bi-cpu', items: skills.filter(s => s.source === 'generated') },
+    { key: 'section_builtin', icon: 'bi-box-seam', items: skills.filter(s => s.source === 'builtin') },
+  ];
+  const entries = [];
+  sections.forEach(section => {
+    section.items.forEach(skill => entries.push({section, skill}));
+  });
+  return entries;
+}
+
+function renderSkillPager(totalPages, totalItems) {
+  const pager = document.getElementById('skillPager');
+  if (!pager) return;
+  const show = totalItems > skillPageSize;
+  pager.style.display = show ? '' : 'none';
+  const prev = document.getElementById('skillPrevBtn');
+  const next = document.getElementById('skillNextBtn');
+  const info = document.getElementById('skillPagerInfo');
+  if (prev) { prev.textContent = T('prev_page'); prev.disabled = skillPage <= 1; }
+  if (next) { next.textContent = T('next_page'); next.disabled = skillPage >= totalPages; }
+  if (info) info.textContent = `${skillPage} / ${totalPages}`;
+}
+
+function changeSkillPage(delta) {
+  skillPage += delta;
+  renderList();
 }
 
 function sectionHeader(icon, label) {

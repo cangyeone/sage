@@ -62,6 +62,23 @@ body { background: #f5f7fa; min-height: 100vh; }
 .folder-group-body.show { display: block; }
 .folder-group-body .doc-card { margin-bottom: .5rem; box-shadow: none; border: 1px solid #eee; }
 .folder-group-body .doc-card:last-child { margin-bottom: 0; }
+.doc-list-scroll {
+  max-height: calc(100vh - 270px);
+  overflow-y: auto;
+  padding-right: .25rem;
+}
+.doc-list-scroll::-webkit-scrollbar { width: 6px; }
+.doc-list-scroll::-webkit-scrollbar-thumb { background: #d9ddef; border-radius: 8px; }
+.list-pager {
+  display: flex; align-items: center; justify-content: flex-end; gap: .5rem;
+  margin: .75rem 0 0;
+}
+.list-pager-info { font-size: .8rem; color: #888; min-width: 4rem; text-align: center; }
+.list-pager button {
+  border: 1px solid #dfe3f5; background: #fff; color: #667eea;
+  border-radius: 9px; padding: .28rem .75rem; font-size: .78rem;
+}
+.list-pager button:disabled { opacity: .45; color: #aaa; cursor: not-allowed; }
 
 /* Status bar */
 .stat-pill { background: linear-gradient(135deg,var(--accent),var(--accent2));
@@ -358,12 +375,19 @@ body { background: #f5f7fa; min-height: 100vh; }
         <h6 class="mb-0 fw-bold text-muted" data-i18n="docs_section">已索引文献</h6>
         <span class="badge bg-secondary" id="docCount">0 篇</span>
       </div>
-      <div id="docList">
-        <div class="text-center text-muted py-5" id="emptyHint">
-          <i class="bi bi-inbox" style="font-size:2.5rem;opacity:.3;"></i>
-          <div class="mt-2"><span data-i18n="no_docs">知识库为空</span></div>
-          <div class="mt-1 opacity-50" style="font-size:.85rem;" data-i18n="no_docs_sub">上传 PDF 后，文献将自动向量化并可用于问答</div>
+      <div class="doc-list-scroll">
+        <div id="docList">
+          <div class="text-center text-muted py-5" id="emptyHint">
+            <i class="bi bi-inbox" style="font-size:2.5rem;opacity:.3;"></i>
+            <div class="mt-2"><span data-i18n="no_docs">知识库为空</span></div>
+            <div class="mt-1 opacity-50" style="font-size:.85rem;" data-i18n="no_docs_sub">上传 PDF 后，文献将自动向量化并可用于问答</div>
+          </div>
         </div>
+      </div>
+      <div class="list-pager" id="docPager" style="display:none">
+        <button type="button" onclick="changeDocPage(-1)" id="docPrevBtn">上一页</button>
+        <span class="list-pager-info" id="docPagerInfo">1 / 1</span>
+        <button type="button" onclick="changeDocPage(1)" id="docNextBtn">下一页</button>
       </div>
     </div>
   </div>
@@ -419,6 +443,7 @@ const I18N = {
     ref_failed: '失败', ref_partial: '部分完成',
     ref_files: '个文件', ref_selected: '个已选',
     docs_group_skill: 'Skill 文档', docs_group_ref: '参考文献', docs_group_upload: '手动上传',
+    prev_page: '上一页', next_page: '下一页',
   },
   en: {
     nav_chat: 'Chat', nav_opt:'Param Optimizer', nav_science: 'Science Agent', nav_knowledge: 'Knowledge', nav_skills: 'Skills',
@@ -455,6 +480,7 @@ const I18N = {
     ref_failed: 'Failed', ref_partial: 'Partial',
     ref_files: 'files', ref_selected: 'selected',
     docs_group_skill: 'Skill Docs', docs_group_ref: 'References', docs_group_upload: 'Uploaded',
+    prev_page: 'Prev', next_page: 'Next',
   }
 };
 
@@ -498,6 +524,8 @@ const dropZone = document.getElementById('dropZone');
 const uploadQueue = document.getElementById('uploadQueue');
 const uploadList  = document.getElementById('uploadList');
 const docList     = document.getElementById('docList');
+let docPage = 1;
+const docPageSize = 8;
 
 async function safeJson(resp) {
   const text = await resp.text();
@@ -596,6 +624,7 @@ async function loadDocs() {
 
     if (!d.ok && d.error) {
       docList.innerHTML = `<div class="text-danger py-3" style="font-size:.82rem;">⚠ ${d.error}</div>`;
+      renderDocPager(1, 0);
       return;
     }
 
@@ -605,6 +634,7 @@ async function loadDocs() {
         <div class="mt-2">${T('no_docs')}</div>
         <div class="mt-1 opacity-50" style="font-size:.85rem;">${T('no_docs_sub')}</div>
       </div>`;
+      renderDocPager(1, 0);
       return;
     }
 
@@ -622,10 +652,27 @@ async function loadDocs() {
       }
     }
 
+    const topEntries = [];
+    Object.entries(groups)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .forEach(([folder, fdocs]) => topEntries.push({type: 'group', folder, fdocs}));
+    standalone
+      .sort((a, b) => String(a.doc_name || '').localeCompare(String(b.doc_name || '')))
+      .forEach(doc => topEntries.push({type: 'doc', doc}));
+
+    const totalPages = Math.max(1, Math.ceil(topEntries.length / docPageSize));
+    docPage = Math.min(Math.max(1, docPage), totalPages);
+    const pageEntries = topEntries.slice((docPage - 1) * docPageSize, docPage * docPageSize);
     const parts = [];
 
-    // ── 文件夹分组卡片 ─────────────────────────────────────────────────────
-    for (const [folder, fdocs] of Object.entries(groups)) {
+    // ── 文件夹分组卡片与独立文档：分页只作用于顶层条目 ─────────────────────
+    for (const entry of pageEntries) {
+      if (entry.type === 'doc') {
+        parts.push(renderDocCard(entry.doc, isZh));
+        continue;
+      }
+      const folder = entry.folder;
+      const fdocs = entry.fdocs;
       const totalChunks = fdocs.reduce((s, d) => s + d.n_chunks, 0);
       const safeFolder  = folder.replace(/'/g, "\\'");
       const groupId     = 'grp_' + folder.replace(/[^a-zA-Z0-9_]/g, '_');
@@ -654,15 +701,36 @@ async function loadDocs() {
       </div>`);
     }
 
-    // ── 独立文档（无 proj_folder）────────────────────────────────────────
-    for (const doc of standalone) {
-      parts.push(renderDocCard(doc, isZh));
-    }
-
     docList.innerHTML = parts.join('');
+    renderDocPager(totalPages, topEntries.length);
   } catch(e) {
     docList.innerHTML = `<div class="text-danger py-3" style="font-size:.82rem;">⚠ ${e.message}</div>`;
+    renderDocPager(1, 0);
   }
+}
+
+function renderDocPager(totalPages, totalItems) {
+  const pager = document.getElementById('docPager');
+  if (!pager) return;
+  const show = totalItems > docPageSize;
+  pager.style.display = show ? '' : 'none';
+  const prev = document.getElementById('docPrevBtn');
+  const next = document.getElementById('docNextBtn');
+  const info = document.getElementById('docPagerInfo');
+  if (prev) {
+    prev.textContent = T('prev_page');
+    prev.disabled = docPage <= 1;
+  }
+  if (next) {
+    next.textContent = T('next_page');
+    next.disabled = docPage >= totalPages;
+  }
+  if (info) info.textContent = `${docPage} / ${totalPages}`;
+}
+
+function changeDocPage(delta) {
+  docPage += delta;
+  loadDocs();
 }
 
 function toggleFolder(groupId) {
