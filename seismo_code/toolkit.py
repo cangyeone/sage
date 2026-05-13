@@ -228,6 +228,54 @@ def remove_response(
 # 4. 可视化
 # ---------------------------------------------------------------------------
 
+def _pick_station_matches_trace(pk: Dict, tr) -> bool:
+    """Return True when a pick belongs to the trace station.
+
+    PNSN picks often use labels such as ``X1.53085.01`` while ObsPy traces
+    expose ``tr.stats.station == "53085"``.  Matching all dot-separated tokens
+    avoids silently dropping valid picks because the location code is last.
+    """
+    sta = str(pk.get("station") or pk.get("sta") or "").strip()
+    if not sta:
+        return True
+    trace_tokens = {
+        str(getattr(tr.stats, "network", "") or ""),
+        str(getattr(tr.stats, "station", "") or ""),
+        str(getattr(tr.stats, "location", "") or ""),
+        str(getattr(tr.stats, "channel", "") or ""),
+        str(getattr(tr, "id", "") or ""),
+    }
+    trace_tokens = {tok for tok in trace_tokens if tok}
+    pick_tokens = {sta, *[tok for tok in sta.replace("_", ".").split(".") if tok]}
+    return bool(trace_tokens & pick_tokens) or sta in str(getattr(tr, "id", ""))
+
+
+def _pick_relative_seconds(pk: Dict, tr, obspy) -> Optional[float]:
+    """Resolve a pick dictionary to seconds relative to ``tr.stats.starttime``."""
+    for key in ("time", "time_abs", "absolute_time", "phase_time", "arrival_time"):
+        value = pk.get(key)
+        if value in (None, ""):
+            continue
+        if isinstance(value, (int, float, np.integer, np.floating)):
+            return float(value)
+        try:
+            return float(obspy.UTCDateTime(str(value)) - tr.stats.starttime)
+        except Exception:
+            try:
+                return float(value)
+            except Exception:
+                continue
+    for key in ("time_rel_s", "relative_time_s", "rel_time_s", "t", "arrival_time_s", "sample_time_s"):
+        value = pk.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            return float(value)
+        except Exception:
+            continue
+    return None
+
+
 def plot_stream(
     st,
     title: str = "Waveform",
@@ -247,7 +295,8 @@ def plot_stream(
     outfile : str, optional
         输出文件路径（PNG）。None 时自动生成。
     picks : list of dict, optional
-        震相标注列表，每个 dict 含 {'time': UTCDateTime, 'phase': str, 'station': str}。
+        震相标注列表。支持 {'time': UTCDateTime/str, 'phase': str, 'station': str}，
+        也支持 PNSNPicker 返回的 {'time_abs': str, 'time_rel_s': float, ...}。
     normalize : bool
         各道独立归一化，默认 True。
     figsize : tuple
@@ -280,19 +329,16 @@ def plot_stream(
         # Draw picks
         if picks:
             for pk in picks:
-                sta = pk.get("station", "")
-                if sta and sta.split(".")[-1] not in (tr.stats.station, sta):
+                if not _pick_station_matches_trace(pk, tr):
                     continue
-                pt = pk.get("time")
-                if pt is None:
+                rel = _pick_relative_seconds(pk, tr, obspy)
+                if rel is None:
                     continue
-                if isinstance(pt, str):
-                    pt = obspy.UTCDateTime(pt)
-                rel = float(pt - tr.stats.starttime)
                 if 0 <= rel <= times[-1]:
-                    color = "r" if pk.get("phase", "").startswith("P") else "b"
+                    phase = str(pk.get("phase") or pk.get("phase_name") or pk.get("type") or "").upper()
+                    color = "r" if phase.startswith("P") else ("b" if phase.startswith("S") else "m")
                     axes[i].axvline(rel, color=color, lw=1.2, ls="--", alpha=0.8)
-                    axes[i].text(rel, 0.9, pk.get("phase", ""),
+                    axes[i].text(rel, 0.9, phase,
                                  transform=axes[i].get_xaxis_transform(),
                                  color=color, fontsize=8, ha="left")
 

@@ -448,6 +448,60 @@ class CodeEngine:
             original_request,
             re.I,
         ))
+        pick_visualization_req = bool(
+            phase_pick_req
+            and re.search(r"绘制|画|叠加|标注|visuali[sz]e|plot|draw|overlay|annotat", original_request, re.I)
+            and re.search(r"结果|已有|existing|result|marker|pick", original_request, re.I)
+        )
+        explicit_classical_pick_req = bool(re.search(
+            r"STA\s*/?\s*LTA|stalta|classic_sta_lta|recursive_sta_lta|"
+            r"classical\s+trigger|classic\s+trigger|传统触发|经典触发|经典方法",
+            original_request,
+            re.I,
+        ))
+        sta_lta_code = bool(re.search(
+            r"trigger_onset\s*\(|classic_sta_lta|recursive_sta_lta|"
+            r"\bsta_len\b|\blta_len\b|STA\s*/?\s*LTA",
+            code,
+            re.I,
+        ))
+        if phase_pick_req and sta_lta_code and not explicit_classical_pick_req:
+            return (
+                False,
+                "generic phase-picking code fell back to STA/LTA; use PNSNPicker from pnsn_phase_detection unless the user explicitly requests STA/LTA",
+            )
+        active_phase_pick_req = phase_pick_req and not pick_visualization_req
+        pnsn_code = bool(re.search(
+            r"PNSNPicker|pnsn_phase_detection|pnsn[/._-]?picker|"
+            r"pnsn\.v\d|pick_stream\s*\(|pick_directory\s*\(",
+            code,
+            re.I,
+        ))
+        if active_phase_pick_req and not explicit_classical_pick_req and not pnsn_code:
+            return (
+                False,
+                "phase-picking code did not use the PNSN picker API/model; import PNSNPicker from seismo_skill.skills.pnsn_phase_detection.pnsn",
+            )
+        if phase_pick_req and re.search(r"绘制|画|叠加|标注|visuali[sz]e|plot|draw|overlay|annotat", original_request, re.I):
+            pick_count_matches = re.findall(
+                r"(?:PNSN\s*)?(?:拾取到|picks?\s*[:=])\s*(\d+)|PNSN picks\s*[:：]\s*(\d+)",
+                stdout,
+                flags=re.I,
+            )
+            found_pick_count = max(
+                [int(a or b) for a, b in pick_count_matches if (a or b).isdigit()] or [0]
+            )
+            zero_plot_picks = bool(re.search(
+                r"用于绘图的\s*picks\s*数量\s*[:：]\s*0|plot(?:ting)?\s+picks?\s*[:=]\s*0",
+                stdout,
+                re.I,
+            ))
+            if found_pick_count > 0 and zero_plot_picks:
+                return (
+                    False,
+                    "PNSN picks were found but zero picks were passed to plotting; pass PNSN pick dictionaries through or normalize time_abs/time_rel_s before plot_stream",
+                )
+
         if phase_pick_req and re.search(r"trigger_onset\s*\(", code):
             first_trigger_patterns = [
                 r"triggers\s*\[\s*0\s*\]\s*\[\s*0\s*\]",

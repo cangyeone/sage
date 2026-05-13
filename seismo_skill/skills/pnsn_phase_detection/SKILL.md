@@ -1,6 +1,6 @@
 ---
 name: pnsn_phase_detection
-description: Use this skill for seismic phase picking, earthquake monitoring, Pg/Sg/Pn/Sn detection, P/S arrival picking, continuous waveform scanning, pnsn deep-learning pickers, PhaseNet/EQTransformer/RNN/LPPN pickers, and downstream phase association with FastLink, REAL, or GaMMA. Trigger when the user asks to detect phases, pick arrivals, monitor earthquakes, process continuous 3-component SAC/MSEED/SEED waveforms, associate picks into earthquake events, or autonomously write/debug custom Python picking code with component grouping, preprocessing, TorchScript inference, pick tables, figures, mini-tests, and self-check output.
+description: Use this skill for seismic phase picking, earthquake monitoring, Pg/Sg/Pn/Sn detection, P/S arrival picking, continuous waveform scanning, SeismicX-Cont/publish_mini-style HDF5 datasets, pnsn deep-learning pickers, PhaseNet/EQTransformer/RNN/LPPN pickers, picker benchmarking, annotation plotting, and downstream phase association with FastLink, REAL, or GaMMA. Trigger when the user asks to detect phases, pick arrivals, monitor earthquakes, process continuous SAC/MSEED/SEED/HDF5 waveforms, evaluate picker recall/precision, draw labeled waveform panels, associate picks into earthquake events, or autonomously write/debug custom Python picking code with component grouping, preprocessing, TorchScript inference, pick tables, figures, mini-tests, and self-check output.
 ---
 
 # PNSN Phase Detection and Earthquake Monitoring
@@ -17,10 +17,91 @@ Project root assumptions:
 
 - Run commands from the SAGE repo root.
 - The pnsn code and model files are managed inside this skill folder, not at the repository root.
+- Reusable instructions, scripts, and workflows are managed inside this skill folder. Do not depend on temporary demo folders such as `publish_mini`; they may be cleaned or omitted from uploads.
 - If `seismo_skill/skills/pnsn_phase_detection/pnsn/picker.py` is missing, instruct the user to run `git clone https://github.com/cangyeone/pnsn.git seismo_skill/skills/pnsn_phase_detection/pnsn` from the SAGE repo root.
 - Default model files live at `seismo_skill/skills/pnsn_phase_detection/pnsn/pickers/`.
 - Picker configuration lives at `seismo_skill/skills/pnsn_phase_detection/pnsn/config/picker.py`.
 - Define `PNSN_ROOT = Path("seismo_skill/skills/pnsn_phase_detection/pnsn")` in generated code and build all model/script paths from it.
+
+Preferred Python API:
+
+```python
+from seismo_skill.skills.pnsn_phase_detection.pnsn import PNSNPicker
+
+picker = PNSNPicker()  # uses pnsn/pickers/pnsn.v3.jit by default
+picks = picker.pick_stream(obspy_stream, incomplete="skip")
+```
+
+Use `pick_stream` for uploaded or already-read three-component waveforms in chat,
+science-analysis, and parameter-optimization tasks. Use `pick_directory` for
+batch monitoring directories. Do not silently fall back to STA/LTA. If the
+PNSN picker is unavailable, print a clear `[SAGE_TEST] PNSN unavailable: ...`
+diagnostic and stop unless the user explicitly requested STA/LTA or another
+classical trigger method.
+
+Default generated code pattern:
+
+```python
+from seismo_skill.skills.pnsn_phase_detection.pnsn import PNSNPicker
+
+if not PNSNPicker.is_available():
+    raise RuntimeError(
+        "PNSNPicker unavailable. Check seismo_skill/skills/pnsn_phase_detection/pnsn/pickers/"
+    )
+
+picker = PNSNPicker()
+picks = picker.pick_stream(st, incomplete="skip")
+if not picks:
+    raise RuntimeError("PNSNPicker returned no picks for this stream")
+print(f"[SAGE_TEST] PNSN picks: {len(picks)}")
+```
+
+## SeismicX-Cont / Continuous HDF5 Mode
+
+Use this mode when the task mentions `publish_mini`, SeismicX-Cont, continuous
+HDF5 waveforms, picker JSONL, label JSON, recall/precision, or annotation plots.
+The demo folder may be absent; the durable skill resources are:
+
+- `references/seismicx_cont_picker.md`: data layout, JSONL pick schema, metrics,
+  and benchmark rules.
+- `references/annotation_plotting.md`: waveform label/auto-pick plotting rules.
+- `scripts/plot_picks_and_labels.py`: reusable annotation plotting script.
+- `workflows/seismicx_continuous_dataset_creation.md`: build a continuous
+  waveform dataset from user data.
+- `workflows/picker_benchmark_and_annotation_plots.md`: evaluate a provided
+  picker and generate recall/precision figures.
+- `workflows/continuous_detection_and_association.md`: run continuous detection
+  and associate picks into events.
+
+Large SeismicX-Cont waveform data are not stored in this skill. Point users to:
+
+```bash
+modelscope download --dataset cangyeone/SeismicX-Cont --local_dir /path/to/SeismicX-Cont
+```
+
+or [https://www.modelscope.cn/datasets/cangyeone/SeismicX-Cont](https://www.modelscope.cn/datasets/cangyeone/SeismicX-Cont).
+
+If a project contains `scripts/run_picker_to_jsonl.py`, use it for continuous
+HDF5 picking because it normally handles the project dataloader, resume, and
+JSONL output. If it is missing, write custom code using the contracts in
+`references/seismicx_cont_picker.md`.
+
+Example annotation plot command:
+
+```bash
+python seismo_skill/skills/pnsn_phase_detection/scripts/plot_picks_and_labels.py \
+  --project-root /path/to/project \
+  --h5-input "data/hdf5/*.h5" \
+  --label-json data/label/annotations_mini_two_hours.json \
+  --auto-jsonl data/picks/pnsn.v3.diff.phase.jsonl \
+  --outdir "$SAGE_OUTDIR/annotation_plots" \
+  --max-panels 12 \
+  --window-seconds 180
+```
+
+Science-analysis and parameter-optimization agents should save picker metrics,
+annotation plots, and manifests under the current project output directory and
+then cite them as evidence in reports or papers.
 
 ## Autonomous Programming Mode
 
@@ -38,7 +119,38 @@ Use custom code for:
 Important fallback rule:
 
 - If `pnsn/picker.py` and `pnsn/pickers/pnsn.v3.jit` exist, prefer the PNSN TorchScript picker over a naive STA/LTA script.
+- Do not write a classical STA/LTA fallback for a generic "pick phases" request. Use STA/LTA only when the user explicitly asks for STA/LTA/classical triggering, or when the code is clearly labeled as a diagnostic comparison.
 - If you must write a classical STA/LTA fallback, never use the first `trigger_onset` window as the final pick. Print candidate trigger windows, ignore edge triggers near the record start, compare candidates with waveform energy/SNR, and choose plausible P/S arrivals. A common failure is picking a taper/filter transient within the first few seconds while the real event is much later in the trace.
+
+## Plot Existing Pick Results
+
+When the user asks to draw or overlay an existing pick result, such as
+“把这个拾取结果绘制到波形上”, this is a visualization task, not a new phase-picking
+task. Do not re-run STA/LTA just because a file named `picks_table.csv` is
+missing.
+
+Search the current execution directory, `SAGE_OUTDIR`, and the authorized
+waveform/data directories for recent pick outputs whose names look like
+`*pick*.csv`, `*pick*.txt`, `pnsn_picks.csv`, `sage_picks_*.txt`,
+`phase_picks.*`, or `picks.*`. Accept these schemas:
+
+- CSV columns including `phase`, `time_abs`/`absolute_time`/`time`, or
+  `relative_time_s`/`time_rel_s`;
+- PNSN text outputs with comment headers and comma rows:
+
+```text
+# path/to/waveform/file
+phase_name,relative_time_s,confidence,absolute_time,SNR,AMP,station,extra
+```
+
+Skip comment lines, parse comma rows, and preserve both relative and absolute
+times when available. Only use a generic `data.csv` if it contains explicit
+phase-pick columns; otherwise reject it as unrelated data.
+
+When picks are produced in the same script by `PNSNPicker.pick_stream(st)`, pass
+those pick dictionaries directly into `plot_stream(st, picks=picks, ...)`.
+`plot_stream` accepts the PNSN keys `time_abs` and `time_rel_s`, so do not
+discard or re-filter valid PNSN picks into an empty plotting list.
 
 Custom picking code should implement this workflow:
 
