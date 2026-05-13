@@ -1230,6 +1230,28 @@ def _science_agent_gc():
         _science_agent_jobs.pop(k, None)
 
 
+def _science_prepare_workspace_root(workspace_root: Path) -> None:
+    """Create the persistent Science Agent project tree if it is missing."""
+    workspace_root = Path(workspace_root).expanduser()
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    for sub in ("data", "docs", "literature", "figures", "code", "outputs", "outputs/science_analysis_agent"):
+        (workspace_root / sub).mkdir(parents=True, exist_ok=True)
+
+
+@bp.route('/api/science_analysis_agent/workspace', methods=['POST'])
+def science_analysis_agent_workspace():
+    """Create or resolve a persistent Science Agent project workspace."""
+    data = request.json or {}
+    session_id = _clean_conversation_id(data.get("session_id") or "default_science")
+    workspace_root = _science_resolve_workspace_root(data.get("workspace_root"), session_id)
+    _science_prepare_workspace_root(workspace_root)
+    return jsonify({
+        "ok": True,
+        "workspace_root": str(workspace_root),
+        "output_dir": str(workspace_root / "outputs" / "science_analysis_agent"),
+    })
+
+
 @bp.route('/api/science_analysis_agent', methods=['POST'])
 def science_analysis_agent():
     """Start an async autonomous scientific analysis job."""
@@ -1246,6 +1268,7 @@ def science_analysis_agent():
     job_id = "sci_" + _uuid.uuid4().hex[:10]
     session_id = _clean_conversation_id(data.get("session_id") or "default_science")
     workspace_root = _science_resolve_workspace_root(data.get("workspace_root"), session_id)
+    _science_prepare_workspace_root(workspace_root)
     output_cfg = Path(data.get("output_dir") or "outputs/science_analysis_agent").expanduser()
     if output_cfg.is_absolute():
         try:
@@ -1566,6 +1589,7 @@ def science_analysis_agent_upload():
 
     workspace_root = request.form.get('workspace_root') or ""
     ws_dir = _science_resolve_workspace_root(workspace_root, session_id)
+    _science_prepare_workspace_root(ws_dir)
     if ext == ".pdf":
         sub = "literature"
     elif ext in {".png", ".jpg", ".jpeg", ".svg", ".tif", ".tiff"}:
@@ -1612,14 +1636,23 @@ def science_analysis_agent_artifact():
     artifact_path = request.args.get('path', '').strip()
     if not artifact_path:
         return jsonify({"error": "path required"}), 400
-    p = Path(artifact_path).expanduser()
-    if not p.exists() or not p.is_file():
-        return jsonify({"error": "File not found"}), 404
-    allowed = {'.png', '.jpg', '.jpeg', '.svg', '.html', '.pdf', '.txt', '.md', '.csv', '.json'}
-    if p.suffix.lower() not in allowed:
-        return jsonify({"error": "Unsupported file type"}), 400
-    resolved = p.resolve()
-    allowed_roots = [Path(__file__).parent.parent.resolve(), SCIENCE_WORKSPACE_ROOT.resolve()]
+    requested = Path(artifact_path).expanduser()
+    allowed_suffixes = {
+        '.png', '.jpg', '.jpeg', '.svg', '.html', '.pdf',
+        '.txt', '.md', '.csv', '.json', '.webp', '.gif',
+    }
+    allowed_roots = [
+        _PROJECT_ROOT.resolve(),
+        Path(__file__).parent.parent.resolve(),
+        SCIENCE_WORKSPACE_ROOT.resolve(),
+    ]
+    for arg in ("workspace_root", "output_dir"):
+        val = request.args.get(arg, "").strip()
+        if val:
+            try:
+                allowed_roots.append(Path(val).expanduser().resolve())
+            except Exception:
+                pass
     for job in _science_agent_jobs.values():
         for key in ("workspace_root", "output_dir"):
             val = job.get(key)
@@ -1628,6 +1661,43 @@ def science_analysis_agent_artifact():
                     allowed_roots.append(Path(val).expanduser().resolve())
                 except Exception:
                     pass
+
+    candidates: list[Path] = []
+    if requested.is_absolute():
+        candidates.append(requested)
+    else:
+        for arg in ("output_dir", "workspace_root"):
+            val = request.args.get(arg, "").strip()
+            if val:
+                candidates.append(Path(val).expanduser() / requested)
+        candidates.append(_PROJECT_ROOT / requested)
+        candidates.append(SCIENCE_WORKSPACE_ROOT / requested)
+        if requested.name == str(requested) or len(requested.parts) <= 2:
+            for arg in ("output_dir", "workspace_root"):
+                val = request.args.get(arg, "").strip()
+                if not val:
+                    continue
+                try:
+                    base = Path(val).expanduser()
+                    if base.exists():
+                        candidates.extend(list(base.rglob(requested.name))[:5])
+                except Exception:
+                    pass
+
+    resolved = None
+    for candidate in candidates:
+        try:
+            c = candidate.expanduser().resolve()
+            if c.exists() and c.is_file():
+                resolved = c
+                break
+        except Exception:
+            continue
+    if not resolved:
+        return jsonify({"error": "File not found"}), 404
+    if resolved.suffix.lower() not in allowed_suffixes:
+        return jsonify({"error": "Unsupported file type"}), 400
+
     allowed = False
     for root in allowed_roots:
         try:
@@ -1638,8 +1708,10 @@ def science_analysis_agent_artifact():
             continue
     if not allowed:
         return jsonify({"error": "Access denied"}), 403
-    if p.suffix.lower() == '.svg':
+    if resolved.suffix.lower() == '.svg':
         return send_file(str(resolved), mimetype='image/svg+xml')
+    if resolved.suffix.lower() == '.html':
+        return send_file(str(resolved), mimetype='text/html')
     return send_file(str(resolved))
 
 
