@@ -372,6 +372,24 @@ Chat 支持临时上传文件，也可以把对话、项目或文献显式加入
 
 技能可以被 Chat、科学分析、参数优化和 CodeEngine 联合调用。生成失败或不再需要的技能可以在界面删除。
 
+#### SeismicX-Cont 连续地震监测技能
+
+SAGE 已内置 OpenAI-style 技能 `continuous_seismic_monitoring`，用于管理 `publish_mini` 中的连续波形测试、数据集制作、picker 评测、震相关联和连续地震检测代码。大体积波形数据、picker 权重和评测生成物不会提交到 git。数据请从 [ModelScope](https://www.modelscope.cn/datasets/cangyeone/SeismicX-Cont) 下载，然后放到 `publish_mini/data/` 或你的项目数据目录中。
+
+该技能自带 3 个 skill-local workflow，可被 Chat、科学分析、参数优化和 CodeEngine 调用：
+
+- `continuous_dataset_build`：把用户给定的波形、目录、台站和标签整理成连续波形数据集，并生成 HDF5/SQLite 索引。
+- `continuous_picker_benchmark`：给定 picker 后运行震相拾取评测，输出 P/S 拾取查准率、查全率，并可进一步做震相关联与地震查全率统计。
+- `continuous_waveform_detection`：给定连续波形后，基于已构建的数据集和索引执行连续地震检测。
+
+示例提示词：
+
+```text
+使用 continuous seismic monitoring workflow，把当前项目数据制作成连续波形数据集。
+用这个 PhaseNet picker 在 SeismicX-Cont mini 数据集上评测 P/S 拾取和地震查全率。
+使用连续波形检测 workflow，对当前项目中的连续数据检测地震。
+```
+
 ### Config（/config）
 
 Config 页面统一管理模型和系统能力：
@@ -747,6 +765,8 @@ Markdown 正文是**工作流指南**，在每个步骤的代码生成时注入�
 | 位置 | 内容 |
 |------|------|
 | `seismo_script/workflows/` | 内置工作流（随 SAGE 发布） |
+| `seismo_skill/skills/*/workflows/` | 内置技能自带工作流，随对应技能一起加载 |
+| `seismo_skill/user_skills/*/workflows/` | 用户/生成技能自带工作流，随生成技能一起加载 |
 | 项目目录中的 `workflows/` | Web 项目工作流，推荐用于可复现研究和参数优化 |
 | `~/.seismicx/workflows/` | 兼容旧版用户工作流；新项目建议优先保存在项目目录 |
 
@@ -756,6 +776,9 @@ Markdown 正文是**工作流指南**，在每个步骤的代码生成时注入�
 |--------|------|---------|
 | `gmt_terrain_map` | GMT 地形图完整流水线（7 步：CPT → 裁剪 DEM → 渲染 → 海岸线 → 等高线 → 比例尺/图例 → 导出） | `gmt_plotting`, `_gen_gmt_docs_6_5` |
 | `seismicity_analysis` | 地震活动性分析（目录 → 震中图 → 时序图 → b 值 → 剖面图） | `tabular_io`, `gmt_plotting`, `b_value_analysis` |
+| `continuous_dataset_build` | 从用户数据、台站/目录元数据和标签构建连续波形数据集 | `continuous_seismic_monitoring` |
+| `continuous_picker_benchmark` | 对用户给定 picker 做震相拾取与事件级查全率/统计评测 | `continuous_seismic_monitoring` |
+| `continuous_waveform_detection` | 基于连续波形和数据集索引执行地震检测 | `continuous_seismic_monitoring` |
 
 ### `CodeEngine.run_workflow()` API
 

@@ -374,6 +374,24 @@ The skill system uses OpenAI-style folder SKILLs and supports built-in skills pl
 
 Skills can be jointly used by Chat, Scientific Analysis, Parameter Optimization, and CodeEngine. Failed or obsolete generated skills can be deleted from the UI.
 
+#### SeismicX-Cont Continuous Monitoring Skill
+
+SAGE includes the OpenAI-style skill `continuous_seismic_monitoring` for the `publish_mini` continuous-waveform benchmark code. Large waveform data, picker weights, and generated benchmark outputs are intentionally not committed. Download the SeismicX-Cont data from [ModelScope](https://www.modelscope.cn/datasets/cangyeone/SeismicX-Cont), then place it under `publish_mini/data/` or inside your project data directory.
+
+The skill provides three skill-local workflows that can be invoked from Chat, Scientific Analysis, Parameter Optimization, and CodeEngine:
+
+- `continuous_dataset_build`: convert user-provided waveform/catalog/station inputs into a continuous waveform dataset with HDF5/SQLite indexes.
+- `continuous_picker_benchmark`: run a provided picker, evaluate phase-pick precision/recall, optionally associate events, and report earthquake recall statistics.
+- `continuous_waveform_detection`: run continuous earthquake detection on waveform windows using the dataset/index artifacts from the dataset workflow.
+
+Example prompts:
+
+```text
+Use the continuous seismic monitoring workflow to build a continuous waveform dataset from my project data.
+Benchmark this PhaseNet picker on the SeismicX-Cont mini dataset and report P/S recall plus event association recall.
+Use the continuous waveform detection workflow to detect earthquakes from the continuous data in this project.
+```
+
 ### Config (/config)
 
 The Config page manages models and system capabilities:
@@ -760,6 +778,8 @@ The Markdown body is the **workflow guide** — injected into the LLM context to
 | Location | Contents |
 |----------|----------|
 | `seismo_script/workflows/` | Built-in workflows (shipped with SAGE) |
+| `seismo_skill/skills/*/workflows/` | Built-in skill-local workflows, loaded with their owning skill package |
+| `seismo_skill/user_skills/*/workflows/` | User/generated skill-local workflows, loaded with generated skills |
 | Project-local `workflows/` | Web project workflows, recommended for reproducible studies and parameter optimization |
 | `~/.seismicx/workflows/` | Legacy user workflows; new projects should prefer project-local storage |
 
@@ -769,6 +789,9 @@ The Markdown body is the **workflow guide** — injected into the LLM context to
 |----------|-------------|--------|
 | `gmt_terrain_map` | Full GMT terrain map pipeline (7 steps: CPT → DEM cut → render → coast → contours → scale/legend → export) | `gmt_plotting`, `_gen_gmt_docs_6_5` |
 | `seismicity_analysis` | Seismicity analysis (catalog → epicenter map → time series → b-value → cross-section) | `tabular_io`, `gmt_plotting`, `b_value_analysis` |
+| `continuous_dataset_build` | Build a continuous waveform dataset from user data, station/catalog metadata, and labels | `continuous_seismic_monitoring` |
+| `continuous_picker_benchmark` | Evaluate a user-supplied picker with phase-pick and event-level recall/statistics | `continuous_seismic_monitoring` |
+| `continuous_waveform_detection` | Detect earthquakes from continuous waveform data using dataset/index artifacts | `continuous_seismic_monitoring` |
 
 ### `CodeEngine.run_workflow()` API
 

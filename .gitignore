@@ -50,3 +50,14 @@ seismo_skill/skills/gmt6/references/manifest.md
 /seismo_skill/skills/gmt6_chinese_manual
 /web_app/examples/science_analysis_agent
 /examples
+# publish_mini keeps reusable SeismicX-Cont code/docs in git, while large
+# waveform data, model weights, and generated benchmark artifacts stay external.
+# Download data from https://www.modelscope.cn/datasets/cangyeone/SeismicX-Cont
+/publish_mini/data/
+/publish_mini/eval_picks/
+/publish_mini/eval_events/
+/publish_mini/dataset_plot_data.json
+/publish_mini/manifest_sha256.txt
+/publish_mini/logo.png
+/publish_mini/**/__pycache__/
+/publish_mini/**/*.pyc

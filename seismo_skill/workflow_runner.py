@@ -41,6 +41,9 @@ Role responsibilities
 Directory layout
 ----------------
   seismo_skill/workflows/         builtin workflows (shipped with project)
+  seismo_skill/skills/*/workflows/ skill-local workflows bundled with skills
+  seismo_skill/user_skills/*/workflows/
+                                  project-local custom skill workflows
   ~/.seismicx/workflows/          user-defined workflows (higher priority)
 
 Public API
@@ -66,6 +69,8 @@ import yaml
 # ── Directories ───────────────────────────────────────────────────────────────
 
 _BUILTIN_WORKFLOW_DIR = Path(__file__).parent / "workflows"
+_BUILTIN_SKILL_DIR = Path(__file__).parent / "skills"
+_PROJECT_USER_SKILL_DIR = Path(__file__).parent / "user_skills"
 
 
 def get_user_workflow_dir() -> Path:
@@ -197,6 +202,37 @@ def _load_from_dir(directory: Path, source_label: str) -> List[Dict]:
     return workflows
 
 
+def _load_skill_workflows(root: Path, source_label: str) -> List[Dict]:
+    """Scan skill folders for nested workflows/<name>.md files."""
+    workflows: List[Dict] = []
+    if not root.exists():
+        return workflows
+    for skill_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+        workflow_dir = skill_dir / "workflows"
+        for entry in _load_from_dir(workflow_dir, source_label):
+            entry["skill_package"] = skill_dir.name
+            workflows.append(entry)
+    return workflows
+
+
+def _merge_workflow_groups(*groups: List[Dict]) -> List[Dict]:
+    """
+    Merge workflow groups by name while preserving first-seen order.
+
+    Later groups override earlier groups with the same name, so user-defined
+    workflows still have the highest priority without duplicating entries.
+    """
+    merged: Dict[str, Dict] = {}
+    order: List[str] = []
+    for group in groups:
+        for wf in group:
+            name = wf["name"]
+            if name not in merged:
+                order.append(name)
+            merged[name] = wf
+    return [merged[name] for name in order if name in merged]
+
+
 # ── Cache ─────────────────────────────────────────────────────────────────────
 
 _CACHE: Optional[List[Dict]] = None
@@ -206,9 +242,10 @@ def _get_workflows() -> List[Dict]:
     global _CACHE
     if _CACHE is None:
         builtin = _load_from_dir(_BUILTIN_WORKFLOW_DIR, "builtin")
+        builtin_skill = _load_skill_workflows(_BUILTIN_SKILL_DIR, "skill")
+        project_skill = _load_skill_workflows(_PROJECT_USER_SKILL_DIR, "user_skill")
         user    = _load_from_dir(get_user_workflow_dir(), "user")
-        user_names = {w["name"] for w in user}
-        _CACHE = [w for w in builtin if w["name"] not in user_names] + user
+        _CACHE = _merge_workflow_groups(builtin, builtin_skill, project_skill, user)
     return _CACHE
 
 
@@ -325,7 +362,12 @@ def build_workflow_context(
     total = len(parts[0])
 
     for wf in hits:
-        tag = "【用户自定义】" if wf["source"] == "user" else ""
+        if wf["source"] == "user":
+            tag = "【用户自定义】"
+        elif wf["source"] in {"skill", "user_skill"}:
+            tag = f"【技能内置:{wf.get('skill_package', '')}】"
+        else:
+            tag = ""
 
         skill_parts = [
             f"`{s['name']}`" + (f"（{s['role']}）" if s.get("role") else "")
