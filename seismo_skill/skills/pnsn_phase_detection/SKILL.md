@@ -150,7 +150,10 @@ phase-pick columns; otherwise reject it as unrelated data.
 When picks are produced in the same script by `PNSNPicker.pick_stream(st)`, pass
 those pick dictionaries directly into `plot_stream(st, picks=picks, ...)`.
 `plot_stream` accepts the PNSN keys `time_abs` and `time_rel_s`, so do not
-discard or re-filter valid PNSN picks into an empty plotting list.
+discard or re-filter valid PNSN picks into an empty plotting list. Do not
+convert fresh PNSN picks with legacy text-file fields such as
+`phase_name`/`absolute_time`; those names are only for parsing existing PNSN
+text output files.
 
 Custom picking code should implement this workflow:
 

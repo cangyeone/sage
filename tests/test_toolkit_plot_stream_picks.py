@@ -5,12 +5,48 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-obspy = pytest.importorskip("obspy")
-
 from seismo_code.toolkit import plot_stream
 
 
+def test_plot_stream_accepts_relative_picks_without_obspy_objects(tmp_path):
+    class Stats:
+        network = "X1"
+        station = "53085"
+        location = "01"
+        channel = "BHZ"
+        starttime = 0.0
+        sampling_rate = 100.0
+
+    class Trace:
+        stats = Stats()
+        id = "X1.53085.01.BHZ"
+
+        def __init__(self):
+            self.data = np.sin(np.linspace(0, 20, 1000)).astype(np.float32)
+
+        def times(self):
+            return np.arange(self.data.size) / self.stats.sampling_rate
+
+    picks = [
+        {
+            "station": "X1.53085.01",
+            "channel": "BHZ",
+            "phase": "P",
+            "time_rel_s": 3.0,
+        }
+    ]
+    outfile = tmp_path / "matplotlib_relative_picks.png"
+
+    result = plot_stream([Trace()], title="Relative picks", outfile=str(outfile), picks=picks)
+
+    assert result == str(outfile)
+    assert outfile.exists()
+    assert outfile.stat().st_size > 0
+
+
 def test_plot_stream_accepts_pnsn_pick_time_fields_and_station_labels(tmp_path):
+    obspy = pytest.importorskip("obspy")
+
     start = obspy.UTCDateTime("2012-07-27T00:00:00")
     stream = obspy.Stream()
     for channel in ("BHZ", "BHN", "BHE"):

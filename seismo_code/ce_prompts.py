@@ -121,6 +121,12 @@ For Python scripts, the execution environment pre-injects these functions — ca
 - Preferred API for uploaded or already-read waveforms:
   `from seismo_skill.skills.pnsn_phase_detection.pnsn import PNSNPicker`;
   `picker = PNSNPicker()`; `picks = picker.pick_stream(st, incomplete="skip")`.
+- `PNSNPicker.pick_stream()` returns dictionaries with `phase`, `time_abs`, and
+  `time_rel_s`. For plotting in the same script, pass the raw `picks` list
+  directly to `plot_stream(st, picks=picks, ...)`; if saving CSV, create a
+  separate table but preserve those keys. Do not convert fresh PNSN picks using
+  legacy text-output fields `phase_name`/`absolute_time` unless you are parsing
+  an existing PNSN text file.
 - Do NOT implement STA/LTA as the primary picker unless the user explicitly asks for STA/LTA/classical trigger picking. If PNSN is unavailable, print a clear `[SAGE_TEST] PNSN unavailable: ...` diagnostic and stop, unless the user explicitly requested a classical fallback.
 - Do NOT treat `trigger_onset(...)[0][0]` or the first STA/LTA trigger as the final pick. Early filter/taper transients often create false triggers near the start of SAC records.
 - For an explicitly requested classical STA/LTA fallback, print all candidate trigger windows, ignore edge triggers near the record start, and choose physically plausible P/S candidates:

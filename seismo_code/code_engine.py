@@ -483,6 +483,23 @@ class CodeEngine:
                 "phase-picking code did not use the PNSN picker API/model; import PNSNPicker from seismo_skill.skills.pnsn_phase_detection.pnsn",
             )
         if phase_pick_req and re.search(r"绘制|画|叠加|标注|visuali[sz]e|plot|draw|overlay|annotat", original_request, re.I):
+            wrong_pnsn_conversion = bool(
+                pnsn_code
+                and re.search(r"for\s+\w+\s+in\s+picks\s*:", code)
+                and re.search(
+                    r"\.get\(\s*['\"](?:phase_name|absolute_time)['\"]",
+                    code,
+                )
+                and not re.search(
+                    r"\.get\(\s*['\"](?:phase|time_abs|time_rel_s)['\"]",
+                    code,
+                )
+            )
+            if wrong_pnsn_conversion:
+                return (
+                    False,
+                    "PNSNPicker returns phase/time_abs/time_rel_s dictionaries; pass raw picks to plot_stream or preserve those keys instead of converting from phase_name/absolute_time",
+                )
             pick_count_matches = re.findall(
                 r"(?:PNSN\s*)?(?:拾取到|picks?\s*[:=])\s*(\d+)|PNSN picks\s*[:：]\s*(\d+)",
                 stdout,

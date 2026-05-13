@@ -140,7 +140,9 @@ title="Waveform with phase picks")`, or manually draw vertical lines at
 If the same script just ran `PNSNPicker.pick_stream(st)`, the returned pick
 dictionaries can be passed directly to `plot_stream`; they already include
 `time_abs` and `time_rel_s`. Do not filter them out because the station label is
-compound, for example `X1.53085.01`.
+compound, for example `X1.53085.01`. Prefer this Matplotlib annotation path
+(`plot_stream` or manual `ax.axvline`) instead of ObsPy's built-in plotting
+when adding phase labels or confidence text.
 
 ```python
 print(f"[SAGE_TEST] plotted {len(picks)} picks from {pick_file}")

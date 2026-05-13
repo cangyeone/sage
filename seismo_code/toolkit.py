@@ -23,7 +23,8 @@ from __future__ import annotations
 import os
 import warnings
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -250,21 +251,43 @@ def _pick_station_matches_trace(pk: Dict, tr) -> bool:
     return bool(trace_tokens & pick_tokens) or sta in str(getattr(tr, "id", ""))
 
 
-def _pick_relative_seconds(pk: Dict, tr, obspy) -> Optional[float]:
-    """Resolve a pick dictionary to seconds relative to ``tr.stats.starttime``."""
-    for key in ("time", "time_abs", "absolute_time", "phase_time", "arrival_time"):
-        value = pk.get(key)
-        if value in (None, ""):
-            continue
-        if isinstance(value, (int, float, np.integer, np.floating)):
-            return float(value)
-        try:
-            return float(obspy.UTCDateTime(str(value)) - tr.stats.starttime)
-        except Exception:
-            try:
-                return float(value)
-            except Exception:
-                continue
+def _to_relative_seconds_without_obspy(value: Any, starttime: Any) -> Optional[float]:
+    """Convert absolute pick times to relative seconds without importing ObsPy."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return float(value)
+    try:
+        return float(value - starttime)
+    except Exception:
+        pass
+    try:
+        converted = starttime.__class__(str(value))
+        return float(converted - starttime)
+    except Exception:
+        pass
+    try:
+        v_dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if isinstance(starttime, datetime):
+            s_dt = starttime
+        else:
+            s_dt = datetime.fromisoformat(str(starttime).replace("Z", "+00:00"))
+        return (v_dt - s_dt).total_seconds()
+    except Exception:
+        pass
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _pick_relative_seconds(pk: Dict, tr) -> Optional[float]:
+    """Resolve a pick dictionary to seconds relative to ``tr.stats.starttime``.
+
+    Prefer explicit relative fields from PNSNPicker.  This keeps waveform
+    annotation a Matplotlib operation and avoids importing ObsPy only to parse
+    pick timestamps.
+    """
     for key in ("time_rel_s", "relative_time_s", "rel_time_s", "t", "arrival_time_s", "sample_time_s"):
         value = pk.get(key)
         if value in (None, ""):
@@ -273,6 +296,14 @@ def _pick_relative_seconds(pk: Dict, tr, obspy) -> Optional[float]:
             return float(value)
         except Exception:
             continue
+    starttime = getattr(getattr(tr, "stats", None), "starttime", None)
+    for key in ("time", "time_abs", "absolute_time", "phase_time", "arrival_time"):
+        value = pk.get(key)
+        if value in (None, ""):
+            continue
+        rel = _to_relative_seconds_without_obspy(value, starttime)
+        if rel is not None:
+            return rel
     return None
 
 
@@ -308,7 +339,6 @@ def plot_stream(
         保存的图像路径。
     """
     plt = _plt()
-    obspy = _obspy()
 
     n = len(st)
     if n == 0:
@@ -331,7 +361,7 @@ def plot_stream(
             for pk in picks:
                 if not _pick_station_matches_trace(pk, tr):
                     continue
-                rel = _pick_relative_seconds(pk, tr, obspy)
+                rel = _pick_relative_seconds(pk, tr)
                 if rel is None:
                     continue
                 if 0 <= rel <= times[-1]:

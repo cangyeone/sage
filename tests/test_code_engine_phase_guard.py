@@ -154,6 +154,40 @@ plot_stream(st, picks=plot_picks)
         self.assertFalse(ok)
         self.assertIn("zero picks were passed to plotting", reason)
 
+    def test_rejects_wrong_pnsn_field_conversion_for_plotting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fig = Path(tmp) / "waveform_with_picks.png"
+            Image.new("RGB", (4, 4), color="white").save(fig)
+            engine = CodeEngine(llm_config={"provider": "test", "api_base": "http://test", "model": "test"})
+            code = """
+from seismo_skill.skills.pnsn_phase_detection.pnsn import PNSNPicker
+picker = PNSNPicker()
+picks = picker.pick_stream(st, incomplete="skip")
+picks_data = []
+for p in picks:
+    picks_data.append({
+        'phase': p.get('phase_name', '?'),
+        'time': p.get('absolute_time'),
+        'station': p.get('station', ''),
+        'channel': p.get('channel', ''),
+        'confidence': p.get('confidence', None)
+    })
+plot_stream(st, picks=picks_data)
+"""
+            ok, reason = engine._mini_test_ok(
+                "检测震相并且绘制到波形上",
+                code,
+                ExecutionResult(
+                    success=True,
+                    stdout="[SAGE_TEST] PNSN 拾取到 3 个震相\n[SAGE_TEST] Converted 3 picks for plotting",
+                    figures=[str(fig)],
+                    exec_dir=tmp,
+                ),
+            )
+
+        self.assertFalse(ok)
+        self.assertIn("phase/time_abs/time_rel_s", reason)
+
 
 if __name__ == "__main__":
     unittest.main()
