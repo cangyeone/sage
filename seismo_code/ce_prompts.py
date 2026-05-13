@@ -117,13 +117,18 @@ For Python scripts, the execution environment pre-injects these functions — ca
 - `read_stream_from_dir(path)` is only for waveform directories, not CSV files.
 
 ## Phase Picking Guardrails
-- If the task is phase/arrival picking, prefer the injected `pnsn_phase_detection` skill workflow or PNSN model when available.
+- If the task is phase/arrival picking, the default implementation MUST use the injected `pnsn_phase_detection` skill workflow or the skill-local PNSN model at `seismo_skill/skills/pnsn_phase_detection/pnsn/pickers/`.
+- Preferred API for uploaded or already-read waveforms:
+  `from seismo_skill.skills.pnsn_phase_detection.pnsn import PNSNPicker`;
+  `picker = PNSNPicker()`; `picks = picker.pick_stream(st, incomplete="skip")`.
+- Do NOT implement STA/LTA as the primary picker unless the user explicitly asks for STA/LTA/classical trigger picking. If PNSN is unavailable, print a clear `[SAGE_TEST] PNSN unavailable: ...` diagnostic and stop, unless the user explicitly requested a classical fallback.
 - Do NOT treat `trigger_onset(...)[0][0]` or the first STA/LTA trigger as the final pick. Early filter/taper transients often create false triggers near the start of SAC records.
-- For a classical STA/LTA fallback, print all candidate trigger windows, ignore edge triggers near the record start, and choose physically plausible P/S candidates:
+- For an explicitly requested classical STA/LTA fallback, print all candidate trigger windows, ignore edge triggers near the record start, and choose physically plausible P/S candidates:
   - P: use the vertical component and choose the earliest robust trigger associated with the first sustained energy increase.
   - S: use horizontal-component energy and choose a later stronger trigger after the P arrival.
   - If all picks fall within the first few seconds while the waveform maximum is much later, fail the self-check and adjust thresholds/windows.
 - Save a pick table with station, channel/component, phase, absolute_time, relative_time_s, confidence/SNR, and add pick markers to the waveform plot.
+- If the user asks to draw/plot an existing pick result on a waveform, first search the current working directory, `SAGE_OUTDIR`, and authorized waveform directories for recent `*pick*.csv`, `*pick*.txt`, `pnsn_picks.csv`, or PNSN `<prefix>.txt` outputs. Parse PNSN text format with comment header lines (`# path/to/file`) and rows `phase_name,relative_time_s,confidence,absolute_time,SNR,AMP,station,extra`; do not re-pick with STA/LTA just because the file is not named `picks_table.csv`.
 
 ## CRITICAL — CSV column names
 When a [FILE CONTEXT] block is provided, use the EXACT column names shown.

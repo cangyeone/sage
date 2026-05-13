@@ -19,7 +19,12 @@ seismo_rag/*
 
 # User test / runtime artifacts
 /web_app/results/
-/seismo_skill/skills/pnsn_phase_detection/pnsn/
+# Keep the large external PNSN checkout, data, and model weights local, but
+# track the thin SAGE integration layer that exposes PNSNPicker.
+!/seismo_skill/skills/pnsn_phase_detection/pnsn/
+/seismo_skill/skills/pnsn_phase_detection/pnsn/*
+!/seismo_skill/skills/pnsn_phase_detection/pnsn/__init__.py
+!/seismo_skill/skills/pnsn_phase_detection/pnsn/sage_picker.py
 .aider.tags.cache.v4/
 /sci-agent-article
 # Large model files generated or downloaded during local tests
