@@ -37,6 +37,7 @@ import subprocess
 import sys
 import textwrap
 import urllib.request
+import hashlib
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
@@ -88,6 +89,7 @@ class CodeEngine:
         self.python_executable = python_executable or llm_config.get("python_executable")
         self._history: List[Dict] = [{"role": "system", "content": _CODEGEN_SYSTEM}]
         self._last_exec_dir: Optional[str] = None
+        self._repo_baseline_files: Dict[str, str] = {}
 
     # ── Config ────────────────────────────────────────────────────────────────
 
@@ -233,6 +235,110 @@ class CodeEngine:
             filtered.append(fp)
         return filtered[:limit]
 
+    def _repo_worktree_files(self) -> set[str]:
+        """Return modified/untracked worktree files."""
+        try:
+            proc = subprocess.run(
+                ["git", "status", "--short", "--untracked-files=all"],
+                cwd=self.project_root,
+                capture_output=True,
+                text=True,
+                timeout=8,
+                check=False,
+            )
+            files = set()
+            for line in proc.stdout.splitlines():
+                rel = line[3:].strip() if len(line) > 3 else ""
+                if " -> " in rel:
+                    rel = rel.split(" -> ", 1)[1].strip()
+                if rel:
+                    files.add(rel)
+            return files
+        except Exception:
+            return set()
+
+    def _repo_file_digest(self, rel: str) -> str:
+        path = Path(self.project_root) / rel
+        if not path.is_file():
+            return ""
+        try:
+            h = hashlib.sha256()
+            with path.open("rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    h.update(chunk)
+            return h.hexdigest()
+        except Exception:
+            return ""
+
+    def _repo_snapshot(self) -> Dict[str, str]:
+        return {rel: self._repo_file_digest(rel) for rel in self._repo_worktree_files()}
+
+    @staticmethod
+    def _repo_terms(request: str, limit: int = 10) -> List[str]:
+        """Extract search terms for codebase discovery."""
+        text = request or ""
+        quoted = re.findall(r"`([^`]{2,80})`|['\"]([A-Za-z_][\w.:-]{2,80})['\"]", text)
+        terms = [a or b for a, b in quoted if (a or b)]
+        for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}|[\u4e00-\u9fff]{2,}", text):
+            if token.lower() in {
+                "the", "and", "for", "with", "that", "this", "code", "file",
+                "function", "class", "test", "实现", "修复", "代码", "文件", "函数",
+            }:
+                continue
+            if token not in terms:
+                terms.append(token)
+        return terms[:limit]
+
+    def _repo_rg_hits(self, request: str, max_hits: int = 80) -> List[str]:
+        """Run targeted rg searches and return compact file:line hits."""
+        hits: List[str] = []
+        for term in self._repo_terms(request):
+            try:
+                proc = subprocess.run(
+                    ["rg", "-n", "--glob", "!third_party/aider/**", "--glob", "!seismo_rag/**", term],
+                    cwd=self.project_root,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+            except Exception:
+                continue
+            for line in proc.stdout.splitlines():
+                if line and line not in hits:
+                    hits.append(line[:260])
+                    if len(hits) >= max_hits:
+                        return hits
+        return hits
+
+    def _repo_symbol_index(self, max_lines: int = 160) -> List[str]:
+        """Collect function/class/route symbols for fast location awareness."""
+        patterns = [
+            r"^\s*(def|class)\s+[A-Za-z_][A-Za-z0-9_]*",
+            r"^\s*@(?:bp|app)\.route\(",
+            r"^\s*(async\s+)?function\s+[A-Za-z_][A-Za-z0-9_]*",
+            r"^\s*(export\s+)?(const|let|var)\s+[A-Za-z_][A-Za-z0-9_]*\s*=",
+        ]
+        symbols: List[str] = []
+        for pat in patterns:
+            try:
+                proc = subprocess.run(
+                    ["rg", "-n", "--glob", "!third_party/aider/**", "--glob", "!seismo_rag/**", pat],
+                    cwd=self.project_root,
+                    capture_output=True,
+                    text=True,
+                    timeout=6,
+                    check=False,
+                )
+            except Exception:
+                continue
+            for line in proc.stdout.splitlines():
+                if line and line not in symbols:
+                    symbols.append(line[:220])
+                    if len(symbols) >= max_lines:
+                        return symbols
+        return symbols
+
     @staticmethod
     def _score_repo_file(path: str, request: str) -> int:
         text = (request or "").lower()
@@ -256,8 +362,16 @@ class CodeEngine:
         files = self._repo_file_list()
         if not files:
             return ""
+        rg_hits = self._repo_rg_hits(request)
+        hit_files = []
+        for hit in rg_hits:
+            rel = hit.split(":", 1)[0]
+            if rel and rel not in hit_files:
+                hit_files.append(rel)
         ranked = sorted(files, key=lambda f: self._score_repo_file(f, request), reverse=True)
-        selected = [f for f in ranked if self._score_repo_file(f, request) > 0][:max_files]
+        selected = hit_files[:max_files]
+        selected += [f for f in ranked if self._score_repo_file(f, request) > 0 and f not in selected]
+        selected = selected[:max_files]
         if not selected:
             selected = ranked[:min(6, len(ranked))]
 
@@ -266,6 +380,10 @@ class CodeEngine:
             "Project root: " + self.project_root,
             "Relevant files selected from `rg --files` (not exhaustive):",
             "\n".join(f"- {f}" for f in ranked[:80]),
+            "\n## Targeted `rg` hits",
+            "\n".join(f"- {h}" for h in rg_hits[:80]) or "(no direct text hits)",
+            "\n## Symbol / route index",
+            "\n".join(f"- {s}" for s in self._repo_symbol_index()[:120]),
             "\n## Relevant File Snippets",
         ]
         used = sum(len(p) for p in parts)
@@ -286,8 +404,13 @@ class CodeEngine:
         parts.append(
             "\n## Repository Editing Rules\n"
             "- If the task is to change the SAGE codebase, generate a Python script that edits files under the project root.\n"
+            "- You MAY edit multiple files and create new modules/tests when the task requires it.\n"
+            "- For non-trivial behavior changes, add, insert, update, or delete focused unit tests under `tests/`.\n"
+            "- Deleting test code is allowed only when the test is obsolete, asserts the wrong behavior, or is replaced by equivalent/better coverage; print the reason.\n"
             "- Prefer structured file edits with pathlib and small helper functions; do not rewrite unrelated files.\n"
-            "- Print changed file paths and include `[SAGE_TEST]` checks such as py_compile, syntax checks, or targeted API checks.\n"
+            "- Run validation inside the script with subprocess using cwd=PROJECT_ROOT: py_compile for changed Python files and targeted pytest for changed tests.\n"
+            "- Print changed file paths and include `[SAGE_TEST]` checks such as py_compile, pytest, syntax checks, or targeted API checks.\n"
+            "- When locating behavior, use the provided `rg` hits and symbol index before editing.\n"
             "- Do not modify files under `third_party/aider` unless the user explicitly asks."
         )
         return "\n\n".join(parts)
@@ -305,6 +428,81 @@ class CodeEngine:
             return (proc.stdout or "").strip()
         except Exception:
             return ""
+
+    def _repo_new_changed_files(self) -> List[str]:
+        current = {rel: self._repo_file_digest(rel) for rel in self._repo_worktree_files()}
+        changed = [
+            rel for rel, digest in current.items()
+            if self._repo_baseline_files.get(rel) != digest
+        ]
+        return sorted(changed)
+
+    @staticmethod
+    def _repo_behavior_change_request(text: str) -> bool:
+        return bool(re.search(
+            r"\b(fix|implement|add|update|refactor|change|support|create|delete|remove)\b"
+            r"|修复|实现|添加|更新|重构|支持|创建|删除|改成|改为",
+            text or "",
+            re.I,
+        ))
+
+    def _run_repo_validation(
+        self,
+        request: str,
+        changed_files: List[str],
+        timeout: int = 90,
+    ) -> tuple[bool, str]:
+        """Run deterministic validation for repository edits."""
+        if not changed_files:
+            if self._repo_behavior_change_request(request):
+                return False, "repo coding task made no codebase changes"
+            return True, "[SAGE_TEST] repository inspection completed without edits"
+
+        messages: List[str] = []
+        py_files = [
+            f for f in changed_files
+            if f.endswith(".py") and Path(self.project_root, f).is_file()
+        ]
+        if py_files:
+            cmd = [sys.executable, "-m", "py_compile", *py_files]
+            proc = subprocess.run(
+                cmd,
+                cwd=self.project_root,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+            if proc.returncode != 0:
+                return False, "py_compile failed:\n" + (proc.stderr or proc.stdout)[-3000:]
+            messages.append(f"[SAGE_TEST] py_compile passed for {len(py_files)} file(s)")
+
+        test_files = [
+            f for f in changed_files
+            if (f.startswith("tests/") or "/tests/" in f) and f.endswith(".py")
+            and Path(self.project_root, f).is_file()
+        ]
+        if test_files:
+            cmd = [sys.executable, "-m", "pytest", *test_files]
+            proc = subprocess.run(
+                cmd,
+                cwd=self.project_root,
+                capture_output=True,
+                text=True,
+                timeout=max(timeout, 180),
+                check=False,
+            )
+            if proc.returncode != 0:
+                return False, "pytest failed:\n" + (proc.stdout + "\n" + proc.stderr)[-5000:]
+            messages.append(f"[SAGE_TEST] pytest passed for {len(test_files)} test file(s)")
+        elif self._repo_behavior_change_request(request) and py_files:
+            messages.append(
+                "[SAGE_TEST] warning: code changed but no focused test file was changed"
+            )
+
+        if not messages:
+            messages.append("[SAGE_TEST] repository files changed: " + ", ".join(changed_files[:12]))
+        return True, "\n".join(messages)
 
     # ── Output checkers ───────────────────────────────────────────────────────
 
@@ -743,6 +941,9 @@ class CodeEngine:
             self._raise_if_cancelled(cancel_event)
             if output_dir:
                 Path(output_dir).mkdir(parents=True, exist_ok=True)
+            repo_task = self._looks_like_repo_task(user_request)
+            if repo_task:
+                self._repo_baseline_files = self._repo_snapshot()
 
             # 1. Profile files mentioned in the request
             file_contexts: List[str] = []
@@ -761,7 +962,7 @@ class CodeEngine:
             if file_contexts:
                 msg += "\n\n" + "\n\n".join(file_contexts)
             repo_ctx = ""
-            if self._looks_like_repo_task(user_request):
+            if repo_task:
                 self._emit(on_progress, "analyzing", 0, "Building repository context…")
                 repo_ctx = self._build_repo_context(user_request)
                 if repo_ctx:
@@ -793,9 +994,10 @@ class CodeEngine:
                 system += (
                     "\n\n## Built-in Coding Agent Mode\n"
                     "You are working as SAGE's built-in repository coding agent. "
-                    "Use the repository context to make minimal, coherent codebase edits. "
+                    "Use the repository context to make minimal, coherent codebase edits across as many files as needed. "
                     "Borrow Aider-style discipline: inspect relevant files, edit only what is needed, "
-                    "run a focused check, and print a concise diff summary."
+                    "add/update focused tests for behavioral changes, run py_compile/pytest checks, and print a concise diff summary. "
+                    "The generated script should be an edit-and-test driver, not the final application code."
                 )
 
             messages = [{"role": "system", "content": system}] + \
@@ -873,6 +1075,15 @@ class CodeEngine:
             self._raise_if_cancelled(cancel_event)
             if self._execution_success(exec_res):
                 test_ok, test_reason = self._mini_test_ok(user_request, code, exec_res)
+                if test_ok and repo_task:
+                    changed = self._repo_new_changed_files()
+                    test_ok, test_reason = self._run_repo_validation(user_request, changed)
+                    if test_ok:
+                        from dataclasses import replace as _dc_replace
+                        exec_res = _dc_replace(
+                            exec_res,
+                            stdout=(exec_res.stdout or "") + "\n" + test_reason,
+                        )
                 if test_ok:
                     break
                 from dataclasses import replace as _dc_replace
@@ -911,6 +1122,15 @@ class CodeEngine:
 
             if self._execution_success(exec_res):
                 test_ok, test_reason = self._mini_test_ok(user_request, code, exec_res)
+                if test_ok and repo_task:
+                    changed = self._repo_new_changed_files()
+                    test_ok, test_reason = self._run_repo_validation(user_request, changed)
+                    if test_ok:
+                        from dataclasses import replace as _dc_replace
+                        exec_res = _dc_replace(
+                            exec_res,
+                            stdout=(exec_res.stdout or "") + "\n" + test_reason,
+                        )
                 if test_ok:
                     debug_trace.append(DebugAttempt(
                         attempt=attempt, diagnosis=f"Fixed: {diagnosis}",
@@ -932,6 +1152,15 @@ class CodeEngine:
         final_success = self._execution_success(exec_res)
         if final_success:
             final_success, mini_note = self._mini_test_ok(user_request, code, exec_res)
+            if final_success and 'repo_task' in locals() and repo_task:
+                changed = self._repo_new_changed_files()
+                final_success, mini_note = self._run_repo_validation(user_request, changed)
+                if final_success:
+                    from dataclasses import replace as _dc_replace
+                    exec_res = _dc_replace(
+                        exec_res,
+                        stdout=(exec_res.stdout or "") + "\n" + mini_note,
+                    )
             if not final_success:
                 from dataclasses import replace as _dc_replace
                 exec_res = _dc_replace(
@@ -950,7 +1179,7 @@ class CodeEngine:
                               if not l.startswith("[FIGURE]")).strip()
             if clean:
                 summary += f"\nOutput (truncated):\n{clean[:400]}"
-        diff_stat = self._git_diff_summary() if self._looks_like_repo_task(user_request) else ""
+        diff_stat = self._git_diff_summary() if ('repo_task' in locals() and repo_task) else ""
         if diff_stat:
             summary += "\nGit diff stat:\n" + diff_stat[:1200]
         if exec_res and not final_success:

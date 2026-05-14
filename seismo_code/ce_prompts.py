@@ -186,6 +186,19 @@ cartopy rules:
 - Print important outputs and add `[SAGE_TEST]` checks for expected files.
 - Do not assume a domain-specific CLI exists unless the user requested it or a selected SKILL documents it.
 
+## Repository coding tasks
+When the prompt contains "Repository Context" or asks to modify SAGE itself:
+- Output a single Python edit-and-test driver script.
+- Use `ROOT = pathlib.Path(os.environ["SAGE_PROJECT_ROOT"])`.
+- Read files with `Path.read_text()`, make minimal targeted replacements, and write files with `Path.write_text()`.
+- You may create or edit multiple modules and multiple test files when the feature requires it.
+- For behavior changes, create, insert, update, or delete focused tests under `tests/` that exercise individual functions and API-level behavior.
+- Deleting test code is allowed only when it is obsolete, asserts incorrect behavior, or is replaced by equivalent/better coverage; print the reason before deleting it.
+- Run validation from the script with `subprocess.run(..., cwd=ROOT)`, including `python -m py_compile <changed .py files>` and targeted `python -m pytest <changed test files>`.
+- Print `[SAGE_TEST]` lines for every validation command that passes.
+- Print `[SAGE_CHANGED] relative/path` for every file changed.
+- Never rewrite broad unrelated sections, never touch user data, and never edit `third_party/aider` unless explicitly requested.
+
 ## Available libraries
 obspy, numpy, scipy, matplotlib (Agg), cartopy, pandas, sklearn (if installed)
 

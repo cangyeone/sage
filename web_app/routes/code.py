@@ -320,6 +320,15 @@ def chat_route():
     if paper_read_request:
         return jsonify({'ok': True, 'intent': 'qa', 'rule': 'paper_read_guard'})
 
+    codebase_re = _re.compile(
+        r'(代码库|源码|仓库|项目代码|函数|类|接口|API|route|blueprint|endpoint|'
+        r'在哪里|在哪|位置|定位|搜索|查找|修改.*代码|修复.*代码|'
+        r'codebase|source code|repository|repo|where is|locate|find.*function|search.*code)',
+        _re.I,
+    )
+    if codebase_re.search(msg_stripped):
+        return jsonify({'ok': True, 'intent': 'code', 'rule': 'codebase_guard'})
+
     # ── 唯一快速路径：含绝对路径且无问号 → 必然是 code，无需问 LLM ─────────
     has_path = bool(_re.search(r'(?:^|[\s\u4e00-\u9fff，。：、])[/~][\w./\-]{4,}', message))
     ends_q   = bool(_re.search(r'[?？]\s*$', msg_stripped))
