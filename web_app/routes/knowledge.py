@@ -8,6 +8,7 @@ import uuid as _uuid
 from pathlib import Path
 from datetime import datetime
 from werkzeug.utils import secure_filename
+from sage_paths import sage_home
 from state import (
     _kb_dir_status, _kb_dir_jobs, _ref_kb_dir_status, _ref_kb_jobs,
     _PROJECT_ROOT, _REF_KNOWLEDGE_DIR, _REF_KB_MANIFEST_DIR, tasks,
@@ -325,7 +326,7 @@ def knowledge_status():
 def get_embedding_config():
     """返回当前嵌入模型配置（路径）。"""
     try:
-        cfg_file = Path.home() / ".seismicx" / "config.json"
+        cfg_file = sage_home("config.json")
         cfg = {}
         if cfg_file.exists():
             import json as _json
@@ -338,13 +339,13 @@ def get_embedding_config():
 
 @bp.route('/api/knowledge/embedding_config', methods=['POST'])
 def set_embedding_config():
-    """保存嵌入模型本地路径到 ~/.seismicx/config.json"""
+    """保存嵌入模型本地路径到项目内 .seismicx/config.json"""
     try:
         import json as _json
         data = request.get_json(force=True) or {}
         model_path = str(data.get("model_path", "")).strip()
 
-        cfg_file = Path.home() / ".seismicx" / "config.json"
+        cfg_file = sage_home("config.json")
         cfg = {}
         if cfg_file.exists():
             try:

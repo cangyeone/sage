@@ -15,6 +15,7 @@ seismo_rag/*
 !seismo_rag/.gitkeep
 /deliverables
 .sage_runtime/
+/.seismicx/
 /web_app/examples/science_analysis_agent
 
 # User test / runtime artifacts

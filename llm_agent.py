@@ -631,7 +631,7 @@ class OllamaUnavailable(RuntimeError):
 # ------------------------------------------------------------------
 
 def build_agent_from_config(skill_executor, context) -> Optional[OllamaToolAgent]:
-    """根据 ~/.seismicx/config.json 构建 agent；不可用时返回 None。
+    """根据项目内 .seismicx/config.json 构建 agent；不可用时返回 None。
     
     支持 Ollama 和 OpenAI-compatible 在线 API（DeepSeek、Qwen、SiliconFlow 等）。
     """

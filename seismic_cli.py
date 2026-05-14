@@ -1013,7 +1013,7 @@ def setup_backend_parser(subparsers):
 
   # 安装并启动 vLLM
   sage backend install vllm
-  sage backend use vllm --model ~/.seismicx/models/Qwen2.5-7B-Instruct
+  sage backend use vllm --model .seismicx/models/Qwen2.5-7B-Instruct
   sage backend start-vllm
   sage backend stop-vllm
 
@@ -1398,7 +1398,7 @@ def handle_skill_command(args):
         if detail['source'] != 'user':
             print(f"✗ 内置技能不可编辑。")
             print(f"  可以复制后另存为自定义技能：")
-            print(f"  python seismic_cli.py skill show {args.name} > ~/.seismicx/skills/{args.name}_custom.md")
+            print(f"  python seismic_cli.py skill show {args.name} > .seismicx/skills/{args.name}_custom.md")
             sys.exit(1)
 
         editor = args.editor or os.environ.get('EDITOR', 'vi')
@@ -1702,6 +1702,9 @@ def _check_knowledge_dir():
     支持 Ctrl+C 中断（中断后进度已保存，下次可继续）。
     仅在有 pending 文档时弹出提示，不影响正常启动流程。
     """
+    if os.environ.get("SAGE_SKIP_KNOWLEDGE_CHECK", "").strip().lower() in ("1", "true", "yes", "on"):
+        return
+
     try:
         from seismo_skill.knowledge_indexer import KnowledgeIndexer
         indexer = KnowledgeIndexer()

@@ -4,13 +4,15 @@ LLM Configuration Manager
 
 Manages LLM model selection and configuration for SeismicX.
 Supports Ollama / vLLM / online API (via BackendManager).
-Configuration is saved to ~/.seismicx/config.json
+Configuration is saved to the project-local .seismicx/config.json
 """
 
 import os
 import json
 from pathlib import Path
 from typing import Dict, List, Optional
+
+from sage_paths import SAGE_HOME, ensure_sage_home
 
 
 ONLINE_PROVIDER_DEFAULTS = {
@@ -94,7 +96,7 @@ class LLMConfigManager:
     """Manages LLM configuration for SeismicX"""
 
     def __init__(self):
-        self.config_dir = Path.home() / '.seismicx'
+        self.config_dir = ensure_sage_home()
         self.config_file = self.config_dir / 'config.json'
         self.config_dir.mkdir(exist_ok=True)
         self.config = self._load_config()
@@ -124,7 +126,7 @@ class LLMConfigManager:
     def save_config(self):
         """Save configuration to file"""
         # Project-scoped runtime settings live in seismo_rag/project_config.json,
-        # not in ~/.seismicx/config.json. Keep the user config limited to LLM
+        # not in .seismicx/config.json. Keep the config limited to LLM
         # credentials/model choices so project cleanup stays simple.
         for project_key in ('search', 'app_paths', 'workspace'):
             self.config.pop(project_key, None)

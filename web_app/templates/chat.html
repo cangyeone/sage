@@ -53,6 +53,13 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
 .date-group.collapsed .date-group-body { display:none; }
 .date-group-caret { transition:transform .15s; }
 .date-group.collapsed .date-group-caret { transform:rotate(-90deg); }
+.date-group-pager { display:flex; align-items:center; justify-content:flex-end; gap:.3rem;
+  color:#8a8fa6; font-size:.68rem; padding:.12rem .18rem .02rem; }
+.date-page-btn { border:1px solid #e0e4f2; background:#fff; color:#667085; border-radius:6px;
+  width:1.35rem; height:1.25rem; display:inline-flex; align-items:center; justify-content:center;
+  line-height:1; padding:0; }
+.date-page-btn:hover:not(:disabled) { border-color:#c8d0ff; color:#3949ab; background:#f7f8ff; }
+.date-page-btn:disabled { opacity:.38; cursor:default; }
 .kb-info { font-size:.78rem; color:#888; padding:.25rem .5rem; }
 .run-list { display:flex; flex-direction:column; gap:.25rem; }
 .run-item { border:1px solid #edf0f6; background:#fff; border-radius:8px; padding:.38rem .45rem;
@@ -331,18 +338,6 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
       <a href="/knowledge" class="btn btn-sm btn-outline-secondary w-100 mt-2" style="font-size:.78rem;">
         <i class="bi bi-gear"></i> <span data-i18n="sb_manage_kb">管理知识库</span>
       </a>
-    </div>
-    <div class="sb-section">
-      <div class="d-flex align-items-center justify-content-between mb-2">
-        <div class="sb-title mb-0"><i class="bi bi-play-circle me-1"></i><span data-i18n="sb_runs">可复现实验</span></div>
-        <button class="btn btn-sm btn-outline-primary" id="smokeDemoBtn" style="font-size:.72rem;padding:.12rem .45rem" onclick="runSmokeDemo()"
-                data-i18n-title="smoke_run_tip" title="运行内置 smoke workflow">
-          <i class="bi bi-play-fill"></i> <span data-i18n="smoke_run">Smoke</span>
-        </button>
-      </div>
-      <div id="runList" class="run-list">
-        <div class="kb-info text-muted" data-i18n="runs_empty">暂无运行记录</div>
-      </div>
     </div>
     <div class="sb-section">
       <div class="sb-title"><i class="bi bi-person-x me-1"></i><span data-i18n="sb_privacy">个性化</span></div>
@@ -635,7 +630,6 @@ function applyLang() {
   try { renderProjectControls(); } catch(e) {}
   try { refreshSessionSidebar(); } catch(e) {}
   try { loadKbStatus(); } catch(e) {}
-  try { renderRunList(); } catch(e) {}
   try { _applyThinkPill(); } catch(e) {}
   try { _applyChatWebSearchPill(); } catch(e) {}
   try { loadLlmStatus(); } catch(e) {}
@@ -657,6 +651,7 @@ const ACTIVE_CONV_KEY = 'sage_chat_active_conversation';
 const PROJECT_STORE_KEY = 'sage_chat_projects_v1';
 const ACTIVE_PROJECT_KEY = 'sage_chat_active_project';
 const COLLAPSE_STORE_KEY = 'sage_sidebar_collapsed_groups_v1';
+const DATE_GROUP_PAGE_SIZE = 5;
 
 function _newProject(title='') {
   return {
@@ -723,6 +718,7 @@ let _serverSaveTimer = null;
 let _serverSyncPaused = false;
 let collapsedGroups = {};
 try { collapsedGroups = JSON.parse(localStorage.getItem(COLLAPSE_STORE_KEY) || '{}'); } catch(e) {}
+let dateGroupPages = {};
 
 function latestConversationTs(list) {
   return Math.max(0, ...((list || []).map(c => Number(c.updatedAt || c.createdAt || 0))));
@@ -897,16 +893,42 @@ function toggleDateGroup(kind, label) {
   else renderConversationLists();
 }
 
+function setDateGroupPage(kind, label, page) {
+  const key = `${kind}:${label}`;
+  dateGroupPages[key] = Math.max(0, Number(page || 0));
+  if (kind === 'project') renderProjectControls();
+  else renderConversationLists();
+}
+
+function jsStringArg(value) {
+  return `'${String(value || '')
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '\\x3c')
+    .replace(/>/g, '\\x3e')}'`;
+}
+
 function renderDateGroups(kind, groups, renderItem) {
   return groups.map(g => {
     const key = `${kind}:${g.label}`;
     const collapsed = !!collapsedGroups[key];
+    const totalPages = Math.max(1, Math.ceil(g.items.length / DATE_GROUP_PAGE_SIZE));
+    const page = Math.min(Math.max(0, Number(dateGroupPages[key] || 0)), totalPages - 1);
+    dateGroupPages[key] = page;
+    const visibleItems = g.items.slice(page * DATE_GROUP_PAGE_SIZE, (page + 1) * DATE_GROUP_PAGE_SIZE);
+    const labelArg = jsStringArg(g.label);
+    const pager = totalPages > 1 ? `<div class="date-group-pager">
+      <button class="date-page-btn" title="Previous page" ${page <= 0 ? 'disabled' : ''} onclick="setDateGroupPage('${kind}', ${labelArg}, ${page - 1})"><i class="bi bi-chevron-left"></i></button>
+      <span>${page + 1}/${totalPages}</span>
+      <button class="date-page-btn" title="Next page" ${page >= totalPages - 1 ? 'disabled' : ''} onclick="setDateGroupPage('${kind}', ${labelArg}, ${page + 1})"><i class="bi bi-chevron-right"></i></button>
+    </div>` : '';
     return `<div class="date-group ${collapsed ? 'collapsed' : ''}">
-      <button class="date-group-head" onclick="toggleDateGroup('${kind}', '${_esc(g.label).replace(/'/g, "\\'")}')">
+      <button class="date-group-head" onclick="toggleDateGroup('${kind}', ${labelArg})">
         <span>${_esc(g.label)}</span>
         <span><span style="opacity:.65">${g.items.length}</span> <i class="bi bi-chevron-down date-group-caret"></i></span>
       </button>
-      <div class="date-group-body">${g.items.map(renderItem).join('')}</div>
+      <div class="date-group-body">${visibleItems.map(renderItem).join('')}${pager}</div>
     </div>`;
   }).join('');
 }
@@ -3763,7 +3785,6 @@ document.addEventListener('DOMContentLoaded', _resumePendingJob);
 
 // Init
 loadKbStatus();
-loadRunRecords();
 loadWorkspace();
 loadLlmStatus();
 document.getElementById('userInput').focus();

@@ -9,8 +9,8 @@ seismo_skill — 地震学技能文档库 + 工作流系统
   seismo_skill/user_skills/ 项目内用户自定义技能（运行时）
   seismo_skill/workflows/   内置工作流 .md 文件
   seismo_skill/knowledge/   知识文档目录（供 RAG 索引）
-  ~/.seismicx/skills/       旧版兼容读取目录（不再写入）
-  ~/.seismicx/workflows/    用户自定义工作流（运行时）
+  .seismicx/skills/         项目内导入技能目录
+  .seismicx/workflows/      项目内自定义工作流
 """
 
 from . import skill_loader

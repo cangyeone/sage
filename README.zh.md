@@ -24,8 +24,87 @@ SAGE 是一个 **Web 优先** 的地震学与地球物理 AI 工作台。它把�
 
 ---
 
+## 从这里开始：用 `sagectl.sh` 一键启动
+
+对大多数用户来说，`sagectl.sh` 是唯一需要记住的命令。它会检查 Python 环境、在需要时安装依赖、保留你上次选择的 LLM 后端、后台启动 SAGE Web 服务，并打开浏览器。
+
+```bash
+git clone --recurse-submodules https://github.com/cangyeone/sage.git
+cd sage
+chmod +x sagectl.sh
+./sagectl.sh
+```
+
+默认访问地址：
+
+```text
+http://127.0.0.1:5010
+```
+
+### `sagectl.sh` 会做什么
+
+- 自动寻找可用 Python 环境，推荐 Python 3.9-3.12。
+- 如果当前环境依赖不完整，会创建/使用 `.venv/` 并安装依赖。
+- 执行轻量后端配置，但不会因为知识库增量扫描提示而打断启动。
+- 保留上次选择的后端，例如 DeepSeek；不会因为 Ollama 正在运行就自动切回 Ollama。
+- 后台启动 `web_app/app.py`，日志写入 `.sage_runtime/logs/`。
+- 将运行时数据放在项目内 `.seismicx/`，包括配置、运行记录、本地模型路径、工作流和知识库元数据，便于整体管理和迁移。
+
+### 日常命令
+
+```bash
+./sagectl.sh              # 需要时安装依赖、配置、启动、打开浏览器
+./sagectl.sh status       # 查看服务状态、URL、运行目录和日志路径
+./sagectl.sh logs         # 实时查看 Web 服务日志
+./sagectl.sh stop         # 停止后台 Web 服务
+./sagectl.sh start        # 启动后台 Web 服务
+./sagectl.sh restart      # 重启 Web 服务
+./sagectl.sh open         # 在浏览器打开 Web UI
+./sagectl.sh doctor       # 检查 Python、依赖、端口和后端状态
+```
+
+### 常用选项
+
+换端口：
+
+```bash
+SAGE_PORT=5011 ./sagectl.sh
+```
+
+启动但不自动打开浏览器：
+
+```bash
+SAGE_AUTO_OPEN=0 ./sagectl.sh
+```
+
+选择脚本输出语言。默认是英文：
+
+```bash
+./sagectl.sh --lang en
+./sagectl.sh --lang zh
+SAGE_LANG=zh ./sagectl.sh
+```
+
+自定义项目运行目录。默认是仓库内 `.seismicx/`：
+
+```bash
+SAGE_HOME=/path/to/project/.seismicx ./sagectl.sh
+```
+
+如果使用本地 Ollama 模型：
+
+```bash
+./sagectl.sh ollama-start
+ollama pull qwen3:8b
+```
+
+SAGE 是 Web 优先的工具：服务启动后，在浏览器使用 `/chat`、`/knowledge`、`/skills`、`/llm-settings`、`/science-analysis-agent` 和 `/parameter-optimization-agent`。
+
+---
+
 ## 目录
 
+- [从这里开始：用 `sagectl.sh` 一键启动](#从这里开始用-sagectlsh-一键启动)
 - [功能概览](#功能概览)
 - [系统架构](#系统架构)
 - [快速开始](#快速开始)

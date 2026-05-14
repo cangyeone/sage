@@ -18,6 +18,9 @@ SAGE_PORT="${SAGE_PORT:-5010}"
 SAGE_VENV="${SAGE_VENV:-$ROOT_DIR/.venv}"
 SAGE_RUNTIME_DIR="${SAGE_RUNTIME_DIR:-$ROOT_DIR/.sage_runtime}"
 SAGE_AUTO_OPEN="${SAGE_AUTO_OPEN:-1}"
+SAGE_LANG="${SAGE_LANG:-en}"
+SAGE_HOME="${SAGE_HOME:-$ROOT_DIR/.seismicx}"
+export SAGE_HOME
 
 LOG_DIR="$SAGE_RUNTIME_DIR/logs"
 PID_FILE="$SAGE_RUNTIME_DIR/sage_web.pid"
@@ -52,11 +55,15 @@ Usage:
   ./sagectl.sh ollama-start    Start Ollama in background if installed
   ./sagectl.sh ollama-stop     Stop Ollama only if started by this script
   ./sagectl.sh ollama-status   Show Ollama status
+  ./sagectl.sh --lang zh up    Run script output in Chinese
+  ./sagectl.sh --lang en up    Run script output in English
 
 Environment overrides:
   SAGE_PORT=5011 ./sagectl.sh start
   SAGE_HOST=0.0.0.0 ./sagectl.sh start
   SAGE_AUTO_OPEN=0 ./sagectl.sh up
+  SAGE_LANG=zh ./sagectl.sh up
+  SAGE_HOME=/path/to/project/.seismicx ./sagectl.sh up
   SAGE_PYTHON=/Users/anaconda3/bin/python ./sagectl.sh start
   SAGE_VENV=/path/to/venv ./sagectl.sh setup
 
@@ -173,6 +180,8 @@ SAGE_URL=http://$SAGE_HOST:$SAGE_PORT
 SAGE_VENV=$SAGE_VENV
 SAGE_PYTHON=$(python_cmd)
 SAGE_RUNTIME_DIR=$SAGE_RUNTIME_DIR
+SAGE_LANG=$SAGE_LANG
+SAGE_HOME=$SAGE_HOME
 WEB_LOG=$WEB_LOG
 PID_FILE=$PID_FILE
 EOF
@@ -208,8 +217,7 @@ configure_sage() {
   write_env_file
   info "Running lightweight backend auto-configuration"
   if [[ -f "$ROOT_DIR/seismic_cli.py" ]]; then
-    "$py" "$ROOT_DIR/seismic_cli.py" backend auto || warn "Backend auto-configuration skipped or failed; you can still configure models in the web Config page."
-    "$py" "$ROOT_DIR/seismic_cli.py" backend status || true
+    SAGE_SKIP_KNOWLEDGE_CHECK=1 "$py" "$ROOT_DIR/seismic_cli.py" backend auto || warn "Backend auto-configuration skipped or failed; you can still configure models in the web Config page."
   else
     warn "seismic_cli.py not found; skipping CLI backend configuration"
   fi
@@ -407,6 +415,29 @@ up() {
     open_web
   fi
 }
+
+while [[ $# -gt 0 ]]; do
+  case "${1:-}" in
+    --lang)
+      [[ $# -ge 2 ]] || fail "--lang requires: en or zh"
+      SAGE_LANG="$2"
+      shift 2
+      ;;
+    --lang=*)
+      SAGE_LANG="${1#--lang=}"
+      shift
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+case "$SAGE_LANG" in
+  en|zh|zh-CN|zh_TW|zh-TW) ;;
+  *) fail "Unsupported SAGE_LANG=$SAGE_LANG. Use en or zh." ;;
+esac
+export SAGE_LANG
 
 cmd="${1:-up}"
 case "$cmd" in

@@ -72,7 +72,7 @@ _MANIFEST_FILE = _KB_DIR / "dir_manifest.json"
 # 项目级 manifest 存储（folder → skill 映射）
 _PROJ_MANIFEST_FILE = _KB_DIR / "proj_manifest.json"
 
-# 项目内用户 Skill 存储目录。不要写入 ~/.seismicx/skills，便于项目清理和隔离。
+# 项目内用户 Skill 存储目录。不要写入 HOME，便于项目清理和隔离。
 _USER_SKILL_DIR = Path(__file__).parent / "user_skills"
 _BUILTIN_SKILL_DIR = Path(__file__).parent / "skills"
 _DOC_SKILL_GENERATOR = "seismo_skill_docs_builder"

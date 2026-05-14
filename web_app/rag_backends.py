@@ -15,7 +15,7 @@ FaissIndex
     after L2-normalisation of all vectors).
 
 get_embedding_model_path()
-    Reads ~/.seismicx/config.json → embedding.model_path.
+    Reads project-local .seismicx/config.json → embedding.model_path.
     Defaults to project-local "open_models/bge-m3" when present, otherwise
     "BAAI/bge-m3" (HuggingFace hub).
 """
@@ -33,12 +33,13 @@ from typing import List, Optional, Tuple
 
 def get_embedding_model_path() -> str:
     """
-    Read the embedding model path from ~/.seismicx/config.json.
+    Read the embedding model path from project-local .seismicx/config.json.
     Falls back to project-local open_models/bge-m3 if present; otherwise
     "BAAI/bge-m3" if the config is absent or the key is missing.
     """
     try:
-        cfg_file = Path.home() / ".seismicx" / "config.json"
+        from sage_paths import sage_home
+        cfg_file = sage_home("config.json")
         if cfg_file.exists():
             cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
             path = cfg.get("embedding", {}).get("model_path", "").strip()

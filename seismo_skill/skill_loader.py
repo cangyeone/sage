@@ -9,7 +9,7 @@ skill_loader.py — seismo_skill 技能引擎 v2
 从三个目录加载技能：
   1. seismo_skill/skills/         内置技能（随项目发布）
   2. seismo_skill/user_skills/    项目内用户自定义技能（同名时覆盖内置）
-  3. ~/.seismicx/skills/          旧版兼容读取目录（不再作为新写入位置）
+  3. .seismicx/skills/            project-local imported skills
 
 v2 新特性
 ---------
@@ -47,12 +47,13 @@ import shutil
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Union
+from sage_paths import sage_home
 
 # ── 目录定义 ─────────────────────────────────────────────────────────────────
 
 _BUILTIN_SKILL_DIR = Path(__file__).parent / "skills"
 _PROJECT_USER_SKILL_DIR = Path(__file__).parent / "user_skills"
-_LEGACY_USER_SKILL_DIR = Path.home() / ".seismicx" / "skills"
+_LEGACY_USER_SKILL_DIR = sage_home("skills")
 
 _SKILL_MATCH_CACHE: Dict[Tuple[str, int, Tuple[str, ...]], List[str]] = {}
 

@@ -9,10 +9,11 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
+from sage_paths import sage_home
 
 
 _FALLBACK_RUN_DIR = Path(__file__).parent / "outputs" / "runs"
-_DEFAULT_RUN_DIR = Path(os.environ.get("SAGE_RUN_RECORD_DIR", Path.home() / ".seismicx" / "runs"))
+_DEFAULT_RUN_DIR = Path(os.environ.get("SAGE_RUN_RECORD_DIR", sage_home("runs")))
 try:
     _DEFAULT_RUN_DIR.mkdir(parents=True, exist_ok=True)
 except PermissionError:

@@ -27,8 +27,87 @@ The command-line tool `seismic_cli.py` is still available, but it is now mainly 
 
 ---
 
+## Start Here: One-Command Launch With `sagectl.sh`
+
+For most users, `sagectl.sh` is the only command you need to remember. It checks the Python environment, installs missing dependencies when needed, preserves your last selected LLM backend, starts the SAGE web app in the background, and opens the browser.
+
+```bash
+git clone --recurse-submodules https://github.com/cangyeone/sage.git
+cd sage
+chmod +x sagectl.sh
+./sagectl.sh
+```
+
+Open the web UI at:
+
+```text
+http://127.0.0.1:5010
+```
+
+### What `sagectl.sh` Does
+
+- Finds a supported Python environment, preferring Python 3.9-3.12.
+- Installs required dependencies into `.venv/` if the current environment is not ready.
+- Runs lightweight backend configuration without interrupting startup for knowledge-base rebuild prompts.
+- Keeps your previous backend choice, such as DeepSeek, instead of switching to Ollama just because Ollama is running.
+- Starts `web_app/app.py` as a background service and writes logs to `.sage_runtime/logs/`.
+- Stores SAGE runtime data in the project-local `.seismicx/` directory, including config, run records, local model paths, workflows, and knowledge metadata.
+
+### Daily Commands
+
+```bash
+./sagectl.sh              # setup if needed, configure, start, open browser
+./sagectl.sh status       # show service status, URL, runtime dir, and log path
+./sagectl.sh logs         # tail the web server log
+./sagectl.sh stop         # stop the background web app
+./sagectl.sh start        # start the background web app
+./sagectl.sh restart      # restart the web app
+./sagectl.sh open         # open the web UI in your browser
+./sagectl.sh doctor       # check Python, dependencies, port, and backend status
+```
+
+### Useful Options
+
+Use another port:
+
+```bash
+SAGE_PORT=5011 ./sagectl.sh
+```
+
+Run without opening a browser:
+
+```bash
+SAGE_AUTO_OPEN=0 ./sagectl.sh
+```
+
+Choose script output language. English is the default:
+
+```bash
+./sagectl.sh --lang en
+./sagectl.sh --lang zh
+SAGE_LANG=zh ./sagectl.sh
+```
+
+Use a custom project runtime directory. By default this is `.seismicx/` inside the repository:
+
+```bash
+SAGE_HOME=/path/to/project/.seismicx ./sagectl.sh
+```
+
+If you use local Ollama models:
+
+```bash
+./sagectl.sh ollama-start
+ollama pull qwen3:8b
+```
+
+SAGE is web-first: after the service is running, use `/chat`, `/knowledge`, `/skills`, `/llm-settings`, `/science-analysis-agent`, and `/parameter-optimization-agent` from the browser.
+
+---
+
 ## Table of Contents
 
+- [Start Here: One-Command Launch With `sagectl.sh`](#start-here-one-command-launch-with-sagectlsh)
 - [Features Overview](#features-overview)
 - [System Architecture](#system-architecture)
 - [Quick Start](#quick-start)

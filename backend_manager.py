@@ -31,11 +31,13 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from sage_paths import ensure_sage_home, sage_home
+
 
 # ── 常量 ─────────────────────────────────────────────────────────────────────
 
 # 本地模型统一存放目录
-MODEL_DIR = Path.home() / ".seismicx" / "models"
+MODEL_DIR = sage_home("models")
 
 # vLLM 默认端口
 VLLM_DEFAULT_PORT = 8001
@@ -91,6 +93,18 @@ ONLINE_PROVIDERS: Dict[str, Dict] = {
         "need_key": False,
     },
 }
+
+
+def _lang() -> str:
+    return os.environ.get("SAGE_LANG", "en").strip().lower()
+
+
+def _zh() -> bool:
+    return _lang().startswith("zh") or _lang().startswith("cn")
+
+
+def _text(en: str, zh: str) -> str:
+    return zh if _zh() else en
 
 # 推荐本地模型（适合地震学研究的中英文模型）
 RECOMMENDED_LOCAL_MODELS: List[Dict] = [
@@ -213,7 +227,7 @@ class BackendManager:
     """
 
     def __init__(self):
-        self.config_dir = Path.home() / ".seismicx"
+        self.config_dir = ensure_sage_home()
         self.config_file = self.config_dir / "config.json"
         self.config_dir.mkdir(parents=True, exist_ok=True)
         MODEL_DIR.mkdir(parents=True, exist_ok=True)
@@ -223,13 +237,16 @@ class BackendManager:
     # ── 配置读写 ──────────────────────────────────────────────────────────────
 
     def _load_config(self) -> Dict:
+        cfg: Dict
         if self.config_file.exists():
             try:
                 with open(self.config_file, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    cfg = json.load(f)
+                    if isinstance(cfg, dict):
+                        return self._normalize_config(cfg)
             except Exception:
                 pass
-        return self._default_config()
+        return self._normalize_config(self._default_config())
 
     def _default_config(self) -> Dict:
         return {
@@ -255,12 +272,58 @@ class BackendManager:
         }
 
     def _save(self):
+        self._sync_llm_from_active()
         with open(self.config_file, "w", encoding="utf-8") as f:
             json.dump(self._config, f, indent=2, ensure_ascii=False)
 
     @property
     def active_backend(self) -> str:
         return self._config.get("active_backend", "ollama")
+
+    def _normalize_config(self, cfg: Dict) -> Dict:
+        """Keep legacy `llm` settings and backend-manager settings in sync."""
+        base = self._default_config()
+        merged = {**base, **cfg}
+        for key in ("ollama", "vllm", "online"):
+            section = merged.get(key)
+            if not isinstance(section, dict):
+                merged[key] = base[key]
+
+        llm = merged.get("llm")
+        if isinstance(llm, dict):
+            provider = str(llm.get("provider", "")).strip()
+            model = llm.get("model", "")
+            api_base = llm.get("api_base", "")
+            api_key = llm.get("api_key", "")
+            if provider == "ollama":
+                merged["active_backend"] = "ollama"
+                merged.setdefault("ollama", {})
+                if model:
+                    merged["ollama"]["model"] = model
+                if api_base:
+                    merged["ollama"]["api_base"] = api_base
+            elif provider in ONLINE_PROVIDERS or (provider and provider not in ("openai", "ollama")):
+                merged["active_backend"] = "online"
+                merged.setdefault("online", {})
+                merged["online"]["provider"] = provider
+                if model:
+                    merged["online"]["model"] = model
+                if api_base:
+                    merged["online"]["api_base"] = api_base
+                if api_key:
+                    merged["online"]["api_key"] = api_key
+
+        return merged
+
+    def _sync_llm_from_active(self):
+        cfg = self.get_llm_config()
+        llm = self._config.setdefault("llm", {})
+        llm["provider"] = cfg.get("provider", "")
+        llm["model"] = cfg.get("model", "")
+        llm["api_base"] = cfg.get("api_base", "")
+        llm["api_key"] = cfg.get("api_key", "")
+        llm.setdefault("temperature", 0.7)
+        llm.setdefault("max_tokens", 2000)
 
     # ── 后端检测 ──────────────────────────────────────────────────────────────
 
@@ -730,29 +793,74 @@ class BackendManager:
 
     def auto_select(self, progress_cb=print) -> str:
         """
-        自动探测并选择第一个可用后端。
-        优先级: Ollama(running) > vLLM(running) > online(configured) > Ollama(installed)
+        Respect the configured backend when it is usable; only choose a new
+        backend when the current configuration cannot be used.
         返回选中的后端名称。
         """
         all_st = self.detect_all()
+        active = self.active_backend
+
+        if active == "ollama" and all_st["ollama"].running:
+            progress_cb(_text(
+                "✓ Keeping configured backend: Ollama (running)",
+                "✓ 保留当前后端: Ollama（服务运行中）",
+            ))
+            self._save()
+            return "ollama"
+
+        if active == "vllm" and all_st["vllm"].running:
+            progress_cb(_text(
+                "✓ Keeping configured backend: vLLM (running)",
+                "✓ 保留当前后端: vLLM（服务运行中）",
+            ))
+            self._save()
+            return "vllm"
+
+        if active == "online":
+            if all_st["online"].reachable:
+                progress_cb(_text(
+                    "✓ Keeping configured backend: online API",
+                    "✓ 保留当前后端: 在线 API",
+                ))
+                self._save()
+                return "online"
+            if all_st["online"].api_key:
+                progress_cb(_text(
+                    "⚠ Configured online API could not be verified; keeping current backend",
+                    "⚠ 当前在线 API 暂未验证通过，仍保留当前后端",
+                ))
+                self._save()
+                return "online"
 
         if all_st["ollama"].running:
             self.use_ollama()
-            progress_cb("✓ 自动选择后端: Ollama（服务运行中）")
+            progress_cb(_text(
+                "✓ Auto-selected backend: Ollama (running)",
+                "✓ 自动选择后端: Ollama（服务运行中）",
+            ))
             return "ollama"
 
         if all_st["vllm"].running:
             self.use_vllm(all_st["vllm"].model_path)
-            progress_cb("✓ 自动选择后端: vLLM（服务运行中）")
+            progress_cb(_text(
+                "✓ Auto-selected backend: vLLM (running)",
+                "✓ 自动选择后端: vLLM（服务运行中）",
+            ))
             return "vllm"
 
         if all_st["online"].reachable:
-            progress_cb("✓ 自动选择后端: 在线 API")
+            progress_cb(_text(
+                "✓ Auto-selected backend: online API",
+                "✓ 自动选择后端: 在线 API",
+            ))
             self._config["active_backend"] = "online"
             self._save()
             return "online"
 
-        progress_cb("⚠ 未检测到任何可用后端，保持当前配置")
+        progress_cb(_text(
+            "⚠ No usable backend detected; keeping current configuration",
+            "⚠ 未检测到任何可用后端，保持当前配置",
+        ))
         return self.active_backend
 
     # ── 状态打印 ──────────────────────────────────────────────────────────────
@@ -764,51 +872,56 @@ class BackendManager:
 
         print()
         print("═" * 58)
-        print("  SAGE 后端状态")
+        print(_text("  SAGE Backend Status", "  SAGE 后端状态"))
         print("═" * 58)
 
         # Ollama
         ost = all_st["ollama"]
         mark = "▶" if active == "ollama" else " "
-        run = "✓ 运行中" if ost.running else ("已安装" if ost.installed else "✗ 未安装")
+        run = (
+            _text("✓ running", "✓ 运行中") if ost.running
+            else (_text("installed", "已安装") if ost.installed else _text("✗ not installed", "✗ 未安装"))
+        )
         print(f"\n{mark} [Ollama]  {run}")
         if ost.running and ost.models:
-            print(f"    可用模型: {', '.join(ost.models[:5])}")
+            print(f"    {_text('Available models', '可用模型')}: {', '.join(ost.models[:5])}")
         elif not ost.installed:
-            print("    安装: https://ollama.ai")
+            print(f"    {_text('Install', '安装')}: https://ollama.ai")
 
         # vLLM
         vst = all_st["vllm"]
         mark = "▶" if active == "vllm" else " "
         if vst.running:
-            run = f"✓ 运行中 (port {vst.port})"
+            run = _text(f"✓ running (port {vst.port})", f"✓ 运行中 (port {vst.port})")
         elif vst.installed:
-            run = "已安装（未启动）"
+            run = _text("installed (not started)", "已安装（未启动）")
         else:
-            run = "✗ 未安装"
+            run = _text("✗ not installed", "✗ 未安装")
         print(f"\n{mark} [vLLM]   {run}")
         local_models = self.list_local_models()
         if local_models:
-            print(f"    本地模型 ({MODEL_DIR}):")
+            print(f"    {_text('Local models', '本地模型')} ({MODEL_DIR}):")
             for m in local_models[:4]:
                 print(f"      · {m.name}")
         else:
-            print(f"    模型目录: {MODEL_DIR}  (空)")
+            print(f"    {_text('Model directory', '模型目录')}: {MODEL_DIR}  {_text('(empty)', '(空)')}")
 
         # Online
         ost2 = all_st["online"]
         mark = "▶" if active == "online" else " "
         if ost2.reachable:
-            run = f"✓ 可达  [{ost2.provider}] {ost2.model}"
+            run = _text(f"✓ reachable  [{ost2.provider}] {ost2.model}",
+                        f"✓ 可达  [{ost2.provider}] {ost2.model}")
         elif ost2.api_key:
-            run = f"已配置（未验证）  [{ost2.provider}] {ost2.model}"
+            run = _text(f"configured (not verified)  [{ost2.provider}] {ost2.model}",
+                        f"已配置（未验证）  [{ost2.provider}] {ost2.model}")
         else:
-            run = "未配置（无 API Key）"
-        print(f"\n{mark} [在线API] {run}")
+            run = _text("not configured (no API key)", "未配置（无 API Key）")
+        print(f"\n{mark} [{_text('Online API', '在线API')}] {run}")
 
         print()
         cfg = self.get_llm_config()
-        print(f"当前生效配置: provider={cfg['provider']}, model={cfg['model']}")
+        print(f"{_text('Active config', '当前生效配置')}: provider={cfg['provider']}, model={cfg['model']}")
         print(f"              api_base={cfg['api_base']}")
         print("═" * 58)
         print()

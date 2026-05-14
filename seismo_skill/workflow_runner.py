@@ -44,7 +44,7 @@ Directory layout
   seismo_skill/skills/*/workflows/ skill-local workflows bundled with skills
   seismo_skill/user_skills/*/workflows/
                                   project-local custom skill workflows
-  ~/.seismicx/workflows/          user-defined workflows (higher priority)
+  .seismicx/workflows/            project-local user-defined workflows
 
 Public API
 ----------
@@ -65,6 +65,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import yaml
+from sage_paths import sage_home
 
 # ── Directories ───────────────────────────────────────────────────────────────
 
@@ -74,8 +75,8 @@ _PROJECT_USER_SKILL_DIR = Path(__file__).parent / "user_skills"
 
 
 def get_user_workflow_dir() -> Path:
-    """Return ~/.seismicx/workflows/, creating it if needed."""
-    d = Path.home() / ".seismicx" / "workflows"
+    """Return project-local .seismicx/workflows/, creating it if needed."""
+    d = sage_home("workflows")
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -272,7 +273,7 @@ def load_workflow(name: str) -> Optional[Dict]:
 
 
 def save_user_workflow(name: str, text: str) -> Path:
-    """Save a user workflow to ~/.seismicx/workflows/<name>.md."""
+    """Save a user workflow to .seismicx/workflows/<name>.md."""
     safe_name = re.sub(r"[^\w\-]", "_", name)
     target = get_user_workflow_dir() / f"{safe_name}.md"
     target.write_text(text, encoding="utf-8")

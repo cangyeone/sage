@@ -5,6 +5,7 @@ state.py — 全局共享状态（锁、字典、路径常量）
 """
 import threading
 from pathlib import Path
+from sage_paths import sage_home
 
 # ── 锁 ───────────────────────────────────────────────────────────────────────
 # RLock 允许同一线程重入，防止 _get_code_engine 在 _run() 内嵌套调用时死锁
@@ -51,4 +52,4 @@ SCIENCE_WORKSPACE_ROOT = _WEB_APP_DIR / "uploads" / "science_workspaces"
 SCIENCE_WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
 
 _REF_KNOWLEDGE_DIR = _PROJECT_ROOT / "seismo_knowledge"
-_REF_KB_MANIFEST_DIR = Path.home() / ".seismicx" / "ref_knowledge"
+_REF_KB_MANIFEST_DIR = sage_home("ref_knowledge")

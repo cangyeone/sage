@@ -45,6 +45,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
 
+_WEB_APP_DIR = Path(__file__).parent
+if str(_WEB_APP_DIR) not in sys.path:
+    sys.path.insert(0, str(_WEB_APP_DIR))
+
 # ---------------------------------------------------------------------------
 # Re-export backends so callers can do: from rag_engine import EmbeddingModel
 # ---------------------------------------------------------------------------

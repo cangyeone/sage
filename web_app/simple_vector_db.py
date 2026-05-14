@@ -8,8 +8,9 @@ import pickle
 from pathlib import Path
 from collections import Counter
 from typing import List, Tuple, Dict, Optional
+from sage_paths import sage_home
 
-_DB_PATH = Path.home() / ".seismicx" / "knowledge" / "simple_vectordb.pkl"
+_DB_PATH = sage_home("knowledge", "simple_vectordb.pkl")
 
 
 class VectorItem:
