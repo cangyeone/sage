@@ -1,3 +1,7 @@
 [submodule "third_party/aider"]
 	path = third_party/aider
 	url = https://github.com/Aider-AI/aider.git
+[submodule "seismo_skill/skills/pnsn_phase_detection/pnsn"]
+	path = seismo_skill/skills/pnsn_phase_detection/pnsn
+	url = https://github.com/cangyeone/pnsn
+	ignore = dirty
