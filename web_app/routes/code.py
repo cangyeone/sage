@@ -9,7 +9,7 @@ from pathlib import Path
 from state import _code_engine_lock, _code_engines, _code_jobs, _PROJECT_ROOT
 from helpers import (
     get_llm_config, get_code_engine, gc_code_jobs, serialize_code_result,
-    get_user_profile_context,
+    get_user_profile_context, resolve_coding_project_root,
 )
 
 bp = Blueprint('code', __name__)
@@ -25,8 +25,14 @@ def chat_code():
     data       = request.json or {}
     user_msg   = (data.get('message') or '').strip()
     session_id = data.get('session_id', 'default')
+    project_path = (data.get('project_path') or data.get('project_root') or '').strip()
+    project_context = (data.get('project_context') or '').strip()
     if not user_msg:
         return jsonify({'ok': False, 'error': '消息不能为空'}), 400
+    try:
+        coding_root = resolve_coding_project_root(project_path)
+    except Exception as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 400
 
     llm_cfg = get_llm_config()
     if not llm_cfg.get('api_base'):
@@ -73,7 +79,7 @@ def chat_code():
                 except Exception:
                     skill_used = None
 
-                engine = None if use_coding_backend else get_code_engine(session_id, llm_cfg)
+                engine = None if use_coding_backend else get_code_engine(session_id, llm_cfg, coding_root)
 
             # Phase 2: Execute OUTSIDE lock — subprocess (GMT/Python) is fork-safe;
             # holding the lock here would block all other init for minutes.
@@ -90,12 +96,23 @@ def chat_code():
                     "\n\n===== Long-term user profile (soft context; do not mention unless useful) =====\n"
                     + profile
                 )
+            if project_path:
+                engine_msg += (
+                    "\n\n===== Active coding project =====\n"
+                    f"Project root: {coding_root}\n"
+                    "Use this as the primary repository/workspace for code search, edits, builds, and tests.\n"
+                )
+            if project_context:
+                engine_msg += (
+                    "\n\n===== Project context =====\n"
+                    + project_context[:5000]
+                )
 
             if use_coding_backend:
                 from seismo_code.external_coding_agent import run_external_coding_agent
                 result = run_external_coding_agent(
                     engine_msg,
-                    workspace=str(_PROJECT_ROOT),
+                    workspace=str(coding_root),
                     llm_config=llm_cfg,
                     config=coding_cfg,
                     progress_cb=_on_progress,
@@ -156,8 +173,9 @@ def cancel_code_job(job_id):
 def chat_code_reset():
     """清除指定 session 的 CodeEngine 历史（对话清空时调用）。"""
     session_id = (request.json or {}).get('session_id', 'default')
-    if session_id in _code_engines:
-        _code_engines[session_id].reset()
+    for key in list(_code_engines):
+        if key == session_id or str(key).startswith(f"{session_id}::"):
+            _code_engines[key].reset()
     return jsonify({'ok': True})
 
 
@@ -301,15 +319,49 @@ def chat_route():
     message     = data.get('message', '').strip()
     kb_has_docs = data.get('kb_has_docs', False)
     history     = data.get('history', [])   # [{role, content}, ...]
+    last_code    = bool(data.get('last_intent_was_code', False))
 
     if not message:
         return jsonify({'ok': True, 'intent': 'chat'})
 
     llm_cfg = get_llm_config()
 
-    msg_stripped = message.strip()
     has_path = bool(_re.search(r'(?:^|[\s\u4e00-\u9fff，。：、])[/~][\w./\-]{4,}', message))
-    ends_q   = bool(_re.search(r'[?？]\s*$', msg_stripped))
+
+    # Deterministic safety correction for requests that ask SAGE to create a
+    # concrete artifact now. The LLM router still makes the primary decision;
+    # this guard prevents weak models from turning explicit Python plotting or
+    # file-generation commands into QA just because no input data path is given.
+    artifact_task = bool(_re.search(
+        r"(?:帮我|请|给我|用|使用|python|Python|代码|脚本|script|code).{0,30}"
+        r"(?:绘制|画|画图|制图|生成图|出图|可视化|保存|导出|plot|draw|visuali[sz]e|map)"
+        r"|(?:绘制|画图|生成).{0,20}(?:地图|图|figure|plot|map)"
+        r"|(?:地形图|分布图|剖面图|频谱图|波形图|map|figure).{0,20}(?:png|pdf|保存|导出)",
+        message,
+        _re.I,
+    ))
+    gui_task = bool(_re.search(
+        r"(?:gui|desktop|mouse|click|button|window|screenshot|keyboard|hotkey|"
+        r"type text|scroll|drag|pyautogui|xdotool|鼠标|点击|按钮|窗口|界面|"
+        r"屏幕|截图|键盘|快捷键|输入|滚动|拖拽)",
+        message,
+        _re.I,
+    ))
+    recent_code = last_code or any(
+        (h.get("role") == "assistant" and (
+            "执行成功" in str(h.get("content", ""))
+            or "代码执行成功" in str(h.get("content", ""))
+            or "生成了" in str(h.get("content", "")) and "图" in str(h.get("content", ""))
+        ))
+        for h in history[-4:]
+    )
+    refine_task = recent_code and bool(_re.search(
+        r"(?:改|修改|调整|优化|继续|注意|支持|加上|加入|增加|删除|去掉|换|放大|缩小|"
+        r"标题|字体|中文|显示|配色|颜色|图例|网格|坐标|分辨率|保存|导出|图片|图|figure|"
+        r"refine|revise|modify|adjust|update|support|title|font|color|legend|grid)",
+        message,
+        _re.I,
+    ))
 
     # ── 构建对话历史摘要（最近 3 轮）────────────────────────────────────────
     history_text = ""
@@ -326,9 +378,9 @@ def chat_route():
 
 Definitions:
 code_draft = The user asks for code, a script, or a program, but does not ask SAGE to run it now and provides no data path.
-code       = The user asks SAGE to immediately run/execute/debug/process/read/plot/calculate using data, files, paths, or the current environment.
+code       = The user asks SAGE to immediately run/execute/debug/process/read/plot/calculate/control GUI or create an artifact using data, files, paths, generated/default data, desktop GUI, or the current environment.
 chain      = The user asks to reproduce/implement/code a method from an uploaded paper/literature/PDF context; this should first extract paper methods, then produce implementation.
-qa         = The user is asking for explanation, guidance, concepts, principles, methods, troubleshooting ideas, or general knowledge.
+qa         = The user explicitly asks for explanation, guidance, concepts, principles, methods, troubleshooting ideas, or general knowledge, and does not ask to change or create an output.
 chat       = Casual conversation, greetings, emotional expression, or content unrelated to the task system.
 
 Decision rule:
@@ -336,9 +388,11 @@ Classify by intent, not by specific tool names.
 
 If the message asks only to write/generate/provide code/script/program → code_draft.
 If the message asks the system to do something concrete now, such as draw, plot, calculate, read, convert, process, analyze data, download, run, save, export, debug, or modify files → code.
+If the message says "use Python/code/script" AND asks to draw/plot/create/save/export a map/figure/file now → code, even if no data path is provided.
+If the message asks SAGE to click/type/use mouse/keyboard/screenshot/control a GUI/window/desktop now → code.
+If the previous assistant turn was code execution and the user asks to refine, modify, adjust, update, support, fix, or change the output/figure/code → code.
 If uploaded documents/literature are available and the user asks to reproduce or implement "this/above paper/method" → chain.
-If the message mainly asks what, why, how, whether, or asks for an explanation/reason/method without requiring immediate execution → qa.
-If the message asks to read, explain, summarize, interpret, or analyze a paper/literature/PDF/article → qa, unless it explicitly asks to write or run code.
+Use qa only for explicit explanation/summary/question-answer intent. Do not choose qa when the user asks to alter the previous generated result.
 Otherwise → chat.
 
 Examples:
@@ -347,23 +401,29 @@ Examples:
 "Generate a Python script for SAC preprocessing" → code_draft
 "Implement the method from this uploaded paper" → chain
 "Help me draw a topographic map" → code
+"帮我用python 绘制一下中国地形图" → code
+"用 Python 生成一张中国地形图并保存 PNG" → code
+"帮我截图并点击左上角的按钮" → code
+"Click the OK button in the GUI and type hello" → code
 "Generate a station distribution figure" → code
 "Calculate the b-value for /data/catalog.csv" → code
 "Read this waveform file" → code
 "Convert this catalog to CSV" → code
 "Analyze the uploaded waveform/catalog data and summarize the result" → code
+"注意标题支持 MAC 系统的中文显示" → code
+"把上一张图的标题改成中文，并支持 macOS 字体" → code
 "Analyze this paper for me" → qa
 "Summarize this uploaded PDF" → qa
-"How should I draw a topographic map?" → qa
 "What is the b-value?" → qa
-"Why does the waveform need filtering?" → qa
-"Can SAC files be read directly?" → qa
 "Hello" → chat
 
 {f"Context: {history_text}" if history_text else ""}
 {f"Long-term user profile: {profile_text}" if profile_text else ""}
 Uploaded/local document context available: {bool(kb_has_docs)}
 Absolute/local path detected in user message: {has_path}
+Concrete artifact creation request detected: {artifact_task}
+GUI operation request detected: {gui_task}
+Previous code/refine request detected: {refine_task}
 User message: {message}
 Intent:"""
 
@@ -381,18 +441,15 @@ Intent:"""
                 intent_word = word
                 break
 
-        # 若 LLM 未识别，保守回到问答/闲聊，避免误启动执行型 CodeEngine。
+        # 若 LLM 未识别，保守回到闲聊，避免用问号/关键词正则过度放大 QA。
         if intent_word is None:
-            intent_word = 'qa' if ends_q else 'chat'
+            intent_word = 'chat'
+        if (artifact_task or gui_task or refine_task) and intent_word in {'qa', 'chat', 'code_draft'}:
+            intent_word = 'code'
 
         return jsonify({'ok': True, 'intent': intent_word})
 
     except Exception:
-        # LLM router 不可用时才使用保守规则兜底。
-        FALLBACK_RE = _re.compile(
-            r'(绘制|画图|画[^报面版刊]|使用|执行|运行|下载|读取|处理|滤波|计算|生成图'
-            r'|检测|识别|拾取|触发|plot|filter|spectrum|detect|pick|trigger|\.sac|\.mseed|\.csv)',
-            _re.I
-        )
-        fallback = 'code' if FALLBACK_RE.search(message) and not ends_q else 'qa'
+        # LLM router 不可用时只保留明确 code 守卫，不再用 QA 正则兜底。
+        fallback = 'code' if (artifact_task or gui_task or refine_task or has_path) else 'chat'
         return jsonify({'ok': True, 'intent': fallback, 'fallback': True})

@@ -1,0 +1,6 @@
+display_name: gui_automation
+short_description: Desktop GUI automation with screenshot, mouse, keyboard, hotkey, and scrolling helpers.
+default_prompt: >-
+  Use this skill only when the user explicitly asks to operate a desktop GUI,
+  mouse, keyboard, screenshot, window, or button. Ground generated code in
+  seismo_code.gui_automation APIs and avoid inventing OCR/text-click features.

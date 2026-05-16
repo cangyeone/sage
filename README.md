@@ -110,10 +110,14 @@ SAGE is web-first: after the service is running, use `/chat`, `/knowledge`, `/sk
 - [Start Here: One-Command Launch With `sagectl.sh`](#start-here-one-command-launch-with-sagectlsh)
 - [Features Overview](#features-overview)
 - [System Architecture](#system-architecture)
+- [Software Structure Documentation](#software-structure-documentation)
 - [Quick Start](#quick-start)
 - [Installation](#installation)
 - [Configuring LLM Backend](#configuring-llm-backend)
 - [Web Interface](#web-interface)
+- [Project Coding Workspaces](#project-coding-workspaces)
+- [Built-in Coding Agent](#built-in-coding-agent)
+- [Desktop GUI Control](#desktop-gui-control)
 - [Command Line Tools (Advanced/Fallback)](#command-line-tools-advancedfallback)
 - [Conversation Routing Mechanism](#conversation-routing-mechanism)
 - [seismo\_skill Skill System](#seismo_skill-skill-system)
@@ -133,12 +137,12 @@ SAGE is web-first: after the service is running, use `/chat`, `/knowledge`, `/sk
 
 | Module | Current Role | Core Capabilities |
 |------|--------------|-------------------|
-| **Chat** | Everyday entry point | Streaming chat, temporary PDF reading, RAG Q&A, web search, image/table understanding, code execution, GMT/Python plotting, and multi-SKILL use |
+| **Chat** | Everyday entry point | Streaming chat, temporary PDF reading, RAG Q&A, web search, image/table understanding, project-aware code execution, GMT/Python plotting, and multi-SKILL use |
 | **Scientific Analysis Agent** | Main research entry point | Traverses project folders, identifies data/papers/notes, searches local and online literature, proposes scientific questions, plans figures/tables, runs CodeEngine, and drafts Markdown/LaTeX papers |
 | **Parameter Optimization Agent** | Workflow/model optimization | Lets users define modules, inputs/outputs, parameters, and objectives; LLM understands the workflow while CodeEngine implements, debugs, monitors, and saves optimization traces |
 | **Knowledge Base** | Persistent knowledge layer | Ingests PDFs, Markdown, projects, and chat exports; combines BGE-M3/FAISS or fallback retrieval with keyword search; supports deletion and incremental updates |
 | **Skill System** | Capability extension | Supports OpenAI-style folder SKILLs, built-in SKILLs, documentation-generated SKILLs, and academic research SKILLs; usable by Chat, Science Analysis, Parameter Optimization, and CodeEngine |
-| **CodeEngine** | Execution and debugging core | Generates Python/GMT/Bash scripts, runs mini tests, self-debug loops, and saves figures, tables, logs, and intermediate products |
+| **CodeEngine** | Execution and debugging core | Generates Python/GMT/Bash scripts, edits project files, runs unit/full tests, performs self-debug loops, and saves figures, tables, logs, and engineering plans |
 | **LLM/Config** | Global settings | Configures Ollama, local models, online APIs, OpenAI-compatible APIs, web search providers, workspaces, coding backends, and multimodal capabilities |
 | **Seismology Toolkits** | Domain tools | Phase picking, event association, polarity analysis, b-value statistics, waveform processing, GMT maps, and 3D terrain/velocity visualization |
 
@@ -178,6 +182,18 @@ SAGE is web-first: after the service is running, use `/chat`, `/knowledge`, `/sk
 │ science paper templates · parameter optimization workflows            │
 └──────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## Software Structure Documentation
+
+The detailed software architecture and built-in coding-agent contract live in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). That document explains the
+Chat/RAG/SKILL/CodeEngine layers, the engineering-plan flow, persisted
+`engineering_plan.md` files, debug-time plan revisions, and the unit-test
+validation rules used by the coding agent. CodeEngine artifacts are registered
+with their conversation; deleting a conversation or project cleans up recognized
+CodeEngine temporary run directories and related `engineering_plan*.md` files.
 
 ---
 
@@ -422,6 +438,88 @@ Use Chat for daily Q&A, paper reading, quick plotting, and small data-processing
 
 Uploaded chat files are temporary unless explicitly added to the knowledge base. Chats and projects can also be saved into the knowledge base for later retrieval.
 
+## Project Coding Workspaces
+
+Chat projects can be connected to a real local project directory. In the Chat sidebar:
+
+1. Click **Projects → New** or select an existing project.
+2. Click **Settings**.
+3. Fill **Project path / coding workspace** with an absolute local directory, for example:
+
+```text
+/Users/you/Documents/GitHub/my-research-code
+```
+
+After this is set, executable coding requests in that project use the selected directory as the active workspace:
+
+- Code search, file discovery, repo maps, and symbol lookup run inside the project path.
+- Generated edit scripts modify files under that project directory, not the SAGE source tree.
+- Unit tests and validation run with the project path as the working directory.
+- External coding backends, when enabled, also receive the project path as their workspace.
+- Each `chat session + project path` gets an isolated CodeEngine context, so different projects do not leak code history into each other.
+
+If no project path is set, SAGE falls back to its own repository root, which is useful when you are developing SAGE itself.
+
+Typical project prompts:
+
+```text
+帮我定位这个项目里读取 catalog 的代码，并给我修改建议。
+实现一个 CSV catalog loader，写单元测试，然后运行相关测试。
+重构这个项目的绘图模块，并跑全量测试。
+Run the full test suite and fix any failures.
+```
+
+## Built-in Coding Agent
+
+The built-in coding agent is designed for engineering-style work, not only one-off scripts. For repository tasks it follows this loop:
+
+1. Search files with `rg`, build a compact repo/symbol map, and choose relevant files.
+2. Write an `engineering_plan.md` that records route, files, API details, unit tests, and validation commands.
+3. Generate an edit-and-test script that can modify multiple files.
+4. Run the script, inspect failures, and debug with the same skill/RAG/API references.
+5. Run validation:
+   - `py_compile` for changed Python files.
+   - Targeted `pytest` for changed or related tests.
+   - Full validation when explicitly requested, such as `全量测试`, `完整构建`, `all tests`, or `full build`.
+6. Save generated figures, output files, code, debug traces, and engineering plans as downloadable artifacts.
+
+The agent can add, update, insert, or delete focused tests when the task requires it. Test deletion is allowed only when the test is obsolete, asserts wrong behavior, or is replaced by equivalent or better coverage.
+
+For simple requests such as “给我一个计算 b 值的程序”, SAGE may return a code draft without executing it. For requests such as “帮我运行 /data/catalog.csv 并计算 b 值” or “修改上一张图的标题”, SAGE routes to executable coding.
+
+Full-project validation is conservative and uses common project conventions:
+
+| Project type | Full validation command |
+|-------------|-------------------------|
+| Python project with `tests/` | `python -m pytest` |
+| Node project with `package.json` | `npm test`, then `npm run build` |
+
+Projects with custom build systems should include the desired command in the prompt or project shared prompt.
+
+## Desktop GUI Control
+
+SAGE includes a built-in GUI automation skill for tasks that explicitly need desktop control. Generated code can use:
+
+```python
+from seismo_code.gui_automation import (
+    backend_status, screenshot, click, drag, move_to,
+    type_text, hotkey, scroll, GuiAutomationError,
+)
+```
+
+Supported actions include screenshots, coordinate clicks, dragging, typing, hotkeys, and scrolling. The backend is selected automatically:
+
+- Preferred: optional `pyautogui`.
+- macOS screenshot fallback: `screencapture`; mouse fallback: `cliclick` if installed.
+- Linux X11 fallback: `xdotool`; screenshots via `gnome-screenshot` or ImageMagick `import`.
+
+Notes:
+
+- macOS may require Accessibility and Screen Recording permissions.
+- Linux Wayland may block global mouse/keyboard automation.
+- Browser pages should normally use browser automation rather than pixel clicks.
+- Text/OCR clicking is not invented by the agent; when text targeting is unavailable, the agent should take a screenshot and use coordinates.
+
 ### Scientific Analysis (/science-analysis-agent)
 
 This is the main page for “given data and papers, produce a scientific analysis.” Put data, papers, notes, scripts, and templates under one project directory; the agent recursively traverses the directory and infers file roles.
@@ -520,35 +618,40 @@ Use the root launcher for the web service:
 
 ## Conversation Routing Mechanism
 
-SAGE automatically determines intent of each message through dedicated LLM routing calls, avoiding keyword mis-matching (for example, "Q-filter **algorithm**" will not be incorrectly routed to code execution).
+SAGE determines message intent primarily through a dedicated LLM router, not broad QA keyword rules. QA is deliberately low-priority: requests that create, modify, run, plot, test, or continue a previous coding result are routed to CodeEngine even if they contain words such as "how", "注意", "支持", or "explain".
 
 ### Routing Flow
 
 ```
 User message
    │
-   ├─ Fast path: message contains absolute path (/data/...) and is not a question
-   │              └─→ code (execute directly)
+   ├─ Explicit execution/artifact/refinement guard
+   │      ├─ paths, plotting, processing, GUI control, or file generation → code
+   │      └─ previous CodeEngine result + "modify/refine/support/change" → code
    │
    └─ LLM routing call (max_tokens=10, approximately <1s)
           │
+          ├─ code_draft → write code only, without execution
           ├─ code  → CodeEngine generates and executes Python / GMT code
+          ├─ chain → paper-method extraction followed by implementation
           ├─ qa    → RAG retrieves knowledge base + LLM response
           └─ chat  → General conversation
 ```
 
-### Three Types of Routing
+### Routing Types
 
 | Route | Trigger Condition | Example |
 |------|---------|------|
-| `code` | Data processing, plotting, file operations, GMT maps | "Filter waveform with bandpass and plot", "Help me draw a Chinese topographic map with GMT" |
-| `qa` | Concept explanation, method introduction, literature retrieval | "What is Q-filter?", "Explain the principle of HVSR" |
+| `code_draft` | User only asks for a program/script and does not ask SAGE to run it | "给我一个计算 b 值的程序" |
+| `code` | Data processing, plotting, file operations, GUI control, repo edits, tests, builds | "帮我用 Python 绘制中国地形图", "把上一张图标题改成中文", "运行全量测试并修复失败" |
+| `chain` | Uploaded paper/literature method reproduction | "复现这篇论文的方法并实现代码" |
+| `qa` | Explicit concept explanation, summary, or method discussion with no requested output change | "What is Q-filter?", "Explain the principle of HVSR" |
 | `chat` | Greetings, chatting, non-seismological content | "Hello", "How is the weather today" |
 
-**Fallback rules when LLM is unavailable:**
+**Fallback rules when LLM routing is unavailable:**
 
-- Message contains `drawing/plotting/filtering/spectrum/waveform/.sac/.mseed` → `code`
-- Others → `qa`
+- Strong code guards still route to `code`: paths, artifact creation, GUI control, or refinement of a previous CodeEngine result.
+- Otherwise SAGE falls back to `chat`, not QA. This avoids accidentally turning code/figure modification requests into explanatory answers.
 
 ---
 
@@ -1186,7 +1289,7 @@ sage/
 │
 ├── seismo_code/                  # Code generation and execution engine
 │   ├── code_engine.py            # LLM code generation (multi-round history + error retry
-│   │                             #   + run_workflow() DAG execution)
+│   │                             #   + engineering_plan.md + run_workflow() DAG execution)
 │   ├── safe_executor.py          # Sandbox execution (subprocess + timeout protection)
 │   ├── toolkit.py                # Built-in seismological utility functions
 │   └── doc_parser.py             # PDF content extraction
@@ -1204,6 +1307,9 @@ sage/
 │
 ├── seismo_tools/                 # External tool registry
 │   └── tool_registry.py          # HypoDD / VELEST / HASH etc.
+│
+├── docs/
+│   └── ARCHITECTURE.md           # Software structure and coding-agent design contract
 │
 ├── seismo_skill/
 │   ├── skills/                   # Built-in OpenAI-style skills
@@ -1223,7 +1329,7 @@ sage/
 ├── requirements.txt              # Python dependencies
 └── logo.png
 
-.sage_runtime/                    # Local background PID, logs, and env info (git ignored)
+.sage_runtime/                    # Local background PID, logs, env info, and plan cache (git ignored)
 seismo_rag/                       # Project knowledge indexes and project_config.json
 ```
 

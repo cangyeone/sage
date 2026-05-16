@@ -67,6 +67,19 @@ def safe_child_path(base: str | Path, child_name: str) -> Path:
     return resolved
 
 
+def resolve_coding_project_root(project_path: str | None = None) -> Path:
+    """Resolve a user-selected coding workspace, falling back to the SAGE repo."""
+    raw = str(project_path or "").strip()
+    if not raw:
+        return _PROJECT_ROOT.resolve()
+    root = Path(raw).expanduser().resolve(strict=False)
+    if not root.exists():
+        raise ValueError(f"项目路径不存在: {root}")
+    if not root.is_dir():
+        raise ValueError(f"项目路径不是目录: {root}")
+    return root
+
+
 # ── LLM ──────────────────────────────────────────────────────────────────────
 
 def get_llm_config() -> dict:
@@ -427,18 +440,21 @@ def get_ref_indexer():
     )
 
 
-def get_code_engine(session_id: str, llm_cfg: dict):
-    """获取或创建 session 级别的 CodeEngine（在 _code_engine_lock 内调用）。"""
-    proj = str(_PROJECT_ROOT)
-    if proj not in sys.path:
-        sys.path.insert(0, proj)
+def get_code_engine(session_id: str, llm_cfg: dict, project_root: str | Path | None = None):
+    """获取或创建 session/workspace 级别的 CodeEngine（在 _code_engine_lock 内调用）。"""
+    sage_proj = str(_PROJECT_ROOT)
+    if sage_proj not in sys.path:
+        sys.path.insert(0, sage_proj)
+    proj = str(resolve_coding_project_root(str(project_root or "")))
+    engine_key = f"{session_id}::{proj}"
     with _code_engine_lock:
         from seismo_code.code_engine import CodeEngine
-        if session_id not in _code_engines:
-            _code_engines[session_id] = CodeEngine(llm_cfg, project_root=proj)
+        if engine_key not in _code_engines:
+            _code_engines[engine_key] = CodeEngine(llm_cfg, project_root=proj)
         else:
-            _code_engines[session_id].llm_config = llm_cfg
-        return _code_engines[session_id]
+            _code_engines[engine_key].llm_config = llm_cfg
+            _code_engines[engine_key].project_root = proj
+        return _code_engines[engine_key]
 
 
 def gc_code_jobs():
@@ -563,4 +579,12 @@ def serialize_code_result(result, skill_used: str) -> dict:
         'script_b64':  script_b64,
         'downloads':   downloads,
         'html_previews': html_previews,
+        'artifact_paths': list(dict.fromkeys(
+            [p for p in (
+                [result.script_path] +
+                list(result.figures or []) +
+                list(result.output_files or [])
+            ) if p]
+        )),
+        'exec_dir': getattr(result.exec_result, 'exec_dir', '') if result.exec_result else '',
     }

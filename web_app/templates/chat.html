@@ -305,6 +305,7 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
       </div>
       <div id="projectSettings" style="display:none">
         <input id="projectTitleInput" class="form-control form-control-sm mb-1" style="font-size:.76rem" data-i18n-placeholder="proj_name_ph" placeholder="项目名称" oninput="updateProjectSettings()">
+        <input id="projectPathInput" class="form-control form-control-sm mb-1" style="font-size:.76rem" data-i18n-placeholder="proj_path_ph" placeholder="项目路径，例如 /Users/you/project" oninput="updateProjectSettings()">
         <textarea id="projectPrefaceInput" class="form-control form-control-sm mb-1" rows="3" style="font-size:.76rem;resize:vertical" data-i18n-placeholder="proj_preface_ph" placeholder="项目前言 / 研究背景" oninput="updateProjectSettings()"></textarea>
         <textarea id="projectPromptInput" class="form-control form-control-sm" rows="3" style="font-size:.76rem;resize:vertical" data-i18n-placeholder="proj_prompt_ph" placeholder="项目共享 Prompt" oninput="updateProjectSettings()"></textarea>
       </div>
@@ -487,7 +488,7 @@ const I18N = {
     proj_promote_tip: '将当前项目作为整体添加到知识库',
     proj_delete_tip: '删除当前项目及其对话记录',
     proj_conv_new_tip: '在当前项目中新建对话',
-    proj_name_ph: '项目名称', proj_preface_ph: '项目前言 / 研究背景', proj_prompt_ph: '项目共享 Prompt',
+    proj_name_ph: '项目名称', proj_path_ph: '项目路径 / Coding 工作区', proj_preface_ph: '项目前言 / 研究背景', proj_prompt_ph: '项目共享 Prompt',
     proj_delete_confirm: '确定删除当前项目？项目内对话、项目文献和持久化记录都会删除。',
     chat_title: 'Chat', conv_title: '对话', conv_new: '新建', conv_new_title: '新对话', conv_delete: '删除',
     conv_new_tip: '新建日常 Chat 对话',
@@ -551,7 +552,7 @@ const I18N = {
     proj_promote_tip: 'Add the current project to the knowledge base as one item',
     proj_delete_tip: 'Delete the current project and its conversations',
     proj_conv_new_tip: 'Create a new conversation in the current project',
-    proj_name_ph: 'Project name', proj_preface_ph: 'Project preface / research background', proj_prompt_ph: 'Project shared prompt',
+    proj_name_ph: 'Project name', proj_path_ph: 'Project path / coding workspace', proj_preface_ph: 'Project preface / research background', proj_prompt_ph: 'Project shared prompt',
     proj_delete_confirm: 'Delete this project? Conversations, project literature, and persisted project data will be removed.',
     chat_title: 'Chat', conv_title: 'Conversation', conv_new: 'New', conv_new_title: 'New chat', conv_delete: 'Delete',
     conv_new_tip: 'Create a new daily Chat conversation',
@@ -662,6 +663,7 @@ function _newProject(title='') {
   return {
     id: 'proj_' + Math.random().toString(36).slice(2,10),
     title,
+    path: '',
     preface: '',
     prompt: '',
     docs: [],
@@ -943,10 +945,16 @@ function projectContextText() {
   if (!p) return '';
   const docs = (p.docs || []).map(d => d.name).filter(Boolean).join(', ');
   return [
+    p?.path ? `项目路径 / Coding workspace：${p.path}` : '',
     p?.preface ? `项目背景：${p.preface}` : '',
     p?.prompt ? `项目共享 Prompt：${p.prompt}` : '',
     docs ? `项目文献：${docs}` : '',
   ].filter(Boolean).join('\n');
+}
+
+function activeProjectPath() {
+  const p = activeProject();
+  return String(p?.path || '').trim();
 }
 
 function renderProjectControls() {
@@ -961,9 +969,11 @@ function renderProjectControls() {
   `);
   const p = activeProject();
   const titleEl = document.getElementById('projectTitleInput');
+  const pathEl = document.getElementById('projectPathInput');
   const prefaceEl = document.getElementById('projectPrefaceInput');
   const promptEl = document.getElementById('projectPromptInput');
   if (titleEl) titleEl.value = p?.title || '';
+  if (pathEl) pathEl.value = p?.path || '';
   if (prefaceEl) prefaceEl.value = p?.preface || '';
   if (promptEl) promptEl.value = p?.prompt || '';
 }
@@ -1071,6 +1081,7 @@ function updateProjectSettings() {
   const p = activeProject();
   if (!p) return;
   p.title = document.getElementById('projectTitleInput')?.value || '';
+  p.path = document.getElementById('projectPathInput')?.value || '';
   p.preface = document.getElementById('projectPrefaceInput')?.value || '';
   p.prompt = document.getElementById('projectPromptInput')?.value || '';
   renderProjectControls();
@@ -2145,7 +2156,7 @@ function isPaperReadingRequest(text) {
   const hasAny = (words) => words.some((w) => t.includes(w));
   const mentionsPaper = hasAny(['论文', '文献', '文章', '这篇', '该文', 'paper', 'article', 'pdf']);
   const asksToRead = hasAny(['解析', '解读', '分析一下', '读一下', '阅读', '总结', '概括', '讲解', '解释', '看一下', '梳理', '提炼', 'summarize', 'summarise', 'explain', 'review', 'interpret']);
-  const asksToCode = hasAny(['写代码', '代码实现', '编程', 'python', '复现', '运行', '执行', '绘制', '画图', '生成图', '计算', '处理数据', '检测', '拾取', '导出', '保存', 'script', 'code', 'plot', 'run', 'execute', 'implement']);
+  const asksToCode = hasAny(['写代码', '代码实现', '编程', 'python', '复现', '运行', '执行', '绘制', '画图', '生成图', '计算', '处理数据', '检测', '拾取', '导出', '保存', '截图', '点击', '鼠标', '键盘', '快捷键', 'GUI', 'gui', 'script', 'code', 'plot', 'run', 'execute', 'implement']);
   return hasDocContext && mentionsPaper && asksToRead && !asksToCode;
 }
 
@@ -2159,16 +2170,14 @@ async function classifyIntent(text) {
         message:     text,
         kb_has_docs: kbHasDocs || sessionDocs.length > 0,
         history:     chatHistory.slice(-6),   // 最近 3 轮
+        last_intent_was_code: lastIntentWasCode,
       }),
     });
     const d = await r.json();
-    return d.intent || 'qa';
+    return d.intent || 'chat';
   } catch (e) {
-    const endsQ    = /[?？]\s*$/.test(t);
-    const actionRe = /执行|运行|处理一下|做一下|跑一下|跑下|计算一下|绘制一下|画一下|下载一下|检测一下|识别一下|拾取|触发/;
-    // Router 不可用时才保守回退。
-    if (actionRe.test(t) || /绘制|画图|滤波|频谱|读取|执行|运行|\.sac|\.mseed/i.test(t)) return 'code';
-    return endsQ ? 'qa' : 'chat';
+    // Router 不可用时不再用 QA 正则兜底；只保留上一轮 code 的连续修改入口。
+    return lastIntentWasCode ? 'code' : 'chat';
   }
 }
 
@@ -2231,7 +2240,7 @@ async function sendMessage() {
       showTyping(T('typing_code'));  // 正在生成代码...
       await sendCode(msgText);                              // 生成并执行技能代码
       // lastIntentWasCode is set inside sendCode on success
-    } else if (intent === 'qa' || sessionDocs.length > 0 || kbHasDocs) {
+    } else if (intent === 'qa') {
       lastIntentWasCode = false;     // 切换到问答模式，清除改进标记
       showTyping(T('typing_rag'));  // 正在检索知识...
       await sendRag(msgText);                               // 知识问答 + RAG 检索
@@ -2352,7 +2361,12 @@ async function sendCode(text, phase2Badge = false) {
     const r = await fetch('/api/chat/code', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({message: enrichedText, session_id: ownerSessionId}),
+      body: JSON.stringify({
+        message: enrichedText,
+        session_id: ownerSessionId,
+        project_path: activeProjectPath(),
+        project_context: projectContextText(),
+      }),
     });
     startData = await r.json();
   } catch(e) {

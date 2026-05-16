@@ -9,6 +9,8 @@ import subprocess
 import re as _re
 import time as _time
 import uuid as _uuid
+import shutil as _shutil
+import tempfile as _tempfile
 from datetime import datetime
 from pathlib import Path
 from werkzeug.utils import secure_filename
@@ -168,6 +170,94 @@ def _skill_context_with_sources(user_msg: str, *, max_skill_chars: int = 5000, m
         return skill_ctx or "", skill_rag_ctx or "", _dedupe_preserve_order(skill_sources)
     except Exception:
         return "", "", []
+
+
+def _path_within(child: Path, parent: Path) -> bool:
+    try:
+        child.resolve(strict=False).relative_to(parent.resolve(strict=False))
+        return True
+    except Exception:
+        return False
+
+
+def _is_safe_code_exec_dir(path: str | Path) -> bool:
+    try:
+        p = Path(path).expanduser().resolve(strict=False)
+    except Exception:
+        return False
+    tmp_root = Path(_tempfile.gettempdir()).resolve(strict=False)
+    return (
+        _path_within(p, tmp_root)
+        and p.name.startswith(("sage_exec_", "sage_bash_", "sage_script_"))
+    )
+
+
+def _is_safe_plan_file(path: Path, safe_exec_dirs: list[Path]) -> bool:
+    if not (path.name.startswith("engineering_plan") and path.suffix.lower() == ".md"):
+        return False
+    plan_cache = (_PROJECT_ROOT / ".sage_runtime" / "code_plans").resolve(strict=False)
+    if _path_within(path, plan_cache):
+        return True
+    return any(_path_within(path, d) for d in safe_exec_dirs)
+
+
+def _collect_code_artifact_refs(conversation: dict) -> tuple[list[Path], list[Path]]:
+    artifact_paths: list[Path] = []
+    exec_dirs: list[Path] = []
+    for msg in conversation.get("messages") or []:
+        if not isinstance(msg, dict) or msg.get("kind") != "code_result":
+            continue
+        data = msg.get("data") or {}
+        if not isinstance(data, dict):
+            continue
+        exec_dir = str(data.get("exec_dir") or "").strip()
+        if exec_dir and _is_safe_code_exec_dir(exec_dir):
+            exec_dirs.append(Path(exec_dir).expanduser().resolve(strict=False))
+        for raw in data.get("artifact_paths") or []:
+            try:
+                path = Path(str(raw)).expanduser().resolve(strict=False)
+            except Exception:
+                continue
+            artifact_paths.append(path)
+    return _dedupe_paths(artifact_paths), _dedupe_paths(exec_dirs)
+
+
+def _dedupe_paths(paths: list[Path]) -> list[Path]:
+    seen = set()
+    out = []
+    for path in paths:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(path)
+    return out
+
+
+def _cleanup_conversation_code_artifacts(conversation: dict) -> int:
+    """Delete CodeEngine temp dirs and persisted engineering plans for a conversation."""
+    artifact_paths, exec_dirs = _collect_code_artifact_refs(conversation or {})
+    removed = 0
+
+    for path in artifact_paths:
+        try:
+            if not path.exists() or not path.is_file():
+                continue
+            in_safe_exec = any(_path_within(path, d) for d in exec_dirs)
+            if in_safe_exec or _is_safe_plan_file(path, exec_dirs):
+                path.unlink()
+                removed += 1
+        except Exception:
+            pass
+
+    for d in exec_dirs:
+        try:
+            if d.exists() and d.is_dir() and _is_safe_code_exec_dir(d):
+                _shutil.rmtree(d, ignore_errors=True)
+                removed += 1
+        except Exception:
+            pass
+    return removed
 
 
 # ── Persistent chat history ────────────────────────────────────────────────
@@ -764,6 +854,7 @@ def _save_persistent_conversations(
         safe_projects.append({
             "id": pid,
             "title": str(p.get("title") or "")[:120],
+            "path": str(p.get("path") or "")[:1000],
             "preface": str(p.get("preface") or ""),
             "prompt": str(p.get("prompt") or ""),
             "createdAt": p.get("createdAt"),
@@ -861,18 +952,23 @@ def chat_conversation_delete(conversation_id):
     """Delete one persisted conversation and its Markdown mirror."""
     cid = _clean_conversation_id(conversation_id)
     data = _load_persistent_conversations()
+    deleted_conversation = next(
+        (c for c in data.get("conversations", []) if _clean_conversation_id(c.get("id")) == cid),
+        None,
+    )
     conversations = [c for c in data.get("conversations", []) if _clean_conversation_id(c.get("id")) != cid]
     active_id = data.get("active_id") or ""
     if active_id == cid:
         active_id = conversations[0].get("id", "") if conversations else ""
     try:
+        removed_artifacts = _cleanup_conversation_code_artifacts(deleted_conversation or {})
         _save_persistent_conversations(conversations, active_id, data.get("projects") or [], data.get("active_project_id") or "")
         md_path = CHAT_HISTORY_DIR / f"{cid}.md"
         if md_path.exists():
             md_path.unlink()
         _session_docs.pop(cid, None)
         _chat_jobs.pop(cid, None)
-        return jsonify({"ok": True, "deleted": cid})
+        return jsonify({"ok": True, "deleted": cid, "removed_artifacts": removed_artifacts})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
 

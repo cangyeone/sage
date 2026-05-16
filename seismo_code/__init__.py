@@ -7,6 +7,7 @@ safe_executor   在子进程中安全执行 Python 代码，捕获输出与图�
 toolkit         内置地震学工具函数（滤波、走时、震源参数、可视化等）
 code_engine     LLM 代码生成与多轮执行引擎（含 run_workflow 工作流调度）
 doc_parser      从文档文本/文件中解析外部工具接口，生成 ToolProfile
+gui_automation  可选后端的桌面 GUI 截图、鼠标和键盘控制 API
 """
 
 from .safe_executor import execute_code, ExecutionResult
@@ -17,6 +18,7 @@ from .code_engine import (
     get_code_engine, reset_code_engine,
 )
 from .doc_parser import DocParser, ToolProfile
+from .gui_automation import GuiAutomationError
 
 __all__ = [
     "execute_code", "ExecutionResult",
@@ -24,4 +26,5 @@ __all__ = [
     "StepResult", "WorkflowRunResult",
     "get_code_engine", "reset_code_engine",
     "DocParser", "ToolProfile",
+    "GuiAutomationError",
 ]

@@ -40,11 +40,18 @@ import urllib.request
 import hashlib
 import importlib
 import inspect
+import ast
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from .safe_executor import ExecutionResult, execute_bash, execute_code
-from .ce_prompts import _CODEGEN_SYSTEM, _DEBUG_SYSTEM, _VERIFY_SYSTEM, _PLAN_SYSTEM
+from .ce_prompts import (
+    _CODEGEN_SYSTEM,
+    _DEBUG_SYSTEM,
+    _ENGINEERING_PLAN_SYSTEM,
+    _PLAN_SYSTEM,
+    _VERIFY_SYSTEM,
+)
 from .ce_utils import (
     CodeRunResult, DebugAttempt, StepResult, WorkflowRunResult,
     _call_llm, _extract_code, _is_bash_code, _extract_diagnosis,
@@ -93,6 +100,7 @@ class CodeEngine:
         self._history: List[Dict] = [{"role": "system", "content": _CODEGEN_SYSTEM}]
         self._last_exec_dir: Optional[str] = None
         self._repo_baseline_files: Dict[str, str] = {}
+        self._current_engineering_plan_path: Optional[str] = None
 
     # ── Config ────────────────────────────────────────────────────────────────
 
@@ -200,17 +208,51 @@ class CodeEngine:
     # ── Repository context helpers ───────────────────────────────────────────
 
     @staticmethod
+    def _primary_user_request(text: str) -> str:
+        """Strip appended soft context so routing/validation sees the actual request."""
+        value = text or ""
+        markers = [
+            "\n\n===== Long-term user profile",
+            "\n===== Long-term user profile",
+            "\n\n===== Project context",
+            "\n\n## Repository Context",
+            "\n\n## Data/file context",
+        ]
+        cut = len(value)
+        for marker in markers:
+            idx = value.find(marker)
+            if idx >= 0:
+                cut = min(cut, idx)
+        return value[:cut].strip()
+
+    @staticmethod
     def _looks_like_repo_task(text: str) -> bool:
         """Heuristic for repository-editing requests."""
-        t = (text or "").lower()
-        keywords = [
-            "bug", "fix", "refactor", "implement", "integrate", "route", "api",
-            "frontend", "backend", "readme", "gitignore", "config", "ui",
-            "修复", "报错", "优化", "实现", "集成", "接口", "页面", "后端",
-            "前端", "配置", "代码", "更新", "删除", "添加",
-        ]
+        original = CodeEngine._primary_user_request(text)
+        t = original.lower()
         file_hints = [".py", ".js", ".ts", ".html", ".css", ".md", ".json", ".toml"]
-        return any(k in t for k in keywords) or any(h in t for h in file_hints)
+        if any(h in t for h in file_hints):
+            return True
+
+        repo_nouns = [
+            "sage", "codeengine", "coding agent", "router", "route", "api",
+            "frontend", "backend", "readme", "gitignore", "config", "web_app",
+            "seismo_code", "seismo_skill", "tests", "docs", "repository", "repo",
+            "codebase", "module", "function", "gui", "ui",
+            "仓库", "代码库", "项目", "路由", "接口", "前端", "后端", "配置",
+            "模块", "函数", "测试", "文档", "结构文档", "技能", "界面", "skill",
+        ]
+        actions = [
+            "bug", "fix", "refactor", "implement", "integrate", "update", "delete",
+            "remove", "add", "support", "optimize", "modify", "change",
+            "修复", "报错", "优化", "实现", "集成", "更新", "删除", "添加",
+            "支持", "修改", "改成", "改为", "加入", "加上", "删掉", "清理",
+            "放在", "写到",
+        ]
+        locating = bool(re.search(r"where|locate|find|定位|在哪里|哪个文件|位置", original, re.I))
+        has_repo_noun = any(k in t for k in repo_nouns)
+        has_action = any(k in t for k in actions)
+        return has_repo_noun and (has_action or locating)
 
     def _repo_file_list(self, limit: int = 260) -> List[str]:
         """Return tracked/worktree files for repository context."""
@@ -420,8 +462,8 @@ class CodeEngine:
             used += len(block)
         parts.append(
             "\n## Repository Editing Rules\n"
-            "- If the task is to change the SAGE codebase, generate a Python script that edits files under the project root.\n"
-            "- Use the SAGE Repo Map and SAGE-ranked files first, then targeted `rg` hits, to choose files.\n"
+            "- If the task is to change the active codebase, generate a Python script that edits files under the project root shown above.\n"
+            "- Use the repo map and ranked files first, then targeted `rg` hits, to choose files.\n"
             "- You MAY edit multiple files and create new modules/tests when the task requires it.\n"
             "- For non-trivial behavior changes, add, insert, update, or delete focused unit tests under `tests/`.\n"
             "- Deleting test code is allowed only when the test is obsolete, asserts the wrong behavior, or is replaced by equivalent/better coverage; print the reason.\n"
@@ -429,10 +471,11 @@ class CodeEngine:
             "- After editing, print `[SAGE_CHANGED] <path>` for every changed file.\n"
             "- Prefer structured file edits with pathlib and small helper functions; do not rewrite unrelated files.\n"
             "- Run validation inside the script with subprocess using cwd=PROJECT_ROOT: py_compile for changed Python files and targeted pytest for changed or related tests.\n"
+            "- For broad project-level requests or explicit full-test/build requests, run the relevant full suite too (`pytest`, `npm test`, `npm run build`, or the project's documented command) and print the command/result.\n"
             "- Python behavior changes must add/update focused unit tests or run existing focused tests found by filename/API relation.\n"
             "- Print changed file paths and include `[SAGE_TEST]` checks such as py_compile, pytest, syntax checks, or targeted API checks.\n"
             "- When locating behavior, use the provided `rg` hits and symbol index before editing.\n"
-            "- Do not modify files under `third_party/aider` unless the user explicitly asks."
+            "- Do not modify vendored or dependency directories such as `third_party/aider`, `node_modules`, or `.venv` unless the user explicitly asks."
         )
         parts.append(SAGE_EDITING_GUIDE)
         return "\n\n".join(parts)
@@ -461,12 +504,60 @@ class CodeEngine:
 
     @staticmethod
     def _repo_behavior_change_request(text: str) -> bool:
+        primary = CodeEngine._primary_user_request(text)
         return bool(re.search(
             r"\b(fix|implement|add|update|refactor|change|support|create|delete|remove)\b"
             r"|修复|实现|添加|更新|重构|支持|创建|删除|改成|改为",
-            text or "",
+            primary or "",
             re.I,
         ))
+
+    @staticmethod
+    def _repo_full_validation_request(text: str) -> bool:
+        primary = CodeEngine._primary_user_request(text)
+        return bool(re.search(
+            r"full\s*(test|suite|build)|entire\s*(test|suite|program)|all\s*tests|"
+            r"全量测试|完整测试|全部测试|全量构建|完整构建|构建全量|全量程序|"
+            r"跑全量|运行全部|测试全部",
+            primary or "",
+            re.I,
+        ))
+
+    def _run_full_project_validation(self, timeout: int = 300) -> tuple[bool, str]:
+        """Run broad project-level tests/builds when explicitly requested."""
+        root = Path(self.project_root)
+        commands: List[List[str]] = []
+        if (root / "tests").is_dir():
+            commands.append([sys.executable, "-m", "pytest"])
+        if (root / "package.json").is_file():
+            commands.append(["npm", "test"])
+            commands.append(["npm", "run", "build"])
+        if not commands:
+            return True, "[SAGE_TEST] no standard full test/build command found"
+
+        messages = []
+        for cmd in commands:
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    cwd=self.project_root,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    check=False,
+                )
+            except FileNotFoundError:
+                messages.append(f"[SAGE_TEST] skipped missing command: {' '.join(cmd)}")
+                continue
+            except subprocess.TimeoutExpired as exc:
+                return False, f"full validation timed out: {' '.join(cmd)}\n{str(exc)[-2000:]}"
+            if proc.returncode != 0:
+                return False, (
+                    f"full validation failed: {' '.join(cmd)}\n"
+                    + (proc.stdout + "\n" + proc.stderr)[-6000:]
+                )
+            messages.append(f"[SAGE_TEST] full validation passed: {' '.join(cmd)}")
+        return True, "\n".join(messages)
 
     def _repo_related_test_files(self, changed_files: List[str], request: str, limit: int = 8) -> List[str]:
         """Find existing focused tests likely affected by changed application files."""
@@ -522,7 +613,21 @@ class CodeEngine:
         """Heuristic for tasks likely to use SAGE-local scientific modules."""
         return bool(re.search(
             r"\bb[-_\s]?value\b|震级|b值|完整性震级|Gutenberg|Richter|FMD|"
-            r"catalog|目录|seismo_stats|plot_gr|plot_all|calc_bvalue|calc_mc",
+            r"catalog|目录|seismo_stats|plot_gr|plot_all|calc_bvalue|calc_mc|"
+            r"gui|desktop|mouse|click|button|window|screenshot|keyboard|hotkey|"
+            r"type text|scroll|drag|pyautogui|xdotool|鼠标|点击|按钮|窗口|界面|"
+            r"屏幕|截图|键盘|快捷键|输入|滚动|拖拽",
+            text or "",
+            re.I,
+        ))
+
+    @staticmethod
+    def _looks_like_gui_task(text: str) -> bool:
+        """Heuristic for requests that need desktop GUI automation helpers."""
+        return bool(re.search(
+            r"gui|desktop|mouse|click|button|window|screenshot|keyboard|hotkey|"
+            r"type text|scroll|drag|pyautogui|xdotool|鼠标|点击|按钮|窗口|界面|"
+            r"屏幕|截图|键盘|快捷键|输入|滚动|拖拽",
             text or "",
             re.I,
         ))
@@ -538,11 +643,20 @@ class CodeEngine:
         if not self._looks_like_local_api_task(request):
             return ""
 
-        modules = [
-            "seismo_stats.bvalue",
-            "seismo_stats.plotting",
-            "seismo_stats.catalog_loader",
-        ]
+        modules = []
+        if re.search(
+            r"\bb[-_\s]?value\b|震级|b值|完整性震级|Gutenberg|Richter|FMD|"
+            r"catalog|目录|seismo_stats|plot_gr|plot_all|calc_bvalue|calc_mc",
+            request or "",
+            re.I,
+        ):
+            modules.extend([
+                "seismo_stats.bvalue",
+                "seismo_stats.plotting",
+                "seismo_stats.catalog_loader",
+            ])
+        if self._looks_like_gui_task(request):
+            modules.append("seismo_code.gui_automation")
         parts = [
             "## Local API reference",
             "Use these exact signatures and return attributes for SAGE-local modules.",
@@ -594,7 +708,128 @@ class CodeEngine:
             "- For a Gutenberg-Richter plot from a `BvalueResult`, use `plot_gr(result, output_path)`. `plot_all(result, catalog, output_prefix)` is for full catalogs, not raw magnitude arrays.\n"
             "- If the user asks for uniformly random magnitudes in [0, 7], keep that uniform assumption; if no completeness threshold is specified, call `calc_bvalue_mle(magnitudes, mc=0.0)` and state that the b-value is a calculation under a non-Gutenberg-Richter synthetic distribution."
         )
+        if self._looks_like_gui_task(request):
+            parts.append(
+                "\n## GUI automation notes\n"
+                "- Use `seismo_code.gui_automation.backend_status()` to report available backends before acting.\n"
+                "- Use `screenshot('screen.png')` before coordinate clicks when the target position is uncertain.\n"
+                "- Use `click(x, y)`, `drag(from_x, from_y, to_x, to_y)`, `type_text(text)`, `hotkey('ctrl', 's')`, and `scroll(clicks)` for explicit GUI control.\n"
+                "- Do not pretend OCR/text-clicking is available; `click_text(...)` raises a clear error unless a future OCR backend is added.\n"
+                "- For browser pages, prefer browser automation/Playwright APIs when available; use pixel GUI control only when the user explicitly asks for desktop GUI operation."
+            )
         return "\n\n".join(parts)
+
+    def _build_engineering_plan(
+        self,
+        request: str,
+        *,
+        file_contexts: Optional[List[str]] = None,
+        repo_ctx: str = "",
+        skill_ctx: str = "",
+        rag_ctx: str = "",
+        local_api_ctx: str = "",
+        cancel_event=None,
+    ) -> str:
+        """Ask the LLM for a broad-to-detailed engineering plan with API/test details."""
+        self._raise_if_cancelled(cancel_event)
+        context_parts = []
+        if file_contexts:
+            context_parts.append("## Data/file context\n" + "\n\n".join(file_contexts))
+        if repo_ctx:
+            context_parts.append("## Repository context\n" + repo_ctx[:12000])
+        if skill_ctx:
+            context_parts.append("## Skill docs\n" + skill_ctx[:10000])
+        if rag_ctx:
+            context_parts.append("## Knowledge base\n" + rag_ctx[:6000])
+        if local_api_ctx:
+            context_parts.append("## Local API reference\n" + local_api_ctx[:9000])
+
+        prompt = (
+            f"## User request\n{request}\n\n"
+            + ("\n\n".join(context_parts) if context_parts else "(no extra context)")
+        )
+        try:
+            raw = _call_llm(
+                [
+                    {"role": "system", "content": _ENGINEERING_PLAN_SYSTEM},
+                    {"role": "user", "content": prompt},
+                ],
+                self.llm_config,
+                max_tokens=1400,
+                cancel_event=cancel_event,
+            ).strip()
+        except Exception:
+            raw = ""
+
+        if "## Engineering Plan" in raw and "### API Details" in raw:
+            return raw[:9000]
+
+        fallback = [
+            "## Engineering Plan",
+            "### Route",
+            "- Inspect provided context, identify the smallest implementation surface, then edit and validate.",
+            "### Files",
+        ]
+        if repo_ctx:
+            fallback.append("- Use the SAGE Repo Map and targeted rg hits to select implementation and test files.")
+        elif file_contexts:
+            fallback.append("- Use the profiled data file schema and exact column/API names.")
+        else:
+            fallback.append("- Create a standalone script with explicit functions and self-checks.")
+        fallback.extend([
+            "### API Details",
+            "- Use exact signatures from Local API reference and SKILL docs; do not invent imports or keyword arguments.",
+            "### Unit Tests",
+            "- Add/update focused unit tests for changed functions/APIs, or include `[SAGE_TEST]` self-checks for standalone scripts.",
+            "### Validation",
+            "- Run py_compile for changed Python files and targeted pytest for changed or related tests.",
+        ])
+        return "\n".join(fallback)
+
+    def _persist_engineering_plan(
+        self,
+        plan_text: str,
+        *,
+        exec_dir: Optional[str] = None,
+        attempt: int = 0,
+        reason: str = "initial",
+    ) -> str:
+        """Write the engineering plan/revision into the run directory for later debug rounds."""
+        if not plan_text:
+            return ""
+        try:
+            target_dir = Path(exec_dir or self._last_exec_dir or self.project_root) / ".sage_runtime" / "code_plans"
+            if exec_dir:
+                target_dir = Path(exec_dir)
+            target_dir.mkdir(parents=True, exist_ok=True)
+            name = "engineering_plan.md" if attempt <= 0 else f"engineering_plan_debug_round_{attempt}.md"
+            path = target_dir / name
+            path.write_text(
+                f"<!-- SAGE engineering plan: {reason}; attempt={attempt} -->\n\n"
+                + plan_text.strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            if attempt <= 0:
+                self._current_engineering_plan_path = str(path)
+            return str(path)
+        except Exception:
+            return ""
+
+    def _load_engineering_plan_for_debug(self, fallback: str = "", max_chars: int = 9000) -> str:
+        """Read the persisted plan so debug rounds use the same design contract."""
+        candidates = []
+        if self._current_engineering_plan_path:
+            candidates.append(Path(self._current_engineering_plan_path))
+        if self._last_exec_dir:
+            candidates.append(Path(self._last_exec_dir) / "engineering_plan.md")
+        for path in candidates:
+            try:
+                if path.is_file():
+                    return path.read_text(encoding="utf-8", errors="replace")[:max_chars]
+            except Exception:
+                pass
+        return (fallback or "")[:max_chars]
 
     def _run_repo_validation(
         self,
@@ -603,7 +838,10 @@ class CodeEngine:
         timeout: int = 90,
     ) -> tuple[bool, str]:
         """Run deterministic validation for repository edits."""
+        wants_full = self._repo_full_validation_request(request)
         if not changed_files:
+            if wants_full:
+                return self._run_full_project_validation(timeout=max(timeout, 300))
             if self._repo_behavior_change_request(request):
                 return False, "repo coding task made no codebase changes"
             return True, "[SAGE_TEST] repository inspection completed without edits"
@@ -666,6 +904,11 @@ class CodeEngine:
 
         if not messages:
             messages.append("[SAGE_TEST] repository files changed: " + ", ".join(changed_files[:12]))
+        if wants_full:
+            ok, note = self._run_full_project_validation(timeout=max(timeout, 300))
+            if not ok:
+                return False, note
+            messages.append(note)
         return True, "\n".join(messages)
 
     # ── Output checkers ───────────────────────────────────────────────────────
@@ -969,6 +1212,22 @@ class CodeEngine:
 
         return "\n\n".join(parts) if parts else "No error details captured."
 
+    @staticmethod
+    def _response_has_fenced_code(text: str) -> bool:
+        """True when an LLM response contains a fenced code block."""
+        return bool(re.search(r"```(?:python|py|bash|sh)?\s*.*?(?:```|\Z)", text or "", re.DOTALL | re.I))
+
+    @staticmethod
+    def _python_syntax_error(code: str) -> str:
+        """Return a syntax error message for Python code, or empty string when valid."""
+        if _is_bash_code(code):
+            return ""
+        try:
+            ast.parse(re.sub(r"^#\s*lang:python\s*\n", "", code, count=1))
+            return ""
+        except SyntaxError as exc:
+            return f"SyntaxError: {exc.msg} at line {exc.lineno}"
+
     # ── Debug + fix ───────────────────────────────────────────────────────────
 
     def _debug_and_fix(
@@ -984,6 +1243,7 @@ class CodeEngine:
         extra_rag_ctx: str = "",    # ← error-specific RAG docs
         local_api_ctx: str = "",    # ← local introspected API docs
         exec_dir: Optional[str] = None,  # ← run fixed code in this dir (workflow)
+        engineering_plan: str = "",
         cancel_event=None,
     ) -> tuple[str, ExecutionResult, str]:
         """
@@ -1021,6 +1281,14 @@ class CodeEngine:
                 "\n\n## Local API reference\n"
                 + local_api_ctx
                 + "\n\nUse these exact signatures and attributes when fixing imports, calls, and plots.")
+        persisted_plan = self._load_engineering_plan_for_debug(engineering_plan)
+        if persisted_plan:
+            debug_system += (
+                "\n\n## Persisted engineering plan\n"
+                + persisted_plan
+                + "\n\nDebug against this design/API/test plan. If the fix changes the plan, "
+                "print the updated detail and keep tests aligned."
+            )
 
         failed_lang = "bash" if _is_bash_code(failed_code) else "python"
         debug_messages = [
@@ -1030,7 +1298,9 @@ class CodeEngine:
                 f"{file_ctx_str}\n\n"
                 f"## Failing code\n```{failed_lang}\n{failed_code}\n```\n\n"
                 f"## Error output\n{error_ctx}\n\n"
-                "Fix the code. Output [DIAGNOSIS] then one corrected fenced code block."
+                "Fix the code. Output exactly two parts: one [DIAGNOSIS] line, then one complete corrected fenced code block. "
+                "Do not output prose, Markdown explanations, or diagnosis text inside the code block. "
+                "The code block must be executable and syntactically complete."
             )},
         ]
 
@@ -1044,7 +1314,35 @@ class CodeEngine:
 
         self._raise_if_cancelled(cancel_event)
         diagnosis  = _extract_diagnosis(raw)
+        if not self._response_has_fenced_code(raw):
+            from dataclasses import replace as _dc_replace
+            guarded = _dc_replace(
+                exec_res,
+                success=False,
+                stderr=(
+                    (exec_res.stderr or "")
+                    + "\n[DEBUG OUTPUT INVALID] debugger returned prose instead of a fenced code block"
+                ),
+                error="Debugger returned prose instead of executable code",
+            )
+            return failed_code, guarded, (
+                diagnosis
+                + " [Rejected: debugger response did not contain a fenced code block.]"
+            )
         fixed_code = _extract_code(raw)
+        syntax_error = self._python_syntax_error(fixed_code)
+        if syntax_error:
+            from dataclasses import replace as _dc_replace
+            guarded = _dc_replace(
+                exec_res,
+                success=False,
+                stderr=(exec_res.stderr or "") + f"\n[DEBUG OUTPUT INVALID] {syntax_error}",
+                error=f"Debugger returned syntactically invalid code: {syntax_error}",
+            )
+            return failed_code, guarded, (
+                diagnosis
+                + f" [Rejected: debugger returned syntactically invalid code: {syntax_error}.]"
+            )
 
         self._emit(on_progress, "executing", attempt, f"Running fixed code (attempt {attempt})…")
         # Execute in shared dir (workflow) or fresh temp dir (single-request)
@@ -1053,6 +1351,28 @@ class CodeEngine:
                 fixed_code, timeout, exec_dir, cancel_event=cancel_event)
         else:
             new_exec = self._run_code(fixed_code, timeout, cancel_event=cancel_event)
+
+        try:
+            plan_revision = self._build_engineering_plan(
+                original_request
+                + "\n\nDebug diagnosis: "
+                + diagnosis
+                + "\n\nLatest error context:\n"
+                + error_ctx[:3000],
+                file_contexts=file_contexts,
+                skill_ctx=skill_ctx,
+                rag_ctx=extra_rag_ctx,
+                local_api_ctx=local_api_ctx,
+                cancel_event=cancel_event,
+            )
+            self._persist_engineering_plan(
+                plan_revision,
+                exec_dir=exec_dir or new_exec.exec_dir,
+                attempt=attempt,
+                reason=f"debug round {attempt}: {diagnosis[:120]}",
+            )
+        except Exception:
+            pass
 
         return fixed_code, new_exec, diagnosis
 
@@ -1160,7 +1480,6 @@ class CodeEngine:
                 repo_ctx = self._build_repo_context(user_request)
                 if repo_ctx:
                     msg += "\n\n" + repo_ctx
-            self._history.append({"role": "user", "content": msg})
 
             # 3. Build skill + RAG context (queried once; forwarded to debug loop)
             try:
@@ -1171,6 +1490,30 @@ class CodeEngine:
                 raise
             except Exception:
                 skill_ctx, rag_ctx = "", ""
+
+            local_api_ctx = self._build_local_api_context(user_request)
+
+            self._emit(on_progress, "planning", 0, "Building engineering plan…")
+            engineering_plan = self._build_engineering_plan(
+                user_request,
+                file_contexts=file_contexts,
+                repo_ctx=repo_ctx,
+                skill_ctx=skill_ctx,
+                rag_ctx=rag_ctx,
+                local_api_ctx=local_api_ctx,
+                cancel_event=cancel_event,
+            )
+            if engineering_plan:
+                msg += "\n\n## Engineering Plan to follow\n" + engineering_plan
+                preview = " → ".join(
+                    ln.lstrip("- ").strip()
+                    for ln in engineering_plan.splitlines()
+                    if ln.strip().startswith("- ")
+                )[:500]
+                if preview:
+                    self._emit(on_progress, "planning", 0, "Engineering plan: " + preview)
+
+            self._history.append({"role": "user", "content": msg})
 
             system = _CODEGEN_SYSTEM
             if skill_ctx:
@@ -1192,9 +1535,15 @@ class CodeEngine:
                     "add/update focused tests for behavioral changes, run py_compile/pytest checks, and print a concise diff summary. "
                     "The generated script should be an edit-and-test driver, not the final application code."
                 )
-            local_api_ctx = self._build_local_api_context(user_request)
             if local_api_ctx:
                 system += "\n\n" + local_api_ctx
+            if engineering_plan:
+                system += (
+                    "\n\n## Required Engineering Plan\n"
+                    + engineering_plan
+                    + "\n\nFollow this plan from coarse route to file/API details to unit tests. "
+                    "If implementation discovers a better detail, update the code and tests coherently and print the reason."
+                )
 
             messages = [{"role": "system", "content": system}] + \
                        [m for m in self._history if m["role"] != "system"]
@@ -1254,6 +1603,20 @@ class CodeEngine:
                     code, timeout, shared_dir=output_dir, cancel_event=cancel_event)
             else:
                 exec_res = self._run_code(code, timeout, cancel_event=cancel_event)
+            if 'engineering_plan' in locals() and engineering_plan:
+                plan_path = self._persist_engineering_plan(
+                    engineering_plan,
+                    exec_dir=output_dir or exec_res.exec_dir,
+                    attempt=0,
+                    reason="initial generation",
+                )
+                if plan_path:
+                    self._emit(on_progress, "planning", 0, f"Engineering plan saved: {plan_path}")
+                    from dataclasses import replace as _dc_replace
+                    exec_res = _dc_replace(
+                        exec_res,
+                        output_files=list(dict.fromkeys((exec_res.output_files or []) + [plan_path])),
+                    )
             self._raise_if_cancelled(cancel_event)
         except CodeExecutionCancelled:
             self._emit(on_progress, "cancelled", 0, "Execution cancelled.")
@@ -1315,6 +1678,7 @@ class CodeEngine:
                 skill_ctx=skill_ctx, extra_rag_ctx=dbg_rag,
                 local_api_ctx=local_api_ctx if 'local_api_ctx' in locals() else "",
                 exec_dir=output_dir,
+                engineering_plan=engineering_plan if 'engineering_plan' in locals() else "",
                 cancel_event=cancel_event,
             )
             self._raise_if_cancelled(cancel_event)
@@ -1393,6 +1757,22 @@ class CodeEngine:
         })
         if exec_res:
             self._last_exec_dir = exec_res.exec_dir
+            try:
+                plan_files = []
+                if exec_res.exec_dir:
+                    plan_files = [
+                        str(p)
+                        for p in sorted(Path(exec_res.exec_dir).glob("engineering_plan*.md"))
+                        if p.is_file()
+                    ]
+                if plan_files:
+                    from dataclasses import replace as _dc_replace
+                    exec_res = _dc_replace(
+                        exec_res,
+                        output_files=list(dict.fromkeys((exec_res.output_files or []) + plan_files)),
+                    )
+            except Exception:
+                pass
 
         # 9. Verify (optional)
         verify_pass, verify_note = None, ""

@@ -21,6 +21,7 @@ from seismo_code.ce_prompts import _CODEGEN_SYSTEM
 from seismo_code.safe_executor import ExecutionResult
 from seismo_code.repo_intelligence import build_repo_intelligence
 from routes import code as code_routes
+import helpers as web_helpers
 
 
 class TestRepoCodingHelpers(unittest.TestCase):
@@ -185,6 +186,115 @@ class TestRepoCodingHelpers(unittest.TestCase):
         self.assertIn("plot_gr(result, output_path)", context)
         self.assertIn("plot_all(result, catalog, output_prefix)", context)
 
+    def test_standalone_plot_request_with_profile_context_is_not_repo_task(self):
+        message = (
+            "帮我用python 绘制一下中国地形图\n\n"
+            "===== Long-term user profile (soft context; do not mention unless useful) =====\n"
+            "用户正在优化 coding agent，希望它能添加测试、更新代码和定位函数。"
+        )
+
+        self.assertFalse(CodeEngine._looks_like_repo_task(message))
+        self.assertFalse(CodeEngine._repo_behavior_change_request(message))
+
+    def test_repo_edit_request_still_detected_with_primary_text(self):
+        message = "帮我优化 coding agent，让它能更新多个文件并写单元测试"
+
+        self.assertTrue(CodeEngine._looks_like_repo_task(message))
+        self.assertTrue(CodeEngine._repo_behavior_change_request(message))
+
+    def test_active_project_marker_promotes_feature_requests_to_repo_task(self):
+        message = (
+            "实现登录功能\n\n"
+            "===== Active coding project =====\n"
+            "Project root: /tmp/myapp\n"
+            "Use this as the primary repository/workspace for code search, edits, builds, and tests.\n"
+        )
+
+        self.assertTrue(CodeEngine._looks_like_repo_task(message))
+
+    def test_full_project_validation_runs_pytest_when_requested(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tests").mkdir()
+            (root / "tests" / "test_ok.py").write_text(
+                "def test_ok():\n"
+                "    assert True\n",
+                encoding="utf-8",
+            )
+            engine = self._engine(tmp)
+
+            ok, note = engine._run_repo_validation("运行全量测试", [])
+
+            self.assertTrue(ok, note)
+            self.assertIn("full validation passed", note)
+
+    def test_web_code_engine_uses_project_root_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = web_helpers.get_code_engine(
+                "unit_project_session",
+                {"provider": "test", "api_base": "http://test", "model": "test"},
+                tmp,
+            )
+
+            self.assertEqual(Path(engine.project_root).resolve(), Path(tmp).resolve())
+
+    def test_engineering_plan_contains_api_and_unit_test_details(self):
+        engine = self._engine(str(PROJECT_ROOT))
+        plan_text = (
+            "## Engineering Plan\n"
+            "### Route\n- locate route and helper\n"
+            "### Files\n- `web_app/routes/chat.py`: update builder\n"
+            "### API Details\n- `_build_rag_messages(data)`: returns messages, sources, config\n"
+            "### Unit Tests\n- `tests/test_chat_references.py`: assert sources include skills\n"
+            "### Validation\n- `python -m pytest tests/test_chat_references.py`: focused regression\n"
+        )
+
+        with patch("seismo_code.code_engine._call_llm", return_value=plan_text):
+            plan = engine._build_engineering_plan(
+                "优化 QA sources",
+                repo_ctx="## Repository Context\nweb_app/routes/chat.py",
+                local_api_ctx="## Local API reference",
+            )
+
+        self.assertIn("### API Details", plan)
+        self.assertIn("_build_rag_messages", plan)
+        self.assertIn("### Unit Tests", plan)
+        self.assertIn("tests/test_chat_references.py", plan)
+
+    def test_engineering_plan_fallback_requires_api_and_tests(self):
+        engine = self._engine(str(PROJECT_ROOT))
+
+        with patch("seismo_code.code_engine._call_llm", side_effect=RuntimeError("llm down")):
+            plan = engine._build_engineering_plan(
+                "实现一个新 API",
+                repo_ctx="## Repository Context\npkg/api.py",
+            )
+
+        self.assertIn("## Engineering Plan", plan)
+        self.assertIn("### API Details", plan)
+        self.assertIn("### Unit Tests", plan)
+        self.assertIn("py_compile", plan)
+
+    def test_engineering_plan_persists_and_loads_for_debug(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self._engine(tmp)
+            plan = (
+                "## Engineering Plan\n"
+                "### API Details\n- `add(a, b)`: returns sum\n"
+                "### Unit Tests\n- `tests/test_maths.py`: assert add\n"
+            )
+
+            path = engine._persist_engineering_plan(
+                plan,
+                exec_dir=tmp,
+                reason="unit test",
+            )
+            loaded = engine._load_engineering_plan_for_debug()
+
+            self.assertTrue(Path(path).is_file())
+            self.assertIn("### API Details", loaded)
+            self.assertIn("tests/test_maths.py", loaded)
+
     def test_mini_test_rejects_replacing_uniform_random_magnitudes(self):
         engine = self._engine(str(PROJECT_ROOT))
         code = (
@@ -296,6 +406,110 @@ class TestCodeRouteRepoGuard(unittest.TestCase):
 
         self.assertEqual(data["intent"], "code")
         self.assertEqual(mock_router.call_count, 1)
+
+    def test_python_plot_artifact_request_is_forced_to_code(self):
+        app = Flask(__name__)
+        with (
+            patch.object(
+                code_routes,
+                "get_llm_config",
+                return_value={"provider": "test", "api_base": "http://test", "model": "test"},
+            ),
+            patch("helpers.llm_call", return_value="qa") as mock_router,
+        ):
+            with app.test_request_context(
+                "/api/chat/route",
+                method="POST",
+                json={
+                    "message": "帮我用python 绘制一下中国地形图",
+                    "history": [],
+                    "kb_has_docs": False,
+                },
+            ):
+                resp = code_routes.chat_route()
+                data = resp.get_json()
+
+        self.assertEqual(data["intent"], "code")
+        self.assertEqual(mock_router.call_count, 1)
+
+    def test_gui_operation_request_is_forced_to_code(self):
+        app = Flask(__name__)
+        with (
+            patch.object(
+                code_routes,
+                "get_llm_config",
+                return_value={"provider": "test", "api_base": "http://test", "model": "test"},
+            ),
+            patch("helpers.llm_call", return_value="qa") as mock_router,
+        ):
+            with app.test_request_context(
+                "/api/chat/route",
+                method="POST",
+                json={
+                    "message": "帮我截图并点击 GUI 里的确定按钮",
+                    "history": [],
+                    "kb_has_docs": False,
+                },
+            ):
+                resp = code_routes.chat_route()
+                data = resp.get_json()
+
+        self.assertEqual(data["intent"], "code")
+        self.assertEqual(mock_router.call_count, 1)
+
+    def test_previous_code_refinement_request_is_forced_to_code(self):
+        app = Flask(__name__)
+        with (
+            patch.object(
+                code_routes,
+                "get_llm_config",
+                return_value={"provider": "test", "api_base": "http://test", "model": "test"},
+            ),
+            patch("helpers.llm_call", return_value="qa") as mock_router,
+        ):
+            with app.test_request_context(
+                "/api/chat/route",
+                method="POST",
+                json={
+                    "message": "注意标题支持MAC系统的中文显示。",
+                    "history": [
+                        {"role": "user", "content": "帮我用python 绘制一下中国地形图"},
+                        {"role": "assistant", "content": "执行成功\n输出:\n[SAGE_TEST] 地形图生成成功\n生成了 1 张图像"},
+                    ],
+                    "kb_has_docs": False,
+                    "last_intent_was_code": True,
+                },
+            ):
+                resp = code_routes.chat_route()
+                data = resp.get_json()
+
+        self.assertEqual(data["intent"], "code")
+        self.assertEqual(mock_router.call_count, 1)
+
+    def test_router_fallback_does_not_default_questions_to_qa(self):
+        app = Flask(__name__)
+        with (
+            patch.object(
+                code_routes,
+                "get_llm_config",
+                return_value={"provider": "test", "api_base": "http://test", "model": "test"},
+            ),
+            patch("helpers.llm_call", side_effect=RuntimeError("router down")),
+        ):
+            with app.test_request_context(
+                "/api/chat/route",
+                method="POST",
+                json={
+                    "message": "什么是 b 值？",
+                    "history": [],
+                    "kb_has_docs": True,
+                },
+            ):
+                resp = code_routes.chat_route()
+                data = resp.get_json()
+
+        self.assertEqual(data["intent"], "chat")
+        self.assertTrue(data.get("fallback"))
 
 
 if __name__ == "__main__":

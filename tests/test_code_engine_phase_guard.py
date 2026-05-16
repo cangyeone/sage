@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -13,6 +14,54 @@ from seismo_code.safe_executor import ExecutionResult
 
 
 class TestPhasePickingGuard(unittest.TestCase):
+    def test_debugger_rejects_prose_without_executing_it(self):
+        engine = CodeEngine(llm_config={"provider": "test", "api_base": "http://test", "model": "test"})
+        failed = ExecutionResult(
+            success=False,
+            stdout="",
+            stderr="SyntaxError: '(' was never closed",
+            error="SyntaxError",
+        )
+        raw = (
+            "[DIAGNOSIS] `StamenTerrain` was removed in newer cartopy versions; "
+            "move the import inside a try-except so the fallback terrain works."
+        )
+
+        with patch("seismo_code.code_engine._call_llm", return_value=raw):
+            code, exec_res, diagnosis = engine._debug_and_fix(
+                "继续画图",
+                "print(",
+                failed,
+                attempt=1,
+                timeout=5,
+                on_progress=None,
+            )
+
+        self.assertEqual(code, "print(")
+        self.assertFalse(exec_res.success)
+        self.assertIn("prose instead of executable code", exec_res.error)
+        self.assertIn("Rejected", diagnosis)
+
+    def test_debugger_rejects_syntactically_invalid_python_block(self):
+        engine = CodeEngine(llm_config={"provider": "test", "api_base": "http://test", "model": "test"})
+        failed = ExecutionResult(success=False, stderr="SyntaxError", error="SyntaxError")
+        raw = "[DIAGNOSIS] still truncated\n```python\nbody = Ellipse((cl\n```"
+
+        with patch("seismo_code.code_engine._call_llm", return_value=raw):
+            code, exec_res, diagnosis = engine._debug_and_fix(
+                "继续画图",
+                "print(",
+                failed,
+                attempt=1,
+                timeout=5,
+                on_progress=None,
+            )
+
+        self.assertEqual(code, "print(")
+        self.assertFalse(exec_res.success)
+        self.assertIn("syntactically invalid", exec_res.error)
+        self.assertIn("SyntaxError", diagnosis)
+
     def test_rejects_explicit_sage_test_fail_despite_zero_exit(self):
         engine = CodeEngine(llm_config={"provider": "test", "api_base": "http://test", "model": "test"})
         result = ExecutionResult(
