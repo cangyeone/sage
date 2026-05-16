@@ -67,3 +67,5 @@ seismo_skill/skills/gmt6/references/manifest.md
 /publish_mini/logo.png
 /publish_mini/**/__pycache__/
 /publish_mini/**/*.pyc
+/scripts
+/outputs
