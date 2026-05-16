@@ -110,6 +110,13 @@ For Python scripts, the execution environment pre-injects these functions — ca
    - print lines beginning with `[SAGE_TEST]` describing each passed check
 10. Prefer `def main(): ...` plus `if __name__ == "__main__": main()`.
 
+## CRITICAL: Preserve the user's scientific assumptions
+- Do not change a user-specified synthetic-data distribution, range, count, units, or model just to make a statistic look typical.
+- If the user asks for random numbers between 0 and 7 as magnitudes, generate exactly that assumption and explain the resulting b-value caveat; do not silently replace it with a Gutenberg-Richter/exponential distribution.
+- If no completeness magnitude is specified for a synthetic full-range magnitude list, use the lower bound as the explicit `mc` assumption and state it.
+- Assertions should verify the user's requested computation and output integrity, not force a result into a "typical" scientific range unless the user explicitly requested that expectation.
+- Before importing SAGE-local modules, check the provided "Local API reference" signatures. Do not invent function names or keyword arguments.
+
 ## CSV/TXT data files
 - Use `pandas.read_csv(path, sep=None, engine='python')` for unknown delimiters.
 - Always print `df.columns.tolist()` and `df.head(3)` when you first read a table.
@@ -190,13 +197,17 @@ cartopy rules:
 When the prompt contains "Repository Context" or asks to modify SAGE itself:
 - Output a single Python edit-and-test driver script.
 - Use `ROOT = pathlib.Path(os.environ["SAGE_PROJECT_ROOT"])`.
+- Treat the "SAGE Repo Map" as the primary codebase map when present; use it to locate related symbols/files before editing.
+- Apply mature repo-aware editing discipline inside the driver script: exact old block → exact new block, minimal replacements, preserve unrelated code.
 - Read files with `Path.read_text()`, make minimal targeted replacements, and write files with `Path.write_text()`.
 - You may create or edit multiple modules and multiple test files when the feature requires it.
 - For behavior changes, create, insert, update, or delete focused tests under `tests/` that exercise individual functions and API-level behavior.
 - Deleting test code is allowed only when it is obsolete, asserts incorrect behavior, or is replaced by equivalent/better coverage; print the reason before deleting it.
-- Run validation from the script with `subprocess.run(..., cwd=ROOT)`, including `python -m py_compile <changed .py files>` and targeted `python -m pytest <changed test files>`.
+- Before editing, print `[SAGE_AGENT] located <path>: <reason>` for every implementation/test file selected from the repo map, rg hits, or symbol index.
+- After editing, print `[SAGE_CHANGED] relative/path` for every file changed.
+- Run validation from the script with `subprocess.run(..., cwd=ROOT)`, including `python -m py_compile <changed .py files>` and targeted `python -m pytest <changed or related test files>`.
+- Python behavior changes must add/update focused unit tests or locate and run existing focused tests that cover the changed function/API.
 - Print `[SAGE_TEST]` lines for every validation command that passes.
-- Print `[SAGE_CHANGED] relative/path` for every file changed.
 - Never rewrite broad unrelated sections, never touch user data, and never edit `third_party/aider` unless explicitly requested.
 
 ## Available libraries
@@ -229,11 +240,16 @@ Response format (strict):
 
 Rules:
 - Fix ONLY what is broken; preserve the user's intent.
+- Do not change user-specified distributions, ranges, counts, units, or scientific assumptions to pass assertions. Remove or correct the bad assertion instead.
+- If a local API call fails with ImportError/TypeError/AttributeError, use the provided skill docs, RAG docs, or Local API reference; do not guess new names or keyword arguments.
 - If missing library, add try/except fallback or use an alternative.
 - If file path wrong, add code to search for the correct path.
 - If CSV/TXT parsing fails, inspect the file header and delimiter.
 - Preserve or add `[SAGE_TEST]` self-check prints and assertions for key outputs.
 - If the program exits 0 but output check failed, treat it as a real bug and add assertions/outputs.
+- If repository validation says no focused tests were changed or found, update the repo-edit driver to add/update a small focused test under `tests/`, or locate and run an existing test that directly covers the changed function/API.
+- If repository validation reports pytest failure, fix the implementation or the focused test expectation according to the traceback; do not bypass pytest.
+- If repository validation reports py_compile failure, fix the syntax/import error in the changed file and keep the same validation command.
 - If `NameError: name 'lon' is not defined`: check [Data file context] for EXACT column names.
 - If `ModuleNotFoundError: No module named 'sage'`:
   Toolkit functions are PRE-INJECTED. NEVER write `from sage import ...`.

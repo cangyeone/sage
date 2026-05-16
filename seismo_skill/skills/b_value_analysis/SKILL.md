@@ -32,13 +32,14 @@ print(catalog.summary())
 
 ---
 
-### `calc_mc_maxcurvature(magnitudes, bin_width=0.1)`
+### `calc_mc_maxcurvature(magnitudes, mag_bin=0.1, correction=0.2)`
 
 Estimate minimum magnitude of completeness (Mc) using maximum curvature method.
 
 **Parameters:**
 - `magnitudes` : array-like — List of magnitudes
-- `bin_width` : float — Magnitude bin width, default 0.1
+- `mag_bin` : float — Magnitude bin width, default 0.1
+- `correction` : float — Bias correction added to raw maximum-curvature Mc, default 0.2
 
 **Returns:** float — Estimated Mc value
 
@@ -46,60 +47,64 @@ Estimate minimum magnitude of completeness (Mc) using maximum curvature method.
 from seismo_stats.bvalue import calc_mc_maxcurvature
 import numpy as np
 mags = catalog.magnitudes
-Mc = calc_mc_maxcurvature(mags)
+Mc = calc_mc_maxcurvature(mags, mag_bin=0.1)
 print(f"Maximum curvature Mc = {Mc:.1f}")
 ```
 
 ---
 
-### `calc_mc_gof(magnitudes, bin_width=0.1, conf_level=0.9)`
+### `calc_mc_gof(magnitudes, mag_bin=0.1, r_threshold=95.0)`
 
 Estimate Mc using goodness-of-fit method, more robust than maximum curvature.
 
 **Parameters:**
 - `magnitudes` : array-like
-- `bin_width` : float — Default 0.1
-- `conf_level` : float — Confidence level, default 0.9 (90%)
+- `mag_bin` : float — Magnitude bin width, default 0.1
+- `r_threshold` : float — Required percentage of data fit, default 95.0
 
-**Returns:** `(Mc, R_best)` — Mc value and optimal fit residual
+**Returns:** float — Estimated Mc value
 
 ```python
 from seismo_stats.bvalue import calc_mc_gof
-Mc, R = calc_mc_gof(mags, conf_level=0.9)
-print(f"Goodness-of-fit Mc = {Mc:.1f}  (residual R = {R:.3f})")
+Mc = calc_mc_gof(mags, mag_bin=0.1, r_threshold=95.0)
+print(f"Goodness-of-fit Mc = {Mc:.1f}")
 ```
 
 ---
 
-### `calc_bvalue_mle(magnitudes, Mc, bin_width=0.1)`
+### `calc_bvalue_mle(magnitudes, mc=None, mag_bin=0.1, mc_method="maxcurvature")`
 
 Calculate b-value using maximum likelihood estimation (MLE / Aki 1965), highest precision.
 
 **Parameters:**
 - `magnitudes` : array-like
-- `Mc` : float — Magnitude of completeness
-- `bin_width` : float — Default 0.1
+- `mc` : float or None — Magnitude of completeness; estimated automatically when None
+- `mag_bin` : float — Magnitude bin width, default 0.1
+- `mc_method` : `"maxcurvature"` or `"gof"` — Method used when `mc` is None
 
 **Returns:** `BvalueResult` object
 
 **BvalueResult attributes:**
-- `.b` — b-value
-- `.sigma_b` — Standard error
-- `.a` — a-value (G-R relationship intercept)
+- `.b_value` — b-value
+- `.b_uncertainty` — Standard error of b (Shi & Bolt 1982)
+- `.a_value` — a-value (G-R relationship intercept)
 - `.n_events` — Number of events used for calculation
-- `.Mc` — Mc value used
+- `.mc` — Mc value used
+- `.mean_magnitude` — Mean magnitude of complete events
+- `.method` — `"mle"` or `"lsq"`
+- `.mc_method` — Mc source/method
 
 ```python
 from seismo_stats.bvalue import calc_bvalue_mle
-result = calc_bvalue_mle(mags, Mc=Mc)
-print(f"b = {result.b:.3f} ± {result.sigma_b:.3f}")
-print(f"a = {result.a:.3f}")
+result = calc_bvalue_mle(mags, mc=Mc, mag_bin=0.1)
+print(f"b = {result.b_value:.3f} ± {result.b_uncertainty:.3f}")
+print(f"a = {result.a_value:.3f}")
 print(f"Events used: {result.n_events}")
 ```
 
 ---
 
-### `calc_bvalue_lsq(magnitudes, Mc, bin_width=0.1)`
+### `calc_bvalue_lsq(magnitudes, mc=None, mag_bin=0.1, mc_method="maxcurvature")`
 
 Calculate b-value using least-squares fitting of G-R relationship, suitable for method comparison.
 
@@ -109,24 +114,24 @@ Calculate b-value using least-squares fitting of G-R relationship, suitable for 
 
 ```python
 from seismo_stats.bvalue import calc_bvalue_lsq
-result_lsq = calc_bvalue_lsq(mags, Mc=Mc)
-print(f"LSQ b = {result_lsq.b:.3f}")
+result_lsq = calc_bvalue_lsq(mags, mc=Mc, mag_bin=0.1)
+print(f"LSQ b = {result_lsq.b_value:.3f}")
 ```
 
 ---
 
-### `plot_gr(catalog_or_mags, Mc=None, outfile=None)`
+### `plot_gr(result, output_path, title=None)`
 
-Plot frequency-magnitude distribution (G-R plot) with automatic fitting and b-value annotation.
+Plot frequency-magnitude distribution (G-R plot) from a `BvalueResult` with b-value annotation.
 
 **Parameters:**
-- `catalog_or_mags` : CatalogData or array-like (list of magnitudes)
-- `Mc` : float — If None, auto-estimated
-- `outfile` : str — Save path
+- `result` : `BvalueResult` returned by `calc_bvalue_mle` or `calc_bvalue_lsq`
+- `output_path` : str — Save path
+- `title` : str or None — Optional plot title
 
 ```python
 from seismo_stats.plotting import plot_gr
-fig = plot_gr(catalog, Mc=Mc, outfile="fmd.png")
+plot_gr(result, "fmd.png")
 print("F-M distribution plot saved: fmd.png")
 ```
 
@@ -145,21 +150,22 @@ print(catalog.summary())
 mags = catalog.magnitudes
 
 # 2. Estimate Mc (compare two methods)
-Mc_mc = calc_mc_maxcurvature(mags)
-Mc_gof, R = calc_mc_gof(mags)
+Mc_mc = calc_mc_maxcurvature(mags, mag_bin=0.1)
+Mc_gof = calc_mc_gof(mags, mag_bin=0.1, r_threshold=95.0)
 print(f"Maximum curvature Mc = {Mc_mc:.1f}")
-print(f"Goodness-of-fit Mc = {Mc_gof:.1f}  (R = {R:.3f})")
+print(f"Goodness-of-fit Mc = {Mc_gof:.1f}")
 Mc = Mc_gof  # Use goodness-of-fit result
 
 # 3. Calculate b-value
-result = calc_bvalue_mle(mags, Mc=Mc)
-print(f"\nb-value (MLE) = {result.b:.3f} ± {result.sigma_b:.3f}")
-print(f"a-value       = {result.a:.3f}")
+result = calc_bvalue_mle(mags, mc=Mc, mag_bin=0.1)
+print(f"\nb-value (MLE) = {result.b_value:.3f} ± {result.b_uncertainty:.3f}")
+print(f"a-value       = {result.a_value:.3f}")
 print(f"N (M>=Mc)   = {result.n_events}")
 
 # 4. Plot
-plot_gr(catalog, Mc=Mc, outfile="fmd.png")
-plot_temporal(catalog, outfile="temporal.png")
+plot_gr(result, "fmd.png")
+plot_temporal(catalog, "temporal.png")
+plot_all(result, catalog, "catalog_summary")
 
 print("\nAnalysis complete, plots saved.")
 ```
@@ -170,4 +176,5 @@ print("\nAnalysis complete, plots saved.")
 
 - MLE method (Aki 1965) is statistically superior to LSQ; recommended as primary method
 - When event count < 50, b-value is unstable; results for reference only
-- When using `bin_width=0.1`, ensure catalog magnitude precision is 0.1
+- When using `mag_bin=0.1`, ensure catalog magnitude precision is 0.1
+- The MLE uncertainty follows Shi & Bolt (1982)

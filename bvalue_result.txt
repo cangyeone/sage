@@ -1,0 +1,7 @@
+n_events=10000
+Mc=0.00
+b_value=0.124803
+b_uncertainty=0.001248
+a_value=4.000000
+mean_magnitude=3.479851
+n_above=10000

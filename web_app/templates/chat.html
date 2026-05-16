@@ -113,10 +113,15 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
 .bubble p { margin:.3rem 0; }
 .bubble a { color:var(--accent); text-decoration:underline; }
 /* code block copy button */
-.code-wrapper { position:relative; }
-.copy-btn { position:absolute; top:.4rem; right:.4rem; border:none; background:#e0e0e0;
-  border-radius:5px; font-size:.72rem; padding:2px 8px; cursor:pointer; opacity:.7; }
-.copy-btn:hover { opacity:1; }
+.code-wrapper { position:relative; margin:.55rem 0; }
+.code-wrapper pre { margin:0; padding-top:2.05rem; }
+.code-toolbar { position:absolute; top:.38rem; right:.42rem; display:flex; align-items:center; gap:.35rem; z-index:2; }
+.code-lang-label { font-size:.7rem; color:#7a7f8e; text-transform:lowercase; background:rgba(255,255,255,.82);
+  border:1px solid #e3e6ef; border-radius:5px; padding:.08rem .35rem; }
+.copy-btn { border:1px solid #d7ddea; background:rgba(255,255,255,.92); color:#555;
+  border-radius:6px; font-size:.72rem; padding:.1rem .48rem; cursor:pointer; opacity:.82; }
+.copy-btn:hover { opacity:1; background:#fff; border-color:#c4cbe0; }
+.copy-btn.copied { color:#166534; border-color:#bbd7c0; background:#f0fdf4; }
 .msg-copy-btn { position:absolute; top:.35rem; right:.45rem; opacity:0; border:1px solid #d7ddea;
   background:rgba(255,255,255,.92); color:#666; border-radius:6px; font-size:.72rem;
   padding:.08rem .42rem; cursor:pointer; transition:opacity .15s; z-index:2; }
@@ -1843,15 +1848,13 @@ function _hlCode(code, lang) {
   const r = new marked.Renderer();
   r.code = function(code, lang) {
     const hl  = _hlCode(code, lang || '');
-    const lbl = lang
-      ? `<span style="font-size:.7rem;color:#888;text-transform:lowercase;margin-right:.35rem">${lang}</span>`
-      : '';
+    const lbl = lang ? `<span class="code-lang-label">${_esc(lang)}</span>` : '';
+    const copyLabel = (typeof T === 'function' ? T('copy_msg') : 'Copy');
     return [
       '<div class="code-wrapper">',
       `  <pre><code class="hljs">${hl}</code></pre>`,
-      `  <div style="display:flex;align-items:center;justify-content:flex-end;`,
-      `              padding:.15rem .5rem .3rem;gap:.3rem;border-top:1px solid #e8e8e8;">`,
-      `    ${lbl}<button class="copy-btn" onclick="copyCode(this)">Copy</button>`,
+      '  <div class="code-toolbar">',
+      `    ${lbl}<button class="copy-btn" type="button" onclick="copyCode(this)">${copyLabel}</button>`,
       '  </div>',
       '</div>'
     ].join('\n');
@@ -1963,21 +1966,7 @@ function _renderSourceChips(sources) {
 
 function copyCode(btn) {
   const code = btn.closest('.code-wrapper').querySelector('code');
-  navigator.clipboard.writeText(code.innerText).then(() => {
-    const prev = btn.textContent;
-    btn.textContent = '✓';
-    setTimeout(() => btn.textContent = prev, 1800);
-  }).catch(() => {
-    // fallback for browsers without clipboard API
-    const range = document.createRange();
-    range.selectNodeContents(code);
-    window.getSelection().removeAllRanges();
-    window.getSelection().addRange(range);
-    document.execCommand('copy');
-    window.getSelection().removeAllRanges();
-    btn.textContent = '✓';
-    setTimeout(() => btn.textContent = 'Copy', 1800);
-  });
+  copyTextToClipboard(code ? code.innerText : '', btn);
 }
 
 function copyTextToClipboard(text, btn=null) {
@@ -1986,21 +1975,28 @@ function copyTextToClipboard(text, btn=null) {
     if (!btn) return;
     const old = btn.textContent;
     btn.textContent = T('copied_msg');
-    setTimeout(() => btn.textContent = old || T('copy_msg'), 1200);
+    btn.classList && btn.classList.add('copied');
+    setTimeout(() => {
+      btn.textContent = old || T('copy_msg');
+      btn.classList && btn.classList.remove('copied');
+    }, 1200);
+  };
+  const fallback = () => {
+    const ta = document.createElement('textarea');
+    ta.value = value;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    done();
   };
   if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(value).then(done).catch(() => {});
+    navigator.clipboard.writeText(value).then(done).catch(fallback);
     return;
   }
-  const ta = document.createElement('textarea');
-  ta.value = value;
-  ta.style.position = 'fixed';
-  ta.style.left = '-9999px';
-  document.body.appendChild(ta);
-  ta.select();
-  document.execCommand('copy');
-  document.body.removeChild(ta);
-  done();
+  fallback();
 }
 
 function appendExecutionLog(parent, text, opts={}) {
@@ -2155,40 +2151,6 @@ function isPaperReadingRequest(text) {
 
 async function classifyIntent(text) {
   const t = text.trim();
-  const endsQ    = /[?？]\s*$/.test(t);
-  const hasPath  = /(?:^|[\s\u4e00-\u9fff，。：、])[/~][\w./\-]{4,}/.test(t);
-  const actionRe = /执行|运行|处理一下|做一下|跑一下|跑下|计算一下|绘制一下|画一下|下载一下|检测一下|识别一下|拾取|触发/;
-  const questionStartRe = /^(如何|怎么|怎样|什么是|什么叫|为什么|为何|哪种|哪些|请解释|能解释|介绍|介绍一下|讲一下|讲讲|请问|有没有什么|有何区别|原理|有什么区别|what is|what are|how to|how does|why |explain|tell me about)/i;
-  const explainRe = /(详细讲|讲一下|讲讲|解释|介绍|原理|机制|怎么回事|是什么|什么是|为什么|为何|区别|优缺点|适用|局限|解析|解读|读一下|阅读|总结|概括|看一下|梳理|how does|how .*work|what is|why |explain|tell me about|summari[sz]e|review)/i;
-  const concreteCodeRe = /(写代码|写个程序|代码实现|编程实现|实现一下|复现|生成脚本|运行|执行|读取|处理数据|绘制|画图|下载|保存|导出|计算一下|检测一下|检测下|检测上面|识别一下|拾取|触发|plot|run|execute|write.*code|implement|detect|pick|trigger)/i;
-
-  // 文档/论文阅读优先走 QA/RAG，避免“解析一下”被当成编程动作。
-  if (isPaperReadingRequest(t)) return 'qa';
-
-  // 快速路径 A：有绝对路径 且 无问号 → code
-  if (hasPath && !endsQ) return 'code';
-
-  // 快速路径 A1：解释/原理/怎么回事类请求优先 QA，避免算法名误触发 code
-  if (explainRe.test(t) && !concreteCodeRe.test(t)) return 'qa';
-
-  // 快速路径 A1b：算法/方法作用到数据对象上，是执行型任务
-  const applyMethodRe = /(使用|用|通过|基于).{0,30}(算法|方法|模型|STA\/?LTA|stalta|classic_sta_lta|recursive_sta_lta).{0,30}(检测|识别|拾取|触发|处理|分析|计算)|(?:检测|识别|拾取).{0,20}(波形|数据|事件|震相)/i;
-  if (applyMethodRe.test(t)) return 'code';
-
-  // 快速路径 A1c：连续对话里的“上述/上面/这个方法 + 实现/代码”应继承上一轮上下文进入 coding
-  const contextualCodeRe = /(用\s*Python|python|代码|编程|实现|复现|写出来|写个程序|完整实现|run it|code it|implement)/i;
-  const contextRefRe = /(上述|上面|上文|前面|刚才|这个|该|此|this|above|previous)/i;
-  if (contextualCodeRe.test(t) && (contextRefRe.test(t) || chatHistory.length > 1)) return 'code';
-
-  // 快速路径 A2：上轮是代码，且含"改进/调整"等关键词 → 直接路由 code（不用问 LLM）
-  const improvementRe = /^(改|修改|调整|改成|改为|换成|换个|改一下|调大|调小|放大|缩小|加上|加入|加个|删掉|删除|去掉|优化|美化|换颜色|标注|标记|重新|再画|再试|再来|继续|在此基础上|基于上面|在上面|在刚才)/;
-  if (lastIntentWasCode && improvementRe.test(t) && !endsQ) return 'code';
-
-  // 快速路径 A3：有文献上下文，且要求复现/实现 → chain（先 RAG 提取方法，再 Code 生成）
-  const reproducingRe = /复现|实现一下|用.{0,5}实现|帮我写|帮我实现|编程实现|代码实现|写代码|写个程序|写出来|用Python|用代码|reproduce|implement|code it|write.*code/i;
-  if ((sessionDocs.length > 0 || lastIntentWasPaper) && reproducingRe.test(t) && !endsQ) return 'chain';
-
-  // 其余情况：交给后端 LLM 判断（传入最近对话历史帮助消歧）
   try {
     const r = await fetch('/api/chat/route', {
       method: 'POST',
@@ -2202,9 +2164,11 @@ async function classifyIntent(text) {
     const d = await r.json();
     return d.intent || 'qa';
   } catch (e) {
-    // 网络失败时保守回退：有操作动词才 code，否则 qa
+    const endsQ    = /[?？]\s*$/.test(t);
+    const actionRe = /执行|运行|处理一下|做一下|跑一下|跑下|计算一下|绘制一下|画一下|下载一下|检测一下|识别一下|拾取|触发/;
+    // Router 不可用时才保守回退。
     if (actionRe.test(t) || /绘制|画图|滤波|频谱|读取|执行|运行|\.sac|\.mseed/i.test(t)) return 'code';
-    return 'qa';
+    return endsQ ? 'qa' : 'chat';
   }
 }
 
@@ -2257,6 +2221,11 @@ async function sendMessage() {
     if (intent === 'chain') {
       // ── 串联模式：论文解读 → 编程 Agent ──────────────────────────────
       await sendChainRagCode(msgText);
+    } else if (intent === 'code_draft') {
+      lastIntentWasCode = false;
+      lastIntentWasPaper = false;
+      showTyping(currentLang === 'zh' ? '正在写代码草稿…' : 'Drafting code…');
+      await sendCodeDraft(msgText);
     } else if (intent === 'code') {
       lastIntentWasPaper = false;
       showTyping(T('typing_code'));  // 正在生成代码...
@@ -3195,6 +3164,77 @@ async function sendNormal(text, images=[]) {
   _persistHistory();
 }
 
+function appendCodeDraftHint(originalText) {
+  const hintWrap = document.createElement('div');
+  hintWrap.className = 'msg msg-assistant improve-hint-row';
+  hintWrap.style.cssText = 'margin-top:-.4rem;margin-bottom:.75rem;';
+
+  const hintCard = document.createElement('div');
+  hintCard.style.cssText = 'display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;padding:.35rem .65rem;background:#eef7ff;border:1px solid #bbdefb;border-radius:10px;font-size:.78rem;color:#1565c0;max-width:82%;';
+
+  const hintLabel = document.createElement('span');
+  hintLabel.style.cssText = 'opacity:.8;';
+  hintLabel.textContent = currentLang === 'zh'
+    ? '要我直接运行的话，请把数据文件/目录路径发给我：'
+    : 'To run it, send me the data file/folder path:';
+  hintCard.appendChild(hintLabel);
+
+  const chips = currentLang === 'zh'
+    ? ['我有数据路径，帮我运行', '改成读取CSV文件', '用随机数据演示']
+    : ['I have a data path', 'Adapt for CSV input', 'Demo with random data'];
+
+  chips.forEach(s => {
+    const chip = document.createElement('button');
+    chip.style.cssText = 'border:1px solid #90caf9;background:#fff;color:#1565c0;border-radius:12px;padding:.1rem .6rem;font-size:.76rem;cursor:pointer;white-space:nowrap;';
+    chip.textContent = s;
+    chip.onclick = () => {
+      const input = document.getElementById('userInput');
+      input.value = currentLang === 'zh'
+        ? `${s}：${originalText}`
+        : `${s}: ${originalText}`;
+      input.focus();
+      autoResize(input);
+      hintWrap.remove();
+    };
+    hintCard.appendChild(chip);
+  });
+
+  hintWrap.appendChild(hintCard);
+  chatMessages.appendChild(hintWrap);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+async function sendCodeDraft(text) {
+  hideTyping();
+
+  let answer = '';
+  try {
+    const body = {
+      type: 'code_draft',
+      message: text,
+      history: chatHistory.slice(-8),
+      workspace: workspacePayloadValue(),
+      project_id: activeProjectId,
+      project_context: projectContextText(),
+      enable_think: thinkEnabled,
+      ...chatWebSearchPayload(),
+    };
+    const jobId = await startRecoverableChatJob(body);
+    const result = await pollChatJobToBubble(jobId, {session_id: SESSION_ID, enable_think: thinkEnabled});
+    if (result.detached) return;
+    answer = result.answer || '';
+  } catch(e) {
+    hideTyping();
+    addMsg('assistant', `✗ ${e.message}`);
+    return;
+  }
+  hideTyping();
+
+  chatHistory.push({role:'assistant', content: answer || '（无回复）'});
+  _persistHistory();
+  appendCodeDraftHint(text);
+}
+
 function sendQuick(msg) {
   document.getElementById('userInput').value = msg;
   sendMessage();
@@ -3499,22 +3539,45 @@ function renderCodeResult(d, opts={}) {
       const toggleBtn = document.createElement('button');
       toggleBtn.style.cssText = 'font-size:.78rem;padding:.22rem .7rem;border-radius:6px;background:#f5f5f5;color:#555;border:1px solid #ddd;cursor:pointer;';
       toggleBtn.textContent = '{ } View Code';
+
+      const codeWrap = document.createElement('div');
+      codeWrap.className = 'code-wrapper';
+      codeWrap.style.display = 'none';
+      codeWrap.style.marginTop = '.4rem';
+
+      const codePre = document.createElement('pre');
+      codePre.style.whiteSpace = 'pre-wrap';
+      const codeEl = document.createElement('code');
+      codeEl.className = 'hljs';
+      codeEl.textContent = d.code;
+      codePre.appendChild(codeEl);
+      codeWrap.appendChild(codePre);
+
+      const toolbar = document.createElement('div');
+      toolbar.className = 'code-toolbar';
+      const langLabel = document.createElement('span');
+      langLabel.className = 'code-lang-label';
+      langLabel.textContent = 'python';
+      toolbar.appendChild(langLabel);
       const copyCodeBtn = document.createElement('button');
-      copyCodeBtn.style.cssText = toggleBtn.style.cssText;
+      copyCodeBtn.className = 'copy-btn';
+      copyCodeBtn.type = 'button';
       copyCodeBtn.textContent = T('copy_msg');
-      copyCodeBtn.onclick = () => copyTextToClipboard(d.code, copyCodeBtn);
-      const codeDiv = document.createElement('pre');
-      codeDiv.style.cssText = 'display:none;background:#f6f8fa;border:1px solid #e0e0e0;border-radius:8px;padding:.65rem .8rem;overflow-x:auto;font-size:.8em;margin:.35rem 0 0;white-space:pre-wrap;';
-      codeDiv.textContent = d.code;
+      copyCodeBtn.onclick = () => copyCode(copyCodeBtn);
+      toolbar.appendChild(copyCodeBtn);
+      codeWrap.appendChild(toolbar);
+
+      if (typeof hljs !== 'undefined') {
+        try { hljs.highlightElement(codeEl); } catch(e) {}
+      }
       toggleBtn.onclick = () => {
-        const hidden = codeDiv.style.display === 'none';
-        codeDiv.style.display = hidden ? 'block' : 'none';
+        const hidden = codeWrap.style.display === 'none';
+        codeWrap.style.display = hidden ? 'block' : 'none';
         toggleBtn.textContent = hidden ? '{ } Hide Code' : '{ } View Code';
       };
       dlBar.appendChild(toggleBtn);
-      dlBar.appendChild(copyCodeBtn);
       bubble.appendChild(dlBar);
-      bubble.appendChild(codeDiv);
+      bubble.appendChild(codeWrap);
     } else {
       bubble.appendChild(dlBar);
     }

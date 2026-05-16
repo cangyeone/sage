@@ -67,6 +67,109 @@ def _drop_incomplete_fenced_tail(text: str) -> str:
     return str(text or "").rstrip()
 
 
+def _dedupe_preserve_order(items):
+    seen = set()
+    out = []
+    for item in items or []:
+        key = str(item or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
+def _is_bvalue_topic(query: str) -> bool:
+    q = str(query or "").lower()
+    return bool(_re.search(
+        r"\b(b[-_\s]?value|gutenberg[-\s]?richter|frequency[-\s]?magnitude|"
+        r"magnitude[-\s]?frequency|fmd|aki\s*1965|utsu|shi\s*&?\s*bolt|"
+        r"wiemer|woessner)\b|b\s*值|频度震级|震级频度|完整性震级|完备震级",
+        q,
+        flags=_re.I,
+    ))
+
+
+_BVALUE_REFERENCE_RECORDS = [
+    (
+        "Gutenberg & Richter (1944)",
+        "Gutenberg, B., & Richter, C. F. (1944). Frequency of earthquakes in California. "
+        "Bulletin of the Seismological Society of America, 34(4), 185-188.",
+    ),
+    (
+        "Aki (1965)",
+        "Aki, K. (1965). Maximum likelihood estimate of b in the formula log N = a - bM "
+        "and its confidence limits. Bulletin of the Earthquake Research Institute, 43, 237-239.",
+    ),
+    (
+        "Utsu (1965)",
+        "Utsu, T. (1965). A method for determining the value of b in a formula log n = a - bM "
+        "showing the magnitude-frequency relation for earthquakes. Geophysical Bulletin of Hokkaido University, 13, 99-103.",
+    ),
+    (
+        "Shi & Bolt (1982)",
+        "Shi, Y., & Bolt, B. A. (1982). The standard error of the magnitude-frequency b value. "
+        "Bulletin of the Seismological Society of America, 72(5), 1677-1687.",
+    ),
+    (
+        "Wiemer & Wyss (2000)",
+        "Wiemer, S., & Wyss, M. (2000). Minimum magnitude of completeness in earthquake catalogs: "
+        "Examples from Alaska, the western United States, and Japan. Bulletin of the Seismological Society of America, 90(4), 859-869.",
+    ),
+    (
+        "Woessner & Wiemer (2005)",
+        "Woessner, J., & Wiemer, S. (2005). Assessing the quality of earthquake catalogues: "
+        "Estimating the magnitude of completeness and its uncertainty. Bulletin of the Seismological Society of America, 95(2), 684-698.",
+    ),
+]
+
+
+def _bvalue_reference_context(query: str):
+    if not _is_bvalue_topic(query):
+        return "", []
+    lines = [
+        "CANONICAL B-VALUE LITERATURE REFERENCES.",
+        "Use these only for b-value, Gutenberg-Richter FMD, MLE uncertainty, and Mc/completeness background. "
+        "Do not cite unrelated web-search records when these references cover the method.",
+    ]
+    refs = []
+    for idx, (label, citation) in enumerate(_BVALUE_REFERENCE_RECORDS, 1):
+        lines.append(f"[Reference {idx}] {citation}")
+        refs.append(f"[Reference] {label}: {citation}")
+    return "\n".join(lines), refs
+
+
+def _skill_context_with_sources(user_msg: str, *, max_skill_chars: int = 5000, max_rag_chars: int = 3000, top_k: int = 4):
+    try:
+        from helpers import get_skill_loader
+        sl = get_skill_loader()
+        if sl is None:
+            return "", "", []
+        skill_ctx, skill_rag_ctx = sl.build_skill_context_with_rag(
+            user_msg, max_skill_chars=max_skill_chars, max_rag_chars=max_rag_chars, top_k=top_k
+        )
+        skill_sources = []
+        try:
+            hits = sl.search_skills(user_msg, top_k=top_k)
+        except Exception:
+            hits = []
+        for hit in hits or []:
+            name = str(hit.get("name") or "").strip()
+            if not name:
+                continue
+            desc = " ".join(str(hit.get("description") or "").split())
+            path = str(hit.get("path") or "").strip()
+            label = f"[Skill] {name}"
+            if desc:
+                label += f": {desc[:180]}"
+            if path:
+                label += f" — {path}"
+            skill_sources.append(label)
+        return skill_ctx or "", skill_rag_ctx or "", _dedupe_preserve_order(skill_sources)
+    except Exception:
+        return "", "", []
+
+
 # ── Persistent chat history ────────────────────────────────────────────────
 
 CHAT_HISTORY_DIR = _PROJECT_ROOT / "seismo_rag" / "chat_history"
@@ -1986,6 +2089,11 @@ def chat_rag():
         if ws_ctx:
             context_parts.append("===== 本地文件系统 =====\n" + ws_ctx)
 
+    ref_ctx, ref_sources = _bvalue_reference_context(user_msg)
+    if ref_ctx:
+        context_parts.append("===== 方法参考文献 =====\n" + ref_ctx)
+        sources.extend(ref_sources)
+
     # 1. 会话文档（临时上传）
     session = _session_docs.get(session_id, {})
     if session.get("chunks"):
@@ -2039,19 +2147,14 @@ def chat_rag():
         pass
 
     # 3. seismo_skill 技能文档（按用户消息检索最相关技能，注入代码示例）
-    try:
-        from helpers import get_skill_loader
-        sl = get_skill_loader()
-        if sl is not None:
-            skill_ctx, skill_rag_ctx = sl.build_skill_context_with_rag(
-                user_msg, max_skill_chars=5000, max_rag_chars=3000, top_k=4
-            )
-            if skill_ctx:
-                context_parts.append("===== 可用技能与函数示例 =====\n" + skill_ctx)
-            if skill_rag_ctx:
-                context_parts.append("===== 技能绑定知识库 =====\n" + skill_rag_ctx)
-    except Exception:
-        pass
+    skill_ctx, skill_rag_ctx, skill_sources = _skill_context_with_sources(
+        user_msg, max_skill_chars=5000, max_rag_chars=3000, top_k=4
+    )
+    if skill_ctx:
+        context_parts.append("===== 可用技能与函数示例 =====\n" + skill_ctx)
+    if skill_rag_ctx:
+        context_parts.append("===== 技能绑定知识库 =====\n" + skill_rag_ctx)
+    sources.extend(skill_sources)
 
     # ── 构建提示 ─────────────────────────────────────────────────────────────
     if mode == "paper_read":
@@ -2104,7 +2207,7 @@ def chat_rag():
         return jsonify({
             "ok": True,
             "response": answer,
-            "sources": list(set(sources)),
+            "sources": _dedupe_preserve_order(sources),
         })
     except Exception as e:
         return jsonify({
@@ -2262,13 +2365,54 @@ def _literature_web_search(query: str, *, sources=None, max_results: int = 6) ->
     return deduped
 
 
+def _normalize_literature_query(query: str) -> str:
+    if _is_bvalue_topic(query):
+        return (
+            "earthquake b-value Gutenberg Richter magnitude frequency distribution "
+            "Aki 1965 Utsu maximum likelihood Shi Bolt standard error "
+            "Wiemer Wyss Woessner magnitude of completeness seismicity"
+        )
+    return " ".join(str(query or "").split())
+
+
+def _filter_literature_results(query: str, papers: list) -> list:
+    if not _is_bvalue_topic(query):
+        return papers
+
+    strong_terms = (
+        "b-value", "b value", "gutenberg", "richter", "frequency-magnitude",
+        "magnitude-frequency", "earthquake", "earthquakes", "seismicity",
+        "seismology", "magnitude of completeness", "completeness magnitude",
+        "aki", "utsu", "shi", "bolt", "wiemer", "wyss", "woessner",
+    )
+    domain_terms = (
+        "earthquake", "earthquakes", "seismicity", "seismology", "gutenberg",
+        "richter", "magnitude-frequency", "frequency-magnitude",
+        "magnitude of completeness", "completeness magnitude",
+    )
+    kept = []
+    for paper in papers or []:
+        text = " ".join([
+            str(paper.get("title") or ""),
+            str(paper.get("venue") or ""),
+            str(paper.get("abstract") or paper.get("snippet") or ""),
+            " ".join(str(author) for author in (paper.get("authors") or [])),
+        ]).lower()
+        score = sum(1 for term in strong_terms if term in text)
+        if score >= 2 and any(term in text for term in domain_terms):
+            kept.append(paper)
+    return kept
+
+
 def _chat_web_search_context(data: dict, query: str):
     """Optional chat-side web/literature search context."""
     if not data.get("enable_web_search"):
         return "", []
     try:
         sources = data.get("web_search_sources") or _default_search_sources()
-        papers = _literature_web_search(query, sources=sources, max_results=int(data.get("web_max_results", 6)))
+        search_query = _normalize_literature_query(query)
+        papers = _literature_web_search(search_query, sources=sources, max_results=int(data.get("web_max_results", 6)))
+        papers = _filter_literature_results(query, papers)
         if not papers:
             return "", []
         lines = [
@@ -2394,6 +2538,11 @@ def _build_rag_messages(data: dict):
     if project_context:
         context_parts.append("===== 项目共享上下文 =====\n" + project_context[:4000])
 
+    ref_ctx, ref_sources = _bvalue_reference_context(user_msg)
+    if ref_ctx:
+        context_parts.append("===== 方法参考文献 =====\n" + ref_ctx)
+        sources.extend(ref_sources)
+
     web_ctx, web_sources = _chat_web_search_context(data, user_msg)
     if web_ctx:
         context_parts.append("===== Web literature/search context =====\n" + web_ctx)
@@ -2424,19 +2573,14 @@ def _build_rag_messages(data: dict):
     except Exception:
         pass
 
-    try:
-        from helpers import get_skill_loader
-        sl = get_skill_loader()
-        if sl is not None:
-            skill_ctx, skill_rag_ctx = sl.build_skill_context_with_rag(
-                user_msg, max_skill_chars=5000, max_rag_chars=3000, top_k=4
-            )
-            if skill_ctx:
-                context_parts.append("===== 可用技能与函数示例 =====\n" + skill_ctx)
-            if skill_rag_ctx:
-                context_parts.append("===== 技能绑定知识库 =====\n" + skill_rag_ctx)
-    except Exception:
-        pass
+    skill_ctx, skill_rag_ctx, skill_sources = _skill_context_with_sources(
+        user_msg, max_skill_chars=5000, max_rag_chars=3000, top_k=4
+    )
+    if skill_ctx:
+        context_parts.append("===== 可用技能与函数示例 =====\n" + skill_ctx)
+    if skill_rag_ctx:
+        context_parts.append("===== 技能绑定知识库 =====\n" + skill_rag_ctx)
+    sources.extend(skill_sources)
 
     if mode == "paper_read":
         system = (
@@ -2487,7 +2631,7 @@ def _build_rag_messages(data: dict):
     if history:
         messages = [messages[0]] + history[-6:] + [messages[-1]]
 
-    return messages, list(set(sources)), llm_cfg
+    return messages, _dedupe_preserve_order(sources), llm_cfg
 
 
 @bp.route('/api/chat/rag/stream', methods=['POST'])
@@ -2553,36 +2697,10 @@ def chat_stream():
         return jsonify({"ok": False, "error": "Empty message"}), 400
 
     images = data.get("images") or []
-    llm_cfg = get_llm_config()
-
-    enable_think = bool(data.get("enable_think", False))
-    system = (
-        "You are SAGE, an expert seismology assistant with deep knowledge of "
-        "seismology, geophysics and data processing.\n"
-        "Answer the user's question using your own knowledge. Be concise and accurate.\n"
-    )
-    system = append_user_profile_to_system(system)
-    if enable_think:
-        system += _think_summary_policy()
-
-    workspace_path = data.get("workspace", "")
-    if workspace_path:
-        ws_ctx = inject_workspace_context(user_msg, workspace_path)
-        if ws_ctx:
-            system += "\n\n===== 本地文件系统 =====\n" + ws_ctx
-
-    project_context = (data.get("project_context") or "").strip()
-    if project_context:
-        system += "\n\n===== 项目共享上下文 =====\n" + project_context[:4000]
-
-    messages = [{"role": "system", "content": system},
-                {"role": "user",   "content": user_msg}]
-    history = data.get("history", [])
-    if history:
-        messages = [messages[0]] + history[-6:] + [messages[-1]]
+    messages, sources, llm_cfg = _build_plain_messages(data)
 
     def generate():
-        yield f"data: {_json.dumps({'type':'sources','sources':[]})}\n\n"
+        yield f"data: {_json.dumps({'type':'sources','sources':sources})}\n\n"
         if not llm_cfg.get("api_base"):
             msg = "当前没有可用的 LLM 后端，请在 LLM 设置页面配置后端。"
             yield f"data: {_json.dumps({'type':'chunk','text':msg})}\n\n"
@@ -2620,6 +2738,8 @@ def _build_plain_messages(data: dict):
     user_msg     = data.get('message', '').strip()
     enable_think = bool(data.get('enable_think', False))
     llm_cfg      = get_llm_config()
+    context_parts = []
+    sources = []
     system = (
         'You are SAGE, an expert seismology assistant with deep knowledge of '
         'seismology, geophysics and data processing.\n'
@@ -2634,18 +2754,92 @@ def _build_plain_messages(data: dict):
     if workspace_path:
         ws_ctx = inject_workspace_context(user_msg, workspace_path)
         if ws_ctx:
-            system += '\n\n===== 本地文件系统 =====\n' + ws_ctx
+            context_parts.append('===== 本地文件系统 =====\n' + ws_ctx)
+
+    project_context = (data.get("project_context") or "").strip()
+    if project_context:
+        context_parts.append("===== 项目共享上下文 =====\n" + project_context[:4000])
+
+    ref_ctx, ref_sources = _bvalue_reference_context(user_msg)
+    if ref_ctx:
+        context_parts.append("===== 方法参考文献 =====\n" + ref_ctx)
+        sources.extend(ref_sources)
 
     web_ctx, web_sources = _chat_web_search_context(data, user_msg)
     if web_ctx:
-        system += '\n\n===== Web literature/search context =====\n' + web_ctx
+        context_parts.append('===== Web literature/search context =====\n' + web_ctx)
+    sources.extend(web_sources)
+
+    skill_ctx, skill_rag_ctx, skill_sources = _skill_context_with_sources(
+        user_msg, max_skill_chars=5000, max_rag_chars=3000, top_k=4
+    )
+    if skill_ctx:
+        context_parts.append("===== 可用技能与函数示例 =====\n" + skill_ctx)
+    if skill_rag_ctx:
+        context_parts.append("===== 技能绑定知识库 =====\n" + skill_rag_ctx)
+    sources.extend(skill_sources)
+
+    if context_parts:
+        system += "\n\n===== Reference passages =====\n" + "\n\n".join(context_parts)
 
     messages = [{'role': 'system', 'content': system},
                 {'role': 'user',   'content': user_msg}]
     history = data.get('history', [])
     if history:
         messages = [messages[0]] + history[-6:] + [messages[-1]]
-    return messages, web_sources, llm_cfg
+    return messages, _dedupe_preserve_order(sources), llm_cfg
+
+
+def _build_code_draft_messages(data: dict):
+    """Build messages for code-only answers. This does not execute CodeEngine."""
+    user_msg     = data.get('message', '').strip()
+    enable_think = bool(data.get('enable_think', False))
+    llm_cfg      = get_llm_config()
+    context_parts = []
+    sources = []
+    system = (
+        "You are SAGE's code-writing assistant. The user wants code only; do not run code, "
+        "do not claim that you executed anything, and do not fabricate output files.\n"
+        "Return a complete, directly usable script or focused code snippet. Prefer Python unless the user asks for another language.\n"
+        "If real execution would require data, make the code accept a file/directory path via CLI arguments and briefly say that SAGE can run it after the user provides the data path.\n"
+        "For SAGE-local b-value analysis, use exact APIs: "
+        "`from seismo_stats.bvalue import calc_bvalue_mle`; the result has `.b_value`, `.b_uncertainty`, `.mc`, `.n_events`; "
+        "use `from seismo_stats.plotting import plot_gr` and `plot_gr(result, output_path)` for a G-R/FMD plot.\n"
+        "Preserve the user's scientific assumptions; do not change distributions, ranges, counts, or units just to make results look typical.\n"
+    )
+    system += _scientific_grounding_policy(bool(data.get("enable_web_search")))
+    system = append_user_profile_to_system(system)
+    if enable_think:
+        system += _think_summary_policy()
+
+    ref_ctx, ref_sources = _bvalue_reference_context(user_msg)
+    if ref_ctx:
+        context_parts.append("===== 方法参考文献 =====\n" + ref_ctx)
+        sources.extend(ref_sources)
+
+    web_ctx, web_sources = _chat_web_search_context(data, user_msg)
+    if web_ctx:
+        context_parts.append('===== Web literature/search context =====\n' + web_ctx)
+    sources.extend(web_sources)
+
+    skill_ctx, skill_rag_ctx, skill_sources = _skill_context_with_sources(
+        user_msg, max_skill_chars=5000, max_rag_chars=3000, top_k=4
+    )
+    if skill_ctx:
+        context_parts.append("===== 可用技能与函数示例 =====\n" + skill_ctx)
+    if skill_rag_ctx:
+        context_parts.append("===== 技能绑定知识库 =====\n" + skill_rag_ctx)
+    sources.extend(skill_sources)
+
+    if context_parts:
+        system += "\n\n===== Reference passages =====\n" + "\n\n".join(context_parts)
+
+    messages = [{'role': 'system', 'content': system},
+                {'role': 'user',   'content': user_msg}]
+    history = data.get('history', [])
+    if history:
+        messages = [messages[0]] + history[-6:] + [messages[-1]]
+    return messages, _dedupe_preserve_order(sources), llm_cfg
 
 
 @bp.route('/api/chat/submit', methods=['POST'])
@@ -2655,7 +2849,7 @@ def chat_submit():
     The LLM call runs in a daemon thread — survives page navigation.
 
     Body fields (same as /api/chat/rag/stream) plus:
-      type: 'rag' (default) | 'plain'
+      type: 'rag' (default) | 'plain' | 'code_draft'
     """
     data = request.json or {}
     if not data.get('message', '').strip():
@@ -2673,7 +2867,9 @@ def chat_submit():
 
     def _run():
         try:
-            if chat_type == 'plain':
+            if chat_type == 'code_draft':
+                messages, sources, llm_cfg = _build_code_draft_messages(data)
+            elif chat_type == 'plain':
                 messages, sources, llm_cfg = _build_plain_messages(data)
             else:
                 messages, sources, llm_cfg = _build_rag_messages(data)

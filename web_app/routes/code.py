@@ -290,9 +290,10 @@ def chat_workflow():
 def chat_route():
     """
     用 LLM 判断用户意图，返回路由类型：
-      code  — 需要执行代码/技能
-      qa    — 知识问答
-      chat  — 普通对话
+      code_draft — 只需要写代码/脚本，不执行
+      code       — 需要执行代码/技能
+      qa         — 知识问答
+      chat       — 普通对话
     """
     import re as _re
 
@@ -307,67 +308,8 @@ def chat_route():
     llm_cfg = get_llm_config()
 
     msg_stripped = message.strip()
-
-    msg_lower = msg_stripped.lower()
-
-    def _has_any(words):
-        return any(word in msg_lower for word in words)
-
-    mentions_paper = _has_any(['论文', '文献', '文章', '这篇', '该文', 'paper', 'article', 'pdf'])
-    asks_to_read = _has_any(['解析', '解读', '分析一下', '读一下', '阅读', '总结', '概括', '讲解', '解释', '看一下', '梳理', '提炼', 'summarize', 'summarise', 'explain', 'review', 'interpret'])
-    asks_to_code = _has_any(['写代码', '代码实现', '编程', 'python', '复现', '运行', '执行', '绘制', '画图', '生成图', '计算', '处理数据', '检测', '拾取', '导出', '保存', 'script', 'code', 'plot', 'run', 'execute', 'implement'])
-    paper_read_request = (kb_has_docs or mentions_paper) and mentions_paper and asks_to_read and not asks_to_code
-    if paper_read_request:
-        return jsonify({'ok': True, 'intent': 'qa', 'rule': 'paper_read_guard'})
-
-    codebase_re = _re.compile(
-        r'(代码库|源码|仓库|项目代码|函数|类|接口|API|route|blueprint|endpoint|'
-        r'在哪里|在哪|位置|定位|搜索|查找|修改.*代码|修复.*代码|'
-        r'codebase|source code|repository|repo|where is|locate|find.*function|search.*code)',
-        _re.I,
-    )
-    if codebase_re.search(msg_stripped):
-        return jsonify({'ok': True, 'intent': 'code', 'rule': 'codebase_guard'})
-
-    # ── 唯一快速路径：含绝对路径且无问号 → 必然是 code，无需问 LLM ─────────
     has_path = bool(_re.search(r'(?:^|[\s\u4e00-\u9fff，。：、])[/~][\w./\-]{4,}', message))
     ends_q   = bool(_re.search(r'[?？]\s*$', msg_stripped))
-    if has_path and not ends_q:
-        return jsonify({'ok': True, 'intent': 'code'})
-
-    # Deterministic QA guard: explanations of algorithms/methods should not be
-    # sent to the coding engine just because they contain technical terms.
-    explanation_re = _re.compile(
-        r'(详细讲|讲一下|讲讲|解释|介绍|原理|机制|怎么回事|是什么|什么是|为什么|为何'
-        r'|区别|优缺点|适用|局限|解析|解读|读一下|阅读|总结|概括|看一下|梳理'
-        r'|how does|how .*work|what is|why |explain|tell me about|summari[sz]e|review)',
-        _re.I,
-    )
-    concrete_code_re = _re.compile(
-        r'(写代码|写个程序|代码实现|编程实现|实现一下|复现|生成脚本|运行|执行|读取|处理数据'
-        r'|绘制|画图|下载|保存|导出|计算一下|检测一下|检测下|检测上面|识别一下|拾取|触发'
-        r'|plot|run|execute|write.*code|implement|detect|pick|trigger)',
-        _re.I,
-    )
-    if explanation_re.search(msg_stripped) and not concrete_code_re.search(msg_stripped):
-        return jsonify({'ok': True, 'intent': 'qa', 'rule': 'explanation_guard'})
-
-    apply_method_re = _re.compile(
-        r'(使用|用|通过|基于).{0,30}(算法|方法|模型|STA/?LTA|stalta|classic_sta_lta|recursive_sta_lta)'
-        r'.{0,30}(检测|识别|拾取|触发|处理|分析|计算)'
-        r'|(?:检测|识别|拾取).{0,20}(波形|数据|事件|震相)',
-        _re.I,
-    )
-    if apply_method_re.search(msg_stripped):
-        return jsonify({'ok': True, 'intent': 'code', 'rule': 'apply_method_guard'})
-
-    contextual_code_re = _re.compile(
-        r'(用\s*Python|python|代码|编程|实现|复现|写出来|写个程序|完整实现|run it|code it|implement)',
-        _re.I,
-    )
-    context_ref_re = _re.compile(r'(上述|上面|上文|前面|刚才|这个|该|此|this|above|previous)', _re.I)
-    if contextual_code_re.search(msg_stripped) and (context_ref_re.search(msg_stripped) or history):
-        return jsonify({'ok': True, 'intent': 'code', 'rule': 'contextual_code_guard'})
 
     # ── 构建对话历史摘要（最近 3 轮）────────────────────────────────────────
     history_text = ""
@@ -380,27 +322,34 @@ def chat_route():
     profile_text = get_user_profile_context(max_chars=1200)
 
     # ── 精简 prompt：短而直接，适配弱模型 ────────────────────────────────────
-    routing_prompt = f"""Classify the intent of the following user message. Output only one of: code, qa, or chat. Do not output anything else.
+    routing_prompt = f"""Classify the intent of the following user message. Output only one of: code_draft, code, chain, qa, or chat. Do not output anything else.
 
 Definitions:
-code = The user is asking the system to immediately perform a concrete operation or produce an executable/usable result, such as plotting, drawing, calculation, filtering, reading files, downloading data, processing data, writing code, generating scripts, or creating outputs.
-qa   = The user is asking for explanation, guidance, concepts, principles, methods, troubleshooting ideas, or general knowledge.
-chat = Casual conversation, greetings, emotional expression, or content unrelated to the task system.
+code_draft = The user asks for code, a script, or a program, but does not ask SAGE to run it now and provides no data path.
+code       = The user asks SAGE to immediately run/execute/debug/process/read/plot/calculate using data, files, paths, or the current environment.
+chain      = The user asks to reproduce/implement/code a method from an uploaded paper/literature/PDF context; this should first extract paper methods, then produce implementation.
+qa         = The user is asking for explanation, guidance, concepts, principles, methods, troubleshooting ideas, or general knowledge.
+chat       = Casual conversation, greetings, emotional expression, or content unrelated to the task system.
 
 Decision rule:
 Classify by intent, not by specific tool names.
 
-If the message asks the system to do something concrete now, such as create, generate, write, draw, plot, calculate, read, convert, process, analyze, download, run, save, export, or modify something → code.
+If the message asks only to write/generate/provide code/script/program → code_draft.
+If the message asks the system to do something concrete now, such as draw, plot, calculate, read, convert, process, analyze data, download, run, save, export, debug, or modify files → code.
+If uploaded documents/literature are available and the user asks to reproduce or implement "this/above paper/method" → chain.
 If the message mainly asks what, why, how, whether, or asks for an explanation/reason/method without requiring immediate execution → qa.
 If the message asks to read, explain, summarize, interpret, or analyze a paper/literature/PDF/article → qa, unless it explicitly asks to write or run code.
 Otherwise → chat.
 
 Examples:
+"Write a program to calculate b-value" → code_draft
+"帮我写一个计算b值的程序" → code_draft
+"Generate a Python script for SAC preprocessing" → code_draft
+"Implement the method from this uploaded paper" → chain
 "Help me draw a topographic map" → code
 "Generate a station distribution figure" → code
-"Calculate the b-value" → code
+"Calculate the b-value for /data/catalog.csv" → code
 "Read this waveform file" → code
-"Write a script to process SAC files" → code
 "Convert this catalog to CSV" → code
 "Analyze the uploaded waveform/catalog data and summarize the result" → code
 "Analyze this paper for me" → qa
@@ -413,16 +362,10 @@ Examples:
 
 {f"Context: {history_text}" if history_text else ""}
 {f"Long-term user profile: {profile_text}" if profile_text else ""}
+Uploaded/local document context available: {bool(kb_has_docs)}
+Absolute/local path detected in user message: {has_path}
 User message: {message}
 Intent:"""
-
-    # ── 强操作信号 re（LLM 结果兜底用）────────────────────────────────────
-    ACTION_SIGNAL_RE = _re.compile(
-        r'(使用[^\s]{0,16}(?:绘|画|生成|计算|滤|读|处理|下载|运行|检测|识别|拾取|触发)'
-        r'|用[^\s]{0,16}(?:绘|画|生成|计算|滤|读|处理|下载|检测|识别|拾取|触发)'
-        r'|^(?:绘制|画[^报面版刊]|生成|计算|读取|处理|分析|滤波|下载|检测|识别|拾取))',
-        _re.I | _re.MULTILINE
-    )
 
     try:
         from helpers import llm_call
@@ -433,25 +376,19 @@ Intent:"""
         ).lower().strip()
 
         intent_word = None
-        for word in ['code', 'qa', 'chat']:
+        for word in ['code_draft', 'chain', 'code', 'qa', 'chat']:
             if word in raw:
                 intent_word = word
                 break
 
-        # 若 LLM 未识别 → 默认 code（操作型系统宁可多执行，不要沉默）
+        # 若 LLM 未识别，保守回到问答/闲聊，避免误启动执行型 CodeEngine。
         if intent_word is None:
-            intent_word = 'code' if not ends_q else 'qa'
-
-        # 兜底 override：LLM 说 qa 但消息有强操作信号且无问号 → 纠正为 code
-        if intent_word == 'qa' and not ends_q and ACTION_SIGNAL_RE.search(msg_stripped):
-            intent_word = 'code'
+            intent_word = 'qa' if ends_q else 'chat'
 
         return jsonify({'ok': True, 'intent': intent_word})
 
     except Exception:
-        # LLM 不可用 → 规则兜底
-        if paper_read_request:
-            return jsonify({'ok': True, 'intent': 'qa', 'rule': 'paper_read_guard', 'fallback': True})
+        # LLM router 不可用时才使用保守规则兜底。
         FALLBACK_RE = _re.compile(
             r'(绘制|画图|画[^报面版刊]|使用|执行|运行|下载|读取|处理|滤波|计算|生成图'
             r'|检测|识别|拾取|触发|plot|filter|spectrum|detect|pick|trigger|\.sac|\.mseed|\.csv)',

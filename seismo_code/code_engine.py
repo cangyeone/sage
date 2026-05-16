@@ -38,6 +38,8 @@ import sys
 import textwrap
 import urllib.request
 import hashlib
+import importlib
+import inspect
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
@@ -49,6 +51,7 @@ from .ce_utils import (
     _extract_plan, _find_file_paths, _profile_file, _format_file_context,
     _pre_sanitize, CodeExecutionCancelled,
 )
+from .repo_intelligence import SAGE_EDITING_GUIDE, build_repo_intelligence
 
 # Skill + RAG context builder — optional, graceful fallback
 try:
@@ -358,10 +361,11 @@ class CodeEngine:
         return score
 
     def _build_repo_context(self, request: str, max_files: int = 10, max_chars: int = 18000) -> str:
-        """Aider-inspired compact repository map plus relevant snippets."""
+        """Built-in compact repository map plus relevant snippets."""
         files = self._repo_file_list()
         if not files:
             return ""
+        repo_intel = build_repo_intelligence(self.project_root, request, files)
         rg_hits = self._repo_rg_hits(request)
         hit_files = []
         for hit in rg_hits:
@@ -369,7 +373,8 @@ class CodeEngine:
             if rel and rel not in hit_files:
                 hit_files.append(rel)
         ranked = sorted(files, key=lambda f: self._score_repo_file(f, request), reverse=True)
-        selected = hit_files[:max_files]
+        selected = [f for f in repo_intel.ranked_files if f in files][:max_files]
+        selected += [f for f in hit_files if f not in selected]
         selected += [f for f in ranked if self._score_repo_file(f, request) > 0 and f not in selected]
         selected = selected[:max_files]
         if not selected:
@@ -384,8 +389,20 @@ class CodeEngine:
             "\n".join(f"- {h}" for h in rg_hits[:80]) or "(no direct text hits)",
             "\n## Symbol / route index",
             "\n".join(f"- {s}" for s in self._repo_symbol_index()[:120]),
-            "\n## Relevant File Snippets",
         ]
+        if repo_intel.available and repo_intel.repo_map:
+            parts.extend([
+                "\n## SAGE Repo Map",
+                repo_intel.repo_map,
+                "\n## SAGE-ranked files",
+                "\n".join(f"- {f}" for f in repo_intel.ranked_files[:80]) or "(none)",
+            ])
+        else:
+            parts.extend([
+                "\n## SAGE Repo Map",
+                f"(unavailable; falling back to rg/symbol context: {repo_intel.error or 'unknown error'})",
+            ])
+        parts.append("\n## Relevant File Snippets")
         used = sum(len(p) for p in parts)
         for rel in selected:
             path = Path(self.project_root) / rel
@@ -404,15 +421,20 @@ class CodeEngine:
         parts.append(
             "\n## Repository Editing Rules\n"
             "- If the task is to change the SAGE codebase, generate a Python script that edits files under the project root.\n"
+            "- Use the SAGE Repo Map and SAGE-ranked files first, then targeted `rg` hits, to choose files.\n"
             "- You MAY edit multiple files and create new modules/tests when the task requires it.\n"
             "- For non-trivial behavior changes, add, insert, update, or delete focused unit tests under `tests/`.\n"
             "- Deleting test code is allowed only when the test is obsolete, asserts the wrong behavior, or is replaced by equivalent/better coverage; print the reason.\n"
+            "- Before editing, print `[SAGE_AGENT] located <path>: <reason>` for the files you selected from the repo map/rg hits.\n"
+            "- After editing, print `[SAGE_CHANGED] <path>` for every changed file.\n"
             "- Prefer structured file edits with pathlib and small helper functions; do not rewrite unrelated files.\n"
-            "- Run validation inside the script with subprocess using cwd=PROJECT_ROOT: py_compile for changed Python files and targeted pytest for changed tests.\n"
+            "- Run validation inside the script with subprocess using cwd=PROJECT_ROOT: py_compile for changed Python files and targeted pytest for changed or related tests.\n"
+            "- Python behavior changes must add/update focused unit tests or run existing focused tests found by filename/API relation.\n"
             "- Print changed file paths and include `[SAGE_TEST]` checks such as py_compile, pytest, syntax checks, or targeted API checks.\n"
             "- When locating behavior, use the provided `rg` hits and symbol index before editing.\n"
             "- Do not modify files under `third_party/aider` unless the user explicitly asks."
         )
+        parts.append(SAGE_EDITING_GUIDE)
         return "\n\n".join(parts)
 
     def _git_diff_summary(self) -> str:
@@ -445,6 +467,134 @@ class CodeEngine:
             text or "",
             re.I,
         ))
+
+    def _repo_related_test_files(self, changed_files: List[str], request: str, limit: int = 8) -> List[str]:
+        """Find existing focused tests likely affected by changed application files."""
+        tests_dir = Path(self.project_root) / "tests"
+        if not tests_dir.is_dir():
+            return []
+
+        candidates: List[str] = []
+        stems = set()
+        req = request or ""
+        for rel in changed_files or []:
+            path = Path(rel)
+            if rel.startswith("tests/") or "/tests/" in rel or path.suffix != ".py":
+                continue
+            stems.add(path.stem.lower())
+            for part in path.parts:
+                if part and part not in {".", ".."}:
+                    stems.add(part.lower())
+        for token in self._repo_terms(req, limit=16):
+            if len(token) >= 4:
+                stems.add(token.lower())
+
+        for test_path in sorted(tests_dir.rglob("test_*.py")):
+            rel = test_path.relative_to(self.project_root).as_posix()
+            text = rel.lower().replace("/", "_")
+            if any(stem and stem in text for stem in stems):
+                candidates.append(rel)
+                if len(candidates) >= limit:
+                    return candidates
+
+        # Common SAGE routing/code-engine conventions.
+        joined = " ".join((changed_files or []) + [req]).lower()
+        pattern_hints = []
+        if "chat" in joined:
+            pattern_hints.append("test_chat")
+        if "code_engine" in joined or "seismo_code" in joined or "coding agent" in joined:
+            pattern_hints.append("test_code_engine")
+        if "route" in joined or "api" in joined:
+            pattern_hints.append("test_web")
+        for test_path in sorted(tests_dir.rglob("test_*.py")):
+            rel = test_path.relative_to(self.project_root).as_posix()
+            name = test_path.name.lower()
+            if any(hint in name for hint in pattern_hints) and rel not in candidates:
+                candidates.append(rel)
+                if len(candidates) >= limit:
+                    break
+        return candidates
+
+    # ── Local API context helpers ───────────────────────────────────────────
+
+    @staticmethod
+    def _looks_like_local_api_task(text: str) -> bool:
+        """Heuristic for tasks likely to use SAGE-local scientific modules."""
+        return bool(re.search(
+            r"\bb[-_\s]?value\b|震级|b值|完整性震级|Gutenberg|Richter|FMD|"
+            r"catalog|目录|seismo_stats|plot_gr|plot_all|calc_bvalue|calc_mc",
+            text or "",
+            re.I,
+        ))
+
+    def _build_local_api_context(self, request: str, max_chars: int = 9000) -> str:
+        """
+        Build a compact, introspected reference for SAGE-local APIs.
+
+        This is for normal analysis jobs, not only repository-editing tasks. It
+        prevents the LLM from guessing function names, return attributes, or
+        keyword arguments for modules that are present in this checkout.
+        """
+        if not self._looks_like_local_api_task(request):
+            return ""
+
+        modules = [
+            "seismo_stats.bvalue",
+            "seismo_stats.plotting",
+            "seismo_stats.catalog_loader",
+        ]
+        parts = [
+            "## Local API reference",
+            "Use these exact signatures and return attributes for SAGE-local modules.",
+            "Do not invent similarly named functions or keyword arguments.",
+        ]
+        used = sum(len(p) for p in parts)
+
+        for mod_name in modules:
+            try:
+                module = importlib.import_module(mod_name)
+            except Exception as exc:
+                block = f"\n### {mod_name}\n(unavailable: {exc})"
+                if used + len(block) <= max_chars:
+                    parts.append(block)
+                    used += len(block)
+                continue
+
+            lines = [f"\n### {mod_name}"]
+            public = getattr(module, "__all__", None)
+            names = public if public else [
+                name for name in dir(module)
+                if not name.startswith("_")
+            ]
+            for name in names:
+                obj = getattr(module, name, None)
+                if inspect.isfunction(obj) or inspect.isclass(obj):
+                    try:
+                        sig = str(inspect.signature(obj))
+                    except Exception:
+                        sig = "(...)"
+                    lines.append(f"- `{name}{sig}`")
+                    if name == "BvalueResult" and hasattr(obj, "__dataclass_fields__"):
+                        attrs = ", ".join(obj.__dataclass_fields__.keys())
+                        lines.append(f"  returns attributes: {attrs}")
+                    doc = inspect.getdoc(obj) or ""
+                    if doc:
+                        first = doc.splitlines()[0].strip()
+                        if first:
+                            lines.append(f"  {first[:180]}")
+            block = "\n".join(lines)
+            if used + len(block) > max_chars:
+                break
+            parts.append(block)
+            used += len(block)
+
+        parts.append(
+            "\n## Local API usage notes\n"
+            "- For b-value analysis, `calc_bvalue_mle(...)` returns a `BvalueResult` object; use `.b_value`, `.b_uncertainty`, `.mc`, `.n_events`, and `.summary()`.\n"
+            "- For a Gutenberg-Richter plot from a `BvalueResult`, use `plot_gr(result, output_path)`. `plot_all(result, catalog, output_prefix)` is for full catalogs, not raw magnitude arrays.\n"
+            "- If the user asks for uniformly random magnitudes in [0, 7], keep that uniform assumption; if no completeness threshold is specified, call `calc_bvalue_mle(magnitudes, mc=0.0)` and state that the b-value is a calculation under a non-Gutenberg-Richter synthetic distribution."
+        )
+        return "\n\n".join(parts)
 
     def _run_repo_validation(
         self,
@@ -482,8 +632,13 @@ class CodeEngine:
             if (f.startswith("tests/") or "/tests/" in f) and f.endswith(".py")
             and Path(self.project_root, f).is_file()
         ]
-        if test_files:
-            cmd = [sys.executable, "-m", "pytest", *test_files]
+        related_test_files = [
+            f for f in self._repo_related_test_files(changed_files, request)
+            if f not in test_files
+        ]
+        tests_to_run = test_files + related_test_files
+        if tests_to_run:
+            cmd = [sys.executable, "-m", "pytest", *tests_to_run]
             proc = subprocess.run(
                 cmd,
                 cwd=self.project_root,
@@ -494,11 +649,20 @@ class CodeEngine:
             )
             if proc.returncode != 0:
                 return False, "pytest failed:\n" + (proc.stdout + "\n" + proc.stderr)[-5000:]
-            messages.append(f"[SAGE_TEST] pytest passed for {len(test_files)} test file(s)")
+            kind = "changed" if not related_test_files else "changed/related"
+            messages.append(f"[SAGE_TEST] pytest passed for {len(tests_to_run)} {kind} test file(s)")
         elif self._repo_behavior_change_request(request) and py_files:
-            messages.append(
-                "[SAGE_TEST] warning: code changed but no focused test file was changed"
-            )
+            app_py = [
+                f for f in py_files
+                if not (f.startswith("tests/") or "/tests/" in f)
+            ]
+            if app_py:
+                return (
+                    False,
+                    "Python behavior changed but no focused tests were changed or found. "
+                    "Add/update unit tests under tests/ for the modified function/API, then rerun targeted pytest."
+                )
+            messages.append("[SAGE_TEST] repository Python changes are test-only")
 
         if not messages:
             messages.append("[SAGE_TEST] repository files changed: " + ", ".join(changed_files[:12]))
@@ -729,6 +893,29 @@ class CodeEngine:
                     "phase picker uses the first STA/LTA trigger; ignore edge triggers and choose validated P/S candidates",
                 )
 
+        random_mag_req = bool(re.search(
+            r"(?:随机(?:生成)?|random).{0,40}(?:10000|10,000).{0,40}(?:0\s*[-到至~]\s*7|between\s+0\s+and\s+7)"
+            r"|(?:0\s*[-到至~]\s*7|between\s+0\s+and\s+7).{0,40}(?:随机(?:生成)?|random).{0,40}(?:震级|magnitude)",
+            original_request,
+            re.I | re.S,
+        ))
+        if random_mag_req and re.search(r"exponential|Gutenberg|Richter|true_b|beta\s*=|np\.random\.exponential", code, re.I):
+            return (
+                False,
+                "user requested random magnitudes between 0 and 7; do not replace that assumption with a Gutenberg-Richter/exponential distribution",
+            )
+
+        if "plot_all(" in code and re.search(r"b值|b[-_\s]?value|FMD|震级|magnitude", original_request, re.I):
+            wrong_plot_all = bool(re.search(
+                r"plot_all\s*\(\s*(?:magnitudes|mags|np\.|[A-Za-z_][A-Za-z0-9_]*\s*,\s*(?:Mc|mc))",
+                code,
+            ) or re.search(r"plot_all\s*\([^)]*\b(?:b_value|mc|outfile)\s*=", code, re.S))
+            if wrong_plot_all:
+                return (
+                    False,
+                    "seismo_stats.plotting.plot_all expects (BvalueResult|None, CatalogData, output_prefix); for b-value/FMD plots use plot_gr(result, output_path)",
+                )
+
         return True, ""
 
     # ── Error context builder ─────────────────────────────────────────────────
@@ -795,6 +982,7 @@ class CodeEngine:
         file_contexts: Optional[List[str]] = None,
         skill_ctx: str = "",        # ← same skill docs as code-gen phase
         extra_rag_ctx: str = "",    # ← error-specific RAG docs
+        local_api_ctx: str = "",    # ← local introspected API docs
         exec_dir: Optional[str] = None,  # ← run fixed code in this dir (workflow)
         cancel_event=None,
     ) -> tuple[str, ExecutionResult, str]:
@@ -828,6 +1016,11 @@ class CodeEngine:
                 "\n\n## Error-targeted documentation\n"
                 + extra_rag_ctx
                 + "\n\nConsult the above to resolve API misuse or version-specific errors.")
+        if local_api_ctx:
+            debug_system += (
+                "\n\n## Local API reference\n"
+                + local_api_ctx
+                + "\n\nUse these exact signatures and attributes when fixing imports, calls, and plots.")
 
         failed_lang = "bash" if _is_bash_code(failed_code) else "python"
         debug_messages = [
@@ -995,10 +1188,13 @@ class CodeEngine:
                     "\n\n## Built-in Coding Agent Mode\n"
                     "You are working as SAGE's built-in repository coding agent. "
                     "Use the repository context to make minimal, coherent codebase edits across as many files as needed. "
-                    "Borrow Aider-style discipline: inspect relevant files, edit only what is needed, "
+                    "Use repo-aware editing discipline: inspect relevant files, edit only what is needed, "
                     "add/update focused tests for behavioral changes, run py_compile/pytest checks, and print a concise diff summary. "
                     "The generated script should be an edit-and-test driver, not the final application code."
                 )
+            local_api_ctx = self._build_local_api_context(user_request)
+            if local_api_ctx:
+                system += "\n\n" + local_api_ctx
 
             messages = [{"role": "system", "content": system}] + \
                        [m for m in self._history if m["role"] != "system"]
@@ -1007,11 +1203,14 @@ class CodeEngine:
             plan: List[str] = []
             self._emit(on_progress, "planning", 0, "Planning…")
             try:
+                plan_context = "\n".join(file_contexts)
+                if repo_ctx:
+                    plan_context += "\n\n" + repo_ctx[:10000]
                 plan = _extract_plan(_call_llm(
                     [{"role": "system", "content": _PLAN_SYSTEM},
                      {"role": "user", "content":
-                      f"Request: {user_request}\n\n" + "\n".join(file_contexts)
-                      + "\n\nList the execution steps."}],
+                      f"Request: {user_request}\n\n{plan_context}"
+                      + "\n\nList the execution steps. For repository coding tasks, include search/localization, edits, tests, and validation."}],
                     self.llm_config, max_tokens=400,
                     cancel_event=cancel_event))
             except CodeExecutionCancelled:
@@ -1114,6 +1313,7 @@ class CodeEngine:
                 exec_res=exec_res, attempt=attempt, timeout=timeout,
                 on_progress=on_progress, file_contexts=file_contexts,
                 skill_ctx=skill_ctx, extra_rag_ctx=dbg_rag,
+                local_api_ctx=local_api_ctx if 'local_api_ctx' in locals() else "",
                 exec_dir=output_dir,
                 cancel_event=cancel_event,
             )
