@@ -13,6 +13,7 @@ import shutil as _shutil
 import tempfile as _tempfile
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 from werkzeug.utils import secure_filename
 from state import (
     tasks, _session_docs, _science_agent_jobs, _lit_jobs, _chat_jobs,
@@ -97,33 +98,66 @@ _BVALUE_REFERENCE_RECORDS = [
         "Gutenberg & Richter (1944)",
         "Gutenberg, B., & Richter, C. F. (1944). Frequency of earthquakes in California. "
         "Bulletin of the Seismological Society of America, 34(4), 185-188.",
+        "https://doi.org/10.1785/BSSA0340040185",
     ),
     (
         "Aki (1965)",
         "Aki, K. (1965). Maximum likelihood estimate of b in the formula log N = a - bM "
         "and its confidence limits. Bulletin of the Earthquake Research Institute, 43, 237-239.",
+        "https://hdl.handle.net/2261/12332",
     ),
     (
         "Utsu (1965)",
         "Utsu, T. (1965). A method for determining the value of b in a formula log n = a - bM "
         "showing the magnitude-frequency relation for earthquakes. Geophysical Bulletin of Hokkaido University, 13, 99-103.",
+        "https://doi.org/10.14943/gbhu.13.99",
     ),
     (
         "Shi & Bolt (1982)",
         "Shi, Y., & Bolt, B. A. (1982). The standard error of the magnitude-frequency b value. "
         "Bulletin of the Seismological Society of America, 72(5), 1677-1687.",
+        "https://doi.org/10.1785/BSSA0720051677",
     ),
     (
         "Wiemer & Wyss (2000)",
         "Wiemer, S., & Wyss, M. (2000). Minimum magnitude of completeness in earthquake catalogs: "
         "Examples from Alaska, the western United States, and Japan. Bulletin of the Seismological Society of America, 90(4), 859-869.",
+        "https://doi.org/10.1785/0119990114",
     ),
     (
         "Woessner & Wiemer (2005)",
         "Woessner, J., & Wiemer, S. (2005). Assessing the quality of earthquake catalogues: "
         "Estimating the magnitude of completeness and its uncertainty. Bulletin of the Seismological Society of America, 95(2), 684-698.",
+        "https://doi.org/10.1785/0120040007",
     ),
 ]
+
+
+def _source_item(label: str, url: str = "", kind: str = "") -> dict:
+    return {"label": str(label or "").strip(), "url": str(url or "").strip(), "kind": str(kind or "").strip()}
+
+
+def _source_key(item) -> str:
+    if isinstance(item, dict):
+        return (item.get("url") or item.get("label") or "").strip()
+    return str(item or "").strip()
+
+
+def _dedupe_sources(items):
+    seen = set()
+    out = []
+    for item in items or []:
+        key = _source_key(item)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
+
+def _local_source_url(path: str) -> str:
+    p = Path(path).expanduser().resolve(strict=False)
+    return f"/api/chat/source_file?path={quote(str(p))}"
 
 
 def _bvalue_reference_context(query: str):
@@ -135,9 +169,9 @@ def _bvalue_reference_context(query: str):
         "Do not cite unrelated web-search records when these references cover the method.",
     ]
     refs = []
-    for idx, (label, citation) in enumerate(_BVALUE_REFERENCE_RECORDS, 1):
+    for idx, (label, citation, url) in enumerate(_BVALUE_REFERENCE_RECORDS, 1):
         lines.append(f"[Reference {idx}] {citation}")
-        refs.append(f"[Reference] {label}: {citation}")
+        refs.append(_source_item(f"[Reference] {label}: {citation}", url, "reference"))
     return "\n".join(lines), refs
 
 
@@ -166,8 +200,8 @@ def _skill_context_with_sources(user_msg: str, *, max_skill_chars: int = 5000, m
                 label += f": {desc[:180]}"
             if path:
                 label += f" — {path}"
-            skill_sources.append(label)
-        return skill_ctx or "", skill_rag_ctx or "", _dedupe_preserve_order(skill_sources)
+            skill_sources.append(_source_item(label, _local_source_url(path) if path else "", "skill"))
+        return skill_ctx or "", skill_rag_ctx or "", _dedupe_sources(skill_sources)
     except Exception:
         return "", "", []
 
@@ -927,6 +961,26 @@ def _save_user_profile(content: str, conversations: list | None = None) -> None:
 def chat_conversations_get():
     data = _load_persistent_conversations()
     return jsonify({"ok": True, **data})
+
+
+@bp.route('/api/chat/source_file', methods=['GET'])
+def chat_source_file():
+    """Open a local source file referenced by a visible source chip."""
+    raw = request.args.get("path") or ""
+    try:
+        path = Path(raw).expanduser().resolve(strict=False)
+        allowed_roots = [
+            _PROJECT_ROOT / "seismo_skill",
+            _PROJECT_ROOT / "docs",
+            _PROJECT_ROOT / "seismo_rag" / "chat_history",
+        ]
+        if not any(_path_within(path, root) for root in allowed_roots):
+            return jsonify({"ok": False, "error": "source file is outside allowed roots"}), 403
+        if not path.is_file():
+            return jsonify({"ok": False, "error": "source file not found"}), 404
+        return send_file(str(path), as_attachment=False)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
 
 
 @bp.route('/api/chat/conversations', methods=['POST'])
@@ -2303,7 +2357,7 @@ def chat_rag():
         return jsonify({
             "ok": True,
             "response": answer,
-            "sources": _dedupe_preserve_order(sources),
+            "sources": _dedupe_sources(sources),
         })
     except Exception as e:
         return jsonify({
@@ -2533,11 +2587,10 @@ def _chat_web_search_context(data: dict, query: str):
             label = f"[Web {i}] {src}: {title}"
             if year:
                 label += f" ({year})"
-            if url:
-                label += f" — {url}"
-            elif doi:
-                label += f" — DOI: {doi}"
-            refs.append(label)
+            link = url or (f"https://doi.org/{str(doi).removeprefix('doi:')}" if doi else "")
+            if link:
+                label += f" — {link}"
+            refs.append(_source_item(label, link, "web"))
         return "\n".join(lines), refs
     except Exception as exc:
         return f"Web search failed: {exc}", []
@@ -2727,7 +2780,7 @@ def _build_rag_messages(data: dict):
     if history:
         messages = [messages[0]] + history[-6:] + [messages[-1]]
 
-    return messages, _dedupe_preserve_order(sources), llm_cfg
+    return messages, _dedupe_sources(sources), llm_cfg
 
 
 @bp.route('/api/chat/rag/stream', methods=['POST'])
@@ -2883,7 +2936,7 @@ def _build_plain_messages(data: dict):
     history = data.get('history', [])
     if history:
         messages = [messages[0]] + history[-6:] + [messages[-1]]
-    return messages, _dedupe_preserve_order(sources), llm_cfg
+    return messages, _dedupe_sources(sources), llm_cfg
 
 
 def _build_code_draft_messages(data: dict):
@@ -2935,7 +2988,7 @@ def _build_code_draft_messages(data: dict):
     history = data.get('history', [])
     if history:
         messages = [messages[0]] + history[-6:] + [messages[-1]]
-    return messages, _dedupe_preserve_order(sources), llm_cfg
+    return messages, _dedupe_sources(sources), llm_cfg
 
 
 @bp.route('/api/chat/submit', methods=['POST'])

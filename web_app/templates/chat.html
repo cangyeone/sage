@@ -146,6 +146,7 @@ body { background:var(--bg); height:100vh; display:flex; flex-direction:column; 
 .src-chip-line { display:flex; max-width:none; white-space:normal; overflow:visible; text-overflow:clip;
   margin:.18rem 0; line-height:1.35; }
 .src-chip a { color:#2750b8; text-decoration:underline; overflow-wrap:anywhere; }
+.src-chip .src-link { display:flex; align-items:flex-start; gap:.25rem; width:100%; }
 .src-chip .src-num { font-weight:700; flex-shrink:0; }
 
 /* Think block */
@@ -1955,23 +1956,63 @@ function _esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+function _attrEsc(s) {
+  return _esc(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 function _linkifyEscaped(s) {
   return _esc(s).replace(/(https?:\/\/[^\s)）]+)/g, url =>
-    `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`
+    `<a href="${_attrEsc(url)}" target="_blank" rel="noopener noreferrer">${url}</a>`
   );
+}
+
+function _sourceLabel(s) {
+  if (s && typeof s === 'object') {
+    const candidate = s.label || s.title || s.name || s.text || s.citation || s.url || s.href || '';
+    if (candidate && typeof candidate === 'object') return _sourceLabel(candidate);
+    return String(candidate || '');
+  }
+  return String(s || '');
+}
+
+function _sourceUrl(s) {
+  if (s && typeof s === 'object') {
+    const direct = s.url || s.href || s.link || '';
+    if (direct) return String(direct);
+    if (s.doi) return `https://doi.org/${String(s.doi).replace(/^doi:/i, '')}`;
+  }
+  const text = _sourceLabel(s);
+  const m = text.match(/https?:\/\/[^\s)）]+/);
+  return m ? m[0] : '';
+}
+
+function _normaliseSources(sources) {
+  if (!Array.isArray(sources)) return [];
+  return sources.map(s => {
+    const label = _sourceLabel(s).trim();
+    const url = _sourceUrl(s).trim();
+    const kind = (s && typeof s === 'object') ? String(s.kind || '') : '';
+    return {label: label || url, url, kind};
+  }).filter(s => s.label || s.url);
 }
 
 // ── Source renderer ───────────────────────────────────────────────────────────
 // Explicitly shows retrieved/search sources; web URLs are clickable.
 function _renderSourceChips(sources) {
-  if (!sources || !sources.length) return '';
-  const webLike = sources.some(s => /^(\[Web\s+\d+\]|openalex|semantic|arxiv|web:)/i.test(String(s || '')));
+  const items = _normaliseSources(sources);
+  if (!items.length) return '';
+  const webLike = items.some(s => /^(\[Web\s+\d+\]|openalex|semantic|arxiv|web:)/i.test(s.label) || s.kind === 'web');
   const title = currentLang === 'zh'
     ? (webLike ? '检索来源' : '参考来源')
     : (webLike ? 'Search Sources' : 'Sources');
-  const chips = sources.map((s, i) =>
-    `<div class="src-chip src-chip-line"><span class="src-num">[${i+1}]</span><span>${_linkifyEscaped(s)}</span></div>`
-  ).join('');
+  const chips = items.map((s, i) => {
+    const num = `<span class="src-num">[${i+1}]</span>`;
+    const label = `<span>${_esc(s.label)}</span>`;
+    if (s.url) {
+      return `<div class="src-chip src-chip-line"><a class="src-link" href="${_attrEsc(s.url)}" target="_blank" rel="noopener noreferrer">${num}${label}</a></div>`;
+    }
+    return `<div class="src-chip src-chip-line">${num}<span>${_linkifyEscaped(s.label)}</span></div>`;
+  }).join('');
   return `<div class="src-chips src-source-box"><div class="src-title">${title}</div>${chips}</div>`;
 }
 
