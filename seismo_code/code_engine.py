@@ -144,24 +144,43 @@ class CodeEngine:
 
     # ── Executors ─────────────────────────────────────────────────────────────
 
-    def _run_code(self, code: str, timeout: int, cancel_event=None) -> ExecutionResult:
+    def _run_code(
+        self,
+        code: str,
+        timeout: int,
+        cancel_event=None,
+        on_progress: Optional[Callable] = None,
+        attempt: int = 0,
+    ) -> ExecutionResult:
         """Execute Python or bash code."""
         self._raise_if_cancelled(cancel_event)
+        progress_cb = (
+            lambda msg: self._emit(on_progress, "executing", attempt, msg)
+            if on_progress else None
+        )
         if _is_bash_code(code):
             clean = re.sub(r"^#\s*lang:bash\s*\n", "", code, count=1)
             return execute_bash(clean, project_root=self.project_root,
                                 timeout=timeout, keep_dir=True,
+                                progress_cb=progress_cb,
                                 cancel_event=cancel_event)
         return execute_code(_pre_sanitize(code), project_root=self.project_root,
                             timeout=timeout, keep_dir=True,
                             python_executable=self.python_executable,
+                            progress_cb=progress_cb,
                             cancel_event=cancel_event)
 
     def _run_code_in_dir(self, code: str, timeout: int,
                          shared_dir: Optional[str] = None,
-                         cancel_event=None) -> ExecutionResult:
+                         cancel_event=None,
+                         on_progress: Optional[Callable] = None,
+                         attempt: int = 0) -> ExecutionResult:
         """Execute code inside a pre-existing shared directory."""
         self._raise_if_cancelled(cancel_event)
+        progress_cb = (
+            lambda msg: self._emit(on_progress, "executing", attempt, msg)
+            if on_progress else None
+        )
         if _is_bash_code(code):
             clean = re.sub(r"^#\s*lang:bash\s*\n", "", code, count=1)
             extra_env = (
@@ -171,6 +190,7 @@ class CodeEngine:
             return execute_bash(clean, project_root=self.project_root,
                                 timeout=timeout, keep_dir=True,
                                 extra_env=extra_env,
+                                progress_cb=progress_cb,
                                 cancel_event=cancel_event)
         clean = _pre_sanitize(code)
         extra_env = None
@@ -187,6 +207,7 @@ class CodeEngine:
                             timeout=timeout, keep_dir=True,
                             extra_env=extra_env,
                             python_executable=self.python_executable,
+                            progress_cb=progress_cb,
                             cancel_event=cancel_event)
 
     @staticmethod
@@ -1348,9 +1369,12 @@ class CodeEngine:
         # Execute in shared dir (workflow) or fresh temp dir (single-request)
         if exec_dir:
             new_exec = self._run_code_in_dir(
-                fixed_code, timeout, exec_dir, cancel_event=cancel_event)
+                fixed_code, timeout, exec_dir, cancel_event=cancel_event,
+                on_progress=on_progress, attempt=attempt)
         else:
-            new_exec = self._run_code(fixed_code, timeout, cancel_event=cancel_event)
+            new_exec = self._run_code(
+                fixed_code, timeout, cancel_event=cancel_event,
+                on_progress=on_progress, attempt=attempt)
 
         try:
             plan_revision = self._build_engineering_plan(
@@ -1600,9 +1624,12 @@ class CodeEngine:
             self._emit(on_progress, "executing", 0, "Executing code…")
             if output_dir:
                 exec_res = self._run_code_in_dir(
-                    code, timeout, shared_dir=output_dir, cancel_event=cancel_event)
+                    code, timeout, shared_dir=output_dir, cancel_event=cancel_event,
+                    on_progress=on_progress, attempt=0)
             else:
-                exec_res = self._run_code(code, timeout, cancel_event=cancel_event)
+                exec_res = self._run_code(
+                    code, timeout, cancel_event=cancel_event,
+                    on_progress=on_progress, attempt=0)
             if 'engineering_plan' in locals() and engineering_plan:
                 plan_path = self._persist_engineering_plan(
                     engineering_plan,
@@ -2052,7 +2079,8 @@ class CodeEngine:
             _emit_wf("workflow_step", step_id, step_n,
                      f"[{step_n+1}/{steps_total}] Executing step {step_id}…")
             exec_res  = self._run_code_in_dir(
-                code, timeout, shared_dir, cancel_event=cancel_event)
+                code, timeout, shared_dir, cancel_event=cancel_event,
+                on_progress=on_progress, attempt=0)
             self._raise_if_cancelled(cancel_event)
             attempt   = 0
             diagnosis = ""
@@ -2100,7 +2128,7 @@ class CodeEngine:
                 code, exec_res, diagnosis = self._debug_and_fix(
                     original_request=f"{desc}\n{user_request}",
                     failed_code=code, exec_res=exec_res,
-                    attempt=attempt, timeout=timeout, on_progress=None,
+                    attempt=attempt, timeout=timeout, on_progress=on_progress,
                     file_contexts=[f"Available: {f}" for f in available_files[:5]],
                     skill_ctx=skill_ctx,     # ← forwarded skill docs
                     extra_rag_ctx=dbg_rag,

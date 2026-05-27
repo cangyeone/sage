@@ -56,6 +56,30 @@ def get_embedding_model_path() -> str:
     return "BAAI/bge-m3"
 
 
+def _default_modelscope_model_dir() -> Path:
+    return Path(__file__).resolve().parents[1] / "open_models" / "bge-m3"
+
+
+def _download_bge_m3_from_modelscope(local_dir: Optional[Path] = None) -> Path:
+    """Download BGE-M3 from ModelScope into a project-local directory.
+
+    This is used as an automatic fallback when the default HuggingFace model id
+    cannot be loaded. It intentionally requires the optional `modelscope`
+    package; when unavailable, callers keep the original error diagnostics.
+    """
+    target = (local_dir or _default_modelscope_model_dir()).expanduser()
+    target.mkdir(parents=True, exist_ok=True)
+    try:
+        from modelscope import snapshot_download  # type: ignore
+    except ImportError as exc:
+        raise ImportError(
+            "ModelScope fallback requires `pip install modelscope`"
+        ) from exc
+
+    snapshot_download("BAAI/bge-m3", local_dir=str(target))
+    return target
+
+
 # ---------------------------------------------------------------------------
 # EmbeddingModel
 # ---------------------------------------------------------------------------
@@ -97,9 +121,11 @@ class EmbeddingModel:
             return
 
         model_path = get_embedding_model_path()
+        tried_modelscope_path: Optional[str] = None
         onnx_err: Optional[str] = None
         flag_err: Optional[str] = None
         st_err:   Optional[str] = None
+        ms_err:   Optional[str] = None
 
         # --- Attempt 0: local ONNX BGE-M3 --------------------------------
         # ModelScope/HuggingFace snapshots often include onnx/model.onnx.
@@ -138,6 +164,40 @@ class EmbeddingModel:
             st_err = f"ImportError: {e}"
         except Exception as e:
             st_err = f"{type(e).__name__}: {e}"
+
+        # --- Attempt 2b: ModelScope fallback for BAAI/bge-m3 -------------
+        # In mainland China, HuggingFace downloads often fail. If the user did
+        # not configure a custom local model path, try ModelScope automatically:
+        #   modelscope download --model BAAI/bge-m3 --local_dir open_models/bge-m3
+        if str(model_path).strip() == "BAAI/bge-m3":
+            try:
+                local_root = _download_bge_m3_from_modelscope()
+                tried_modelscope_path = str(local_root)
+
+                wrapper = _load_local_onnx_bge_m3(local_root)
+                if wrapper is not None:
+                    self._model = wrapper
+                    self._backend = "onnx-modelscope"
+                    return
+
+                try:
+                    from FlagEmbedding import BGEM3FlagModel  # type: ignore
+                    self._model = BGEM3FlagModel(str(local_root), use_fp16=True, device="cpu")
+                    self._backend = "flag-modelscope"
+                    return
+                except Exception as e:
+                    ms_err = f"FlagEmbedding local retry: {type(e).__name__}: {e}"
+
+                try:
+                    from sentence_transformers import SentenceTransformer  # type: ignore
+                    self._model = SentenceTransformer(str(local_root), device="cpu")
+                    self._backend = "st-modelscope"
+                    return
+                except Exception as e:
+                    suffix = f"sentence-transformers local retry: {type(e).__name__}: {e}"
+                    ms_err = f"{ms_err}; {suffix}" if ms_err else suffix
+            except Exception as e:
+                ms_err = f"{type(e).__name__}: {e}"
 
         # --- Attempt 3: transformers + safetensors (CVE-2025-32434) ----
         # torch < 2.6 forbids torch.load; safetensors format is unaffected.
@@ -200,6 +260,8 @@ class EmbeddingModel:
         python = sys.executable
         diag = ["Could not load the embedding model. Diagnostics:"]
         diag.append(f"  model_path             → {model_path}")
+        if tried_modelscope_path:
+            diag.append(f"  ModelScope local dir   → {tried_modelscope_path}")
         if onnx_err:
             diag.append(f"  local ONNX             → {onnx_err}")
         elif Path(str(model_path)).expanduser().exists():
@@ -214,6 +276,8 @@ class EmbeddingModel:
             diag.append(f"  sentence-transformers  → {st_err}")
         else:
             diag.append("  sentence-transformers  → not installed")
+        if ms_err:
+            diag.append(f"  ModelScope fallback    → {ms_err}")
 
         _is_hub_conflict = lambda msg: "huggingface-hub" in str(msg) and ("<1.0" in str(msg) or "found huggingface-hub" in str(msg))
         if _is_cve(flag_err) or _is_cve(st_err):
@@ -237,6 +301,8 @@ class EmbeddingModel:
                 "",
                 "Recommended local download:",
                 "  modelscope download --model BAAI/bge-m3 --local_dir open_models/bge-m3",
+                "  (or install ModelScope so SAGE can try this fallback automatically: "
+                f"{python} -m pip install modelscope)",
                 "",
                 "Install one of:",
                 f"  {python} -m pip install FlagEmbedding",

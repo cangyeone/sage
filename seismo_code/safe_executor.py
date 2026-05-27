@@ -23,11 +23,12 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import textwrap
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -154,29 +155,86 @@ def _communicate_with_cancel(
     proc: subprocess.Popen,
     timeout: int,
     cancel_event: Optional[Any] = None,
+    progress_cb: Optional[Callable[[str], None]] = None,
+    progress_interval: float = 5.0,
 ) -> tuple[bool, str, str, int, str]:
-    """Wait for process completion while honoring cancellation."""
+    """Wait for process completion while honoring cancellation.
+
+    stdout/stderr are drained continuously by reader threads. That avoids the
+    classic deadlock where a long-running scientific process fills a pipe while
+    the parent only waits for completion, and it gives the caller a lightweight
+    watchdog hook for live progress updates.
+    """
+    stdout_parts: List[str] = []
+    stderr_parts: List[str] = []
+
+    def _reader(stream, sink: List[str]):
+        if stream is None:
+            return
+        try:
+            for chunk in iter(stream.readline, ""):
+                if not chunk:
+                    break
+                sink.append(chunk)
+        except Exception:
+            pass
+
+    threads = [
+        threading.Thread(target=_reader, args=(proc.stdout, stdout_parts), daemon=True),
+        threading.Thread(target=_reader, args=(proc.stderr, stderr_parts), daemon=True),
+    ]
+    for t in threads:
+        t.start()
+
+    def _collect() -> tuple[str, str]:
+        for t in threads:
+            try:
+                t.join(timeout=0.5)
+            except Exception:
+                pass
+        return "".join(stdout_parts), "".join(stderr_parts)
+
+    def _emit_progress(started: float, last_line_count: int):
+        if not progress_cb:
+            return last_line_count
+        elapsed = int(time.monotonic() - started)
+        lines = ("".join(stdout_parts) + "\n" + "".join(stderr_parts)).strip().splitlines()
+        new_count = len(lines)
+        tail = ""
+        if new_count > last_line_count:
+            tail = lines[-1].strip()[:220]
+        msg = f"watchdog: process still running ({elapsed}s/{timeout}s)"
+        if tail:
+            msg += f"; latest: {tail}"
+        try:
+            progress_cb(msg)
+        except Exception:
+            pass
+        return new_count
+
+    started = time.monotonic()
     deadline = time.monotonic() + timeout
+    next_progress = started + max(0.2, float(progress_interval or 5.0))
+    last_line_count = 0
     while True:
         if _cancel_requested(cancel_event):
             _terminate_process(proc)
-            try:
-                stdout, stderr = proc.communicate(timeout=0.5)
-            except subprocess.TimeoutExpired:
-                stdout, stderr = "", ""
+            stdout, stderr = _collect()
             return False, stdout or "", stderr or "", proc.returncode or -15, "Execution cancelled"
 
         if time.monotonic() >= deadline:
             _terminate_process(proc)
-            try:
-                stdout, stderr = proc.communicate(timeout=0.5)
-            except subprocess.TimeoutExpired:
-                stdout, stderr = "", ""
+            stdout, stderr = _collect()
             return False, stdout or "", stderr or "", proc.returncode or -9, f"执行超时（>{timeout}s）"
 
         if proc.poll() is not None:
-            stdout, stderr = proc.communicate(timeout=2)
+            stdout, stderr = _collect()
             return proc.returncode == 0, stdout or "", stderr or "", proc.returncode or 0, ""
+
+        now = time.monotonic()
+        if now >= next_progress:
+            last_line_count = _emit_progress(started, last_line_count)
+            next_progress = now + max(0.2, float(progress_interval or 5.0))
 
         time.sleep(0.05)
 
@@ -189,6 +247,8 @@ def execute_code(
     extra_env: Optional[Dict[str, str]] = None,
     python_executable: Optional[str] = None,
     cancel_event: Optional[Any] = None,
+    progress_cb: Optional[Callable[[str], None]] = None,
+    progress_interval: float = 5.0,
 ) -> ExecutionResult:
     """
     Execute Python code in an isolated subprocess.
@@ -267,7 +327,7 @@ def execute_code(
             start_new_session=(os.name == "posix"),
         )
         success, stdout, stderr, returncode, error = _communicate_with_cancel(
-            proc, timeout, cancel_event)
+            proc, timeout, cancel_event, progress_cb, progress_interval)
         if not success:
             # Extract the last traceback line as short error
             if not error:
@@ -341,6 +401,8 @@ def execute_bash(
     keep_dir: bool = False,
     extra_env: Optional[Dict[str, str]] = None,
     cancel_event: Optional[Any] = None,
+    progress_cb: Optional[Callable[[str], None]] = None,
+    progress_interval: float = 5.0,
 ) -> ExecutionResult:
     """
     Execute a bash script in an isolated temp directory.
@@ -427,7 +489,7 @@ def execute_bash(
             start_new_session=(os.name == "posix"),
         )
         success, stdout, stderr, returncode, error = _communicate_with_cancel(
-            proc, timeout, cancel_event)
+            proc, timeout, cancel_event, progress_cb, progress_interval)
         if not success:
             if not error:
                 lines = stderr.strip().splitlines()

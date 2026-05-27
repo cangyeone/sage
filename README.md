@@ -324,22 +324,21 @@ source ~/.cargo/env
 # Reinstall embedding models library
 pip install FlagEmbedding sentence-transformers
 
-# On first use, BGE-M3 model (~2 GB) will automatically download from HuggingFace
-# Domestic network can set mirror:
+# On first use, BGE-M3 model (~2 GB) will automatically download from HuggingFace.
+# If HuggingFace fails and `modelscope` is installed, SAGE automatically tries
+# ModelScope and stores the model at open_models/bge-m3.
+# Domestic network can also set mirror:
 export HF_ENDPOINT=https://hf-mirror.com
 ```
 
 #### Alternative: Download BGE-M3 via ModelScope (recommended for users in China)
 
-If HuggingFace is inaccessible, use ModelScope to download the model locally first:
+If HuggingFace is inaccessible, install ModelScope. SAGE will then automatically try the fallback download. You can also download the model manually:
 
 ```bash
 pip install modelscope
 
-python -c "
-from modelscope import snapshot_download
-snapshot_download('AI-ModelScope/bge-m3', local_dir='open_models/bge-m3')
-"
+modelscope download --model BAAI/bge-m3 --local_dir open_models/bge-m3
 ```
 
 Then configure the local path in SAGE so it uses the downloaded model instead of downloading from the internet. There are two ways:
@@ -1390,7 +1389,7 @@ First run will download BGE-M3 model (~2 GB) from HuggingFace. Speed will be nor
 export HF_ENDPOINT=https://hf-mirror.com
 ```
 
-If HuggingFace is completely inaccessible, use ModelScope to download the model locally (see [Alternative: Download BGE-M3 via ModelScope](#alternative-download-bge-m3-via-modelscope-recommended-for-users-in-china)) and then configure the local path in the Knowledge Base page settings.
+If HuggingFace is completely inaccessible, install ModelScope (`pip install modelscope`) so SAGE can automatically download `BAAI/bge-m3` from ModelScope into `open_models/bge-m3`, or download it manually (see [Alternative: Download BGE-M3 via ModelScope](#alternative-download-bge-m3-via-modelscope-recommended-for-users-in-china)).
 
 **Q: Chinese titles in GMT images show as garbled characters**
 

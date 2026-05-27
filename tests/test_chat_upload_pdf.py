@@ -17,6 +17,7 @@ for path in (str(WEB_APP_DIR), str(PROJECT_ROOT)):
 
 import app as web_app
 from state import _session_docs
+from routes import chat as chat_routes
 
 
 class TestChatUploadPdf(unittest.TestCase):
@@ -72,6 +73,59 @@ class TestChatUploadPdf(unittest.TestCase):
             {"doc_name": "b.pdf", "page": 1, "text": "bbb"},
         ])
         _session_docs.pop(session_id, None)
+
+    def test_paper_read_uses_uploaded_pdf_not_web_or_skills(self):
+        session_id = "paper_read_regression"
+        _session_docs[session_id] = {
+            "doc_names": ["seismicxmfinal.pdf"],
+            "chunks": [
+                {"doc_name": "seismicxmfinal.pdf", "page": 1, "text": "SeismicX is a seismology AI system with RAG, coding, and workflow agents."},
+                {"doc_name": "seismicxmfinal.pdf", "page": 2, "text": "The method integrates knowledge retrieval with seismic data processing."},
+            ],
+        }
+
+        with patch("routes.chat.get_llm_config", return_value={"api_base": "http://llm", "model": "test"}), \
+             patch("routes.chat._chat_web_search_context", return_value=("UNRELATED WEB", [{"label": "web", "url": "https://example.test"}])) as web_search, \
+             patch("routes.chat._skill_context_with_sources", return_value=("UNRELATED SKILL", "", [{"label": "skill", "url": ""}])) as skill_search, \
+             patch("routes.chat.get_kb_instance", return_value=None):
+            messages, sources, _ = chat_routes._build_rag_messages({
+                "message": "解读一下这个文献。",
+                "session_id": session_id,
+                "mode": "paper_read",
+                "enable_web_search": True,
+            })
+
+        system = messages[0]["content"]
+        self.assertIn("当前上传文献", system)
+        self.assertIn("SeismicX is a seismology AI system", system)
+        self.assertNotIn("UNRELATED WEB", system)
+        self.assertNotIn("UNRELATED SKILL", system)
+        self.assertEqual(sources, [{"label": "[Uploaded PDF] seismicxmfinal.pdf", "url": "", "kind": "upload"}])
+        web_search.assert_not_called()
+        skill_search.assert_not_called()
+        _session_docs.pop(session_id, None)
+
+    def test_paper_read_without_uploaded_pdf_does_not_search_web(self):
+        session_id = "paper_read_missing_doc"
+        _session_docs.pop(session_id, None)
+
+        with patch("routes.chat.get_llm_config", return_value={"api_base": "http://llm", "model": "test"}), \
+             patch("routes.chat._chat_web_search_context", return_value=("UNRELATED WEB", [])) as web_search, \
+             patch("routes.chat._skill_context_with_sources", return_value=("UNRELATED SKILL", "", [])) as skill_search, \
+             patch("routes.chat.get_kb_instance", return_value=None):
+            messages, sources, _ = chat_routes._build_rag_messages({
+                "message": "解读一下这个文献。",
+                "session_id": session_id,
+                "mode": "paper_read",
+                "enable_web_search": True,
+            })
+
+        system = messages[0]["content"]
+        self.assertIn("NO CURRENT UPLOADED PAPER CONTENT IS AVAILABLE", system)
+        self.assertNotIn("UNRELATED WEB", system)
+        self.assertEqual(sources, [])
+        web_search.assert_not_called()
+        skill_search.assert_not_called()
 
 
 if __name__ == "__main__":

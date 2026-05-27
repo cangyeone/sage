@@ -160,6 +160,88 @@ def _local_source_url(path: str) -> str:
     return f"/api/chat/source_file?path={quote(str(p))}"
 
 
+def _merged_session_documents(data: dict, session_id: str):
+    """Return uploaded/project document chunks visible to this chat request."""
+    session = _session_docs.get(session_id, {})
+    project_id = _clean_conversation_id(data.get("project_id", ""))
+    project_session = _session_docs.get(f"project_{project_id}", {}) if project_id else {}
+    chunks = list(project_session.get("chunks") or []) + list(session.get("chunks") or [])
+    names = list(dict.fromkeys((project_session.get("doc_names") or []) + (session.get("doc_names") or [])))
+    return chunks, names
+
+
+def _session_doc_sources(doc_names):
+    return [_source_item(f"[Uploaded PDF] {name}", "", "upload") for name in (doc_names or []) if name]
+
+
+def _is_generic_paper_read_query(query: str) -> bool:
+    q = str(query or "").lower()
+    return bool(_re.search(
+        r"(这篇|该文|本文|这个文献|这篇文献|这篇论文|该论文|pdf|paper|article|文献|论文).{0,12}"
+        r"(解读|总结|概括|解析|讲解|介绍|梳理|review|summari[sz]e|interpret|explain)"
+        r"|^(解读|总结|概括|解析|讲解|介绍|梳理).{0,12}(文献|论文|paper|article|pdf|这篇|该文)",
+        q,
+        _re.I,
+    ))
+
+
+def _uploaded_paper_context(user_msg: str, chunks: list, doc_names: list, *, max_chunks: int = 14, max_chars: int = 18000) -> str:
+    """Build a paper-reading context from uploaded PDF chunks.
+
+    Paper-reading prompts such as "解读这篇文献" are usually generic, so pure
+    keyword ranking is weak.  We always preserve the opening chunks for title,
+    abstract, and introduction, then add keyword-relevant chunks when available.
+    """
+    if not chunks:
+        return ""
+    lines = [
+        "The user is asking about the currently uploaded PDF/literature.",
+        "Use ONLY the uploaded document passages below for paper interpretation unless the user explicitly asks for external literature.",
+    ]
+    if doc_names:
+        lines.append("Uploaded document(s): " + ", ".join(doc_names))
+    lines.append(_RAG_COMPLETE_ONLY_RULE)
+
+    query_words = {w for w in str(user_msg or "").lower().split() if len(w) > 1}
+    scored = []
+    for idx, c in enumerate(chunks):
+        text = str(c.get("text", ""))
+        words = set(text.lower().split())
+        score = len(query_words & words) if query_words else 0
+        scored.append((score, idx, c))
+
+    selected = []
+    seen = set()
+
+    # Opening chunks carry title/abstract/intro and are essential for summaries.
+    for idx, c in enumerate(chunks[:5]):
+        selected.append(c)
+        seen.add(id(c))
+
+    if not _is_generic_paper_read_query(user_msg):
+        for _score, _idx, c in sorted(scored, key=lambda x: (x[0], -x[1]), reverse=True):
+            if len(selected) >= max_chunks:
+                break
+            if id(c) in seen:
+                continue
+            selected.append(c)
+            seen.add(id(c))
+
+    total = 0
+    for c in selected[:max_chunks]:
+        chunk_text = _drop_incomplete_fenced_tail(str(c.get("text", "")))
+        if not chunk_text.strip():
+            continue
+        page = c.get("page", "?")
+        doc_name = c.get("doc_name") or (doc_names[0] if doc_names else "uploaded PDF")
+        entry = f"[Uploaded PDF: {doc_name}, page {page}]\n{chunk_text}\n"
+        if total + len(entry) > max_chars:
+            break
+        lines.append(entry)
+        total += len(entry)
+    return "\n".join(lines)
+
+
 def _bvalue_reference_context(query: str):
     if not _is_bvalue_topic(query):
         return "", []
@@ -2240,38 +2322,50 @@ def chat_rag():
             context_parts.append("===== 本地文件系统 =====\n" + ws_ctx)
 
     ref_ctx, ref_sources = _bvalue_reference_context(user_msg)
-    if ref_ctx:
+    if ref_ctx and mode != "paper_read":
         context_parts.append("===== 方法参考文献 =====\n" + ref_ctx)
         sources.extend(ref_sources)
 
     # 1. 会话文档（临时上传）
-    session = _session_docs.get(session_id, {})
-    if session.get("chunks"):
+    session_chunks, session_doc_names = _merged_session_documents(data, session_id)
+    if mode == "paper_read":
+        paper_ctx = _uploaded_paper_context(user_msg, session_chunks, session_doc_names)
+        if paper_ctx:
+            context_parts.append("===== 当前上传文献 =====\n" + paper_ctx)
+            sources.extend(_session_doc_sources(session_doc_names))
+        else:
+            context_parts.append(
+                "NO CURRENT UPLOADED PAPER CONTENT IS AVAILABLE. "
+                "Tell the user that the uploaded/current PDF content was not found in this chat session, "
+                "and ask them to upload the paper again or select the project that contains it. "
+                "Do not answer from unrelated web search results."
+            )
+    elif session_chunks:
         context_parts.append(_RAG_COMPLETE_ONLY_RULE)
         # 简单 TF-IDF 式关键词匹配（无需 GPU）
         query_words = set(user_msg.lower().split())
         scored = []
-        for c in session["chunks"]:
+        for c in session_chunks:
             words = set(c["text"].lower().split())
             score = len(query_words & words) / (len(query_words) + 1)
             scored.append((score, c))
         scored.sort(key=lambda x: x[0], reverse=True)
         top = scored[:4]
         for score, c in top:
-            if score > 0 or mode == "paper_read":
+            if score > 0:
                 chunk_text = _drop_incomplete_fenced_tail(c["text"])
                 if not chunk_text.strip():
                     continue
                 context_parts.append(
                     f"[上传文档 第{c['page']}页]\n{chunk_text}"
                 )
-        if session.get("doc_names"):
-            sources.extend(session["doc_names"])
+        if session_doc_names:
+            sources.extend(_session_doc_sources(session_doc_names))
 
     # 2. 持久知识库（BGE-M3 向量检索 / TF-IDF 回退）
     try:
         kb = get_kb_instance()
-        if kb and not kb.is_empty:
+        if kb and not kb.is_empty and mode != "paper_read":
             kb_hits = kb.retrieve(user_msg, top_k=5, score_threshold=0.45)
             if kb_hits:
                 lines = ["The following passages were retrieved from the knowledge base. "
@@ -2297,20 +2391,22 @@ def chat_rag():
         pass
 
     # 3. seismo_skill 技能文档（按用户消息检索最相关技能，注入代码示例）
-    skill_ctx, skill_rag_ctx, skill_sources = _skill_context_with_sources(
-        user_msg, max_skill_chars=5000, max_rag_chars=3000, top_k=4
-    )
-    if skill_ctx:
-        context_parts.append("===== 可用技能与函数示例 =====\n" + skill_ctx)
-    if skill_rag_ctx:
-        context_parts.append("===== 技能绑定知识库 =====\n" + skill_rag_ctx)
-    sources.extend(skill_sources)
+    if mode != "paper_read":
+        skill_ctx, skill_rag_ctx, skill_sources = _skill_context_with_sources(
+            user_msg, max_skill_chars=5000, max_rag_chars=3000, top_k=4
+        )
+        if skill_ctx:
+            context_parts.append("===== 可用技能与函数示例 =====\n" + skill_ctx)
+        if skill_rag_ctx:
+            context_parts.append("===== 技能绑定知识库 =====\n" + skill_rag_ctx)
+        sources.extend(skill_sources)
 
     # ── 构建提示 ─────────────────────────────────────────────────────────────
     if mode == "paper_read":
         system = (
             "你是一位专业的地震学文献解读专家。\n"
-            "请基于以下论文内容，用清晰的中文解读、总结或回答用户的问题。\n"
+            "请严格基于当前上传 PDF 的内容，用清晰的中文解读、总结或回答用户的问题。\n"
+            "如果上下文提示没有当前上传文献内容，请直接说明未找到当前 PDF 内容，并要求用户重新上传或切换到包含该文献的项目；不要编造，也不要引用无关网页。\n"
             "回答时请：\n"
             "1. 点明核心方法/创新点\n"
             "2. 解释关键公式或算法（必要时给出 Python 代码示例）\n"
@@ -2335,7 +2431,7 @@ def chat_rag():
                 "Be concise and accurate.\n"
             )
 
-    system += _scientific_grounding_policy(bool(data.get("enable_web_search")))
+    system += _scientific_grounding_policy(bool(data.get("enable_web_search")) and mode != "paper_read")
     if bool(data.get("enable_think", False)):
         system += _think_summary_policy()
     if context_parts:
@@ -2661,12 +2757,20 @@ def _build_rag_messages(data: dict):
         if ws_ctx:
             context_parts.append("===== 本地文件系统 =====\n" + ws_ctx)
 
-    session = _session_docs.get(session_id, {})
-    project_id = _clean_conversation_id(data.get("project_id", ""))
-    project_session = _session_docs.get(f"project_{project_id}", {}) if project_id else {}
-    merged_chunks = list(project_session.get("chunks") or []) + list(session.get("chunks") or [])
-    merged_doc_names = list(dict.fromkeys((project_session.get("doc_names") or []) + (session.get("doc_names") or [])))
-    if merged_chunks:
+    merged_chunks, merged_doc_names = _merged_session_documents(data, session_id)
+    if mode == "paper_read":
+        paper_ctx = _uploaded_paper_context(user_msg, merged_chunks, merged_doc_names)
+        if paper_ctx:
+            context_parts.append("===== 当前上传文献 =====\n" + paper_ctx)
+            sources.extend(_session_doc_sources(merged_doc_names))
+        else:
+            context_parts.append(
+                "NO CURRENT UPLOADED PAPER CONTENT IS AVAILABLE. "
+                "Tell the user that the uploaded/current PDF content was not found in this chat session, "
+                "and ask them to upload the paper again or select the project that contains it. "
+                "Do not answer from unrelated web search results."
+            )
+    elif merged_chunks:
         context_parts.append(_RAG_COMPLETE_ONLY_RULE)
         query_words = set(user_msg.lower().split())
         scored = []
@@ -2676,30 +2780,31 @@ def _build_rag_messages(data: dict):
             scored.append((score, c))
         scored.sort(key=lambda x: x[0], reverse=True)
         for score, c in scored[:4]:
-            if score > 0 or mode == "paper_read":
+            if score > 0:
                 chunk_text = _drop_incomplete_fenced_tail(c["text"])
                 if chunk_text.strip():
                     context_parts.append(f"[上传文档 第{c['page']}页]\n{chunk_text}")
         if merged_doc_names:
-            sources.extend(merged_doc_names)
+            sources.extend(_session_doc_sources(merged_doc_names))
 
     project_context = (data.get("project_context") or "").strip()
     if project_context:
         context_parts.append("===== 项目共享上下文 =====\n" + project_context[:4000])
 
     ref_ctx, ref_sources = _bvalue_reference_context(user_msg)
-    if ref_ctx:
+    if ref_ctx and mode != "paper_read":
         context_parts.append("===== 方法参考文献 =====\n" + ref_ctx)
         sources.extend(ref_sources)
 
-    web_ctx, web_sources = _chat_web_search_context(data, user_msg)
-    if web_ctx:
-        context_parts.append("===== Web literature/search context =====\n" + web_ctx)
-    sources.extend(web_sources)
+    if mode != "paper_read":
+        web_ctx, web_sources = _chat_web_search_context(data, user_msg)
+        if web_ctx:
+            context_parts.append("===== Web literature/search context =====\n" + web_ctx)
+        sources.extend(web_sources)
 
     try:
         kb = get_kb_instance()
-        if kb and not kb.is_empty:
+        if kb and not kb.is_empty and mode != "paper_read":
             kb_hits = kb.retrieve(user_msg, top_k=5, score_threshold=0.45)
             if kb_hits:
                 lines = ["The following passages were retrieved from the knowledge base. "
@@ -2722,19 +2827,21 @@ def _build_rag_messages(data: dict):
     except Exception:
         pass
 
-    skill_ctx, skill_rag_ctx, skill_sources = _skill_context_with_sources(
-        user_msg, max_skill_chars=5000, max_rag_chars=3000, top_k=4
-    )
-    if skill_ctx:
-        context_parts.append("===== 可用技能与函数示例 =====\n" + skill_ctx)
-    if skill_rag_ctx:
-        context_parts.append("===== 技能绑定知识库 =====\n" + skill_rag_ctx)
-    sources.extend(skill_sources)
+    if mode != "paper_read":
+        skill_ctx, skill_rag_ctx, skill_sources = _skill_context_with_sources(
+            user_msg, max_skill_chars=5000, max_rag_chars=3000, top_k=4
+        )
+        if skill_ctx:
+            context_parts.append("===== 可用技能与函数示例 =====\n" + skill_ctx)
+        if skill_rag_ctx:
+            context_parts.append("===== 技能绑定知识库 =====\n" + skill_rag_ctx)
+        sources.extend(skill_sources)
 
     if mode == "paper_read":
         system = (
             "你是一位专业的地震学文献解读专家。\n"
-            "请基于以下论文内容，用清晰的中文解读、总结或回答用户的问题。\n"
+            "请严格基于当前上传 PDF 的内容，用清晰的中文解读、总结或回答用户的问题。\n"
+            "如果上下文提示没有当前上传文献内容，请直接说明未找到当前 PDF 内容，并要求用户重新上传或切换到包含该文献的项目；不要编造，也不要引用无关网页。\n"
             "回答时请：\n"
             "1. 点明核心方法/创新点\n"
             "2. 解释关键公式或算法（必要时给出 Python 代码示例）\n"
@@ -2759,7 +2866,7 @@ def _build_rag_messages(data: dict):
                 "Be concise and accurate.\n"
             )
 
-    system += _scientific_grounding_policy(bool(data.get("enable_web_search")))
+    system += _scientific_grounding_policy(bool(data.get("enable_web_search")) and mode != "paper_read")
     system = append_user_profile_to_system(system)
 
     # Think-mode must be model-neutral. OpenAI-compatible reasoning streams are

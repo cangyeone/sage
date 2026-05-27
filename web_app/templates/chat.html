@@ -2193,7 +2193,8 @@ function hideTyping() { typingIndicator.classList.remove('show'); }
 // ── LLM 路由判断 ───────────────────────────────────────────────────────────
 function isPaperReadingRequest(text) {
   const t = String(text || '').trim().toLowerCase();
-  const hasDocContext = sessionDocs.length > 0 || kbHasDocs || lastIntentWasPaper;
+  const projectDocCount = ((activeProject() || {}).docs || []).length;
+  const hasDocContext = sessionDocs.length > 0 || projectDocCount > 0 || kbHasDocs || lastIntentWasPaper;
   const hasAny = (words) => words.some((w) => t.includes(w));
   const mentionsPaper = hasAny(['论文', '文献', '文章', '这篇', '该文', 'paper', 'article', 'pdf']);
   const asksToRead = hasAny(['解析', '解读', '分析一下', '读一下', '阅读', '总结', '概括', '讲解', '解释', '看一下', '梳理', '提炼', 'summarize', 'summarise', 'explain', 'review', 'interpret']);
@@ -2262,6 +2263,13 @@ async function sendMessage() {
       hideTyping();
       showTyping(currentLang === 'zh' ? '🖼 AI 正在识别图片…' : '🖼 Analyzing image…');
       await sendNormal(msgText, imgs);
+      return;
+    }
+
+    if (isPaperReadingRequest(msgText)) {
+      lastIntentWasCode = false;
+      showTyping(T('typing_rag'));
+      await sendRag(msgText);
       return;
     }
 
@@ -2342,7 +2350,7 @@ async function pollCodeJob(jobId, ownerSessionId=SESSION_ID) {
     const progList = poll.progress || [];
     if (progList.length > 0) {
       const latest = progList[progList.length - 1];
-      const label = progressLabels[latest] || (T('typing_code') + ' (' + latest + ')');
+      const label = progressLabels[latest] || (T('typing_code') + ' — ' + latest);
       if (label !== lastShown) {
         if (SESSION_ID === ownerSessionId) showTyping(label);
         lastShown = label;
@@ -3037,7 +3045,8 @@ function normaliseThinkAnswer(text) {
 async function sendRag(text) {
   // 自动判断是否为文献解读请求
   const paperKeywords = ['总结', '解读', '摘要', '结论', '方法', '论文', '文献', '这篇', '本文', '作者'];
-  const isPaperMode = paperKeywords.some(k => text.includes(k)) && sessionDocs.length > 0;
+  const projectDocCount = ((activeProject() || {}).docs || []).length;
+  const isPaperMode = paperKeywords.some(k => text.includes(k)) && (sessionDocs.length > 0 || projectDocCount > 0);
   const mode = isPaperMode ? 'paper_read' : 'rag';
 
   hideTyping();
